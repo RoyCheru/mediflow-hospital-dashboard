@@ -20,7 +20,7 @@ export const Route = createFileRoute("/audit-log")({
   component: AuditLog,
 });
 
-const dateOf = (ts: string) => ts.split(", ")[0];
+const dateOf = (ts: string) => ts.split(", ")[0] ?? ts;
 
 function AuditLog() {
   const [q, setQ] = useState("");
