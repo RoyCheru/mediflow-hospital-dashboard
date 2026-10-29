@@ -9,7 +9,7 @@ type Tab = "invoices" | "claims" | "reconciliation";
 
 export const Route = createFileRoute("/billing")({
   validateSearch: (s: Record<string, unknown>): { tab?: Tab } =>
-    s.tab === "claims" || s.tab === "reconciliation" || s.tab === "invoices" ? { tab: s.tab } : {},
+    s["tab"] === "claims" || s["tab"] === "reconciliation" || s["tab"] === "invoices" ? { tab: s["tab"] as Tab } : {},
   head: () => ({
     meta: [
       { title: "Billing & Claims — MediFlow" },
