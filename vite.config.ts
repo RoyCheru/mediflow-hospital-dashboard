@@ -12,4 +12,6 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Pre-bundle chart/icon deps so Vite doesn't re-optimize mid-session (caused duplicate React copies).
+  vite: { optimizeDeps: { include: ["recharts", "lucide-react", "clsx", "tailwind-merge"] } },
 });
