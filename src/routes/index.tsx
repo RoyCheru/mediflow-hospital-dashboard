@@ -2,9 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Users, CalendarCheck, Wallet, FileClock, Search, SlidersHorizontal, ChevronLeft, ChevronRight, Plus, Clock, ArrowUpRight } from "lucide-react";
-import { Badge, Panel, StatCard, FilterSelect, th, td, tableWrap, theadRow, tbodyRow } from "@/components/kit";
+import { auditColor, Badge, Panel, StatCard, FilterSelect, th, td, tableWrap, theadRow, tbodyRow } from "@/components/kit";
 import { audit, claims, departments, ksh, paymentSplit, people, revenueByDept, revenueByMethod, schedule } from "@/lib/data";
-import { auditColor } from "./audit-log";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({

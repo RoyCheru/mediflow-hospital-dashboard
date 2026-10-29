@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AppointmentsRouteImport } from './routes/appointments'
+import { Route as AuditLogRouteImport } from './routes/audit-log'
+import { Route as BillingRouteImport } from './routes/billing'
 import { Route as DepartmentsRouteImport } from './routes/departments'
 import { Route as PatientsRouteImport } from './routes/patients'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -30,6 +32,16 @@ const AnalyticsRoute = AnalyticsRouteImport.update({
 const AppointmentsRoute = AppointmentsRouteImport.update({
   id: '/appointments',
   path: '/appointments',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuditLogRoute = AuditLogRouteImport.update({
+  id: '/audit-log',
+  path: '/audit-log',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BillingRoute = BillingRouteImport.update({
+  id: '/billing',
+  path: '/billing',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DepartmentsRoute = DepartmentsRouteImport.update({
@@ -57,6 +69,8 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/analytics': typeof AnalyticsRoute
   '/appointments': typeof AppointmentsRoute
+  '/audit-log': typeof AuditLogRoute
+  '/billing': typeof BillingRoute
   '/departments': typeof DepartmentsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
@@ -66,6 +80,8 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/analytics': typeof AnalyticsRoute
   '/appointments': typeof AppointmentsRoute
+  '/audit-log': typeof AuditLogRoute
+  '/billing': typeof BillingRoute
   '/departments': typeof DepartmentsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
@@ -76,6 +92,8 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/analytics': typeof AnalyticsRoute
   '/appointments': typeof AppointmentsRoute
+  '/audit-log': typeof AuditLogRoute
+  '/billing': typeof BillingRoute
   '/departments': typeof DepartmentsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
@@ -87,6 +105,8 @@ export interface FileRouteTypes {
     | '/'
     | '/analytics'
     | '/appointments'
+    | '/audit-log'
+    | '/billing'
     | '/departments'
     | '/patients'
     | '/settings'
@@ -96,6 +116,8 @@ export interface FileRouteTypes {
     | '/'
     | '/analytics'
     | '/appointments'
+    | '/audit-log'
+    | '/billing'
     | '/departments'
     | '/patients'
     | '/settings'
@@ -105,6 +127,8 @@ export interface FileRouteTypes {
     | '/'
     | '/analytics'
     | '/appointments'
+    | '/audit-log'
+    | '/billing'
     | '/departments'
     | '/patients'
     | '/settings'
@@ -115,6 +139,8 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AnalyticsRoute: typeof AnalyticsRoute
   AppointmentsRoute: typeof AppointmentsRoute
+  AuditLogRoute: typeof AuditLogRoute
+  BillingRoute: typeof BillingRoute
   DepartmentsRoute: typeof DepartmentsRoute
   PatientsRoute: typeof PatientsRoute
   SettingsRoute: typeof SettingsRoute
@@ -142,6 +168,20 @@ declare module '@tanstack/react-router' {
       path: '/appointments'
       fullPath: '/appointments'
       preLoaderRoute: typeof AppointmentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/audit-log': {
+      id: '/audit-log'
+      path: '/audit-log'
+      fullPath: '/audit-log'
+      preLoaderRoute: typeof AuditLogRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/billing': {
+      id: '/billing'
+      path: '/billing'
+      fullPath: '/billing'
+      preLoaderRoute: typeof BillingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/departments': {
@@ -179,6 +219,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AnalyticsRoute: AnalyticsRoute,
   AppointmentsRoute: AppointmentsRoute,
+  AuditLogRoute: AuditLogRoute,
+  BillingRoute: BillingRoute,
   DepartmentsRoute: DepartmentsRoute,
   PatientsRoute: PatientsRoute,
   SettingsRoute: SettingsRoute,

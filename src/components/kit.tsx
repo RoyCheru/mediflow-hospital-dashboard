@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { TrendingDown, TrendingUp, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import type { AuditType } from "@/lib/data";
 
 export function Panel({ title, action, children, className }: { title?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
@@ -100,3 +101,12 @@ export const td = "px-3 py-3.5 text-sm whitespace-nowrap";
 export const tableWrap = "overflow-x-auto rounded-xl border border-border";
 export const theadRow = "bg-secondary";
 export const tbodyRow = "border-t border-border transition-colors hover:bg-accent/50";
+
+export const auditColor: Record<AuditType, { bg: string; text: string; label: string }> = {
+  void: { bg: "bg-destructive/15", text: "text-destructive", label: "Void" },
+  delete: { bg: "bg-destructive/15", text: "text-destructive", label: "Delete" },
+  edit: { bg: "bg-info/15", text: "text-info", label: "Edit" },
+  approve: { bg: "bg-success/15", text: "text-success", label: "Approve" },
+  create: { bg: "bg-primary/15", text: "text-primary", label: "Create" },
+  login: { bg: "bg-muted", text: "text-muted-foreground", label: "Sign-in" },
+};

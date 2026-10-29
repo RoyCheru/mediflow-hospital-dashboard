@@ -1,18 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Download, Search, Monitor } from "lucide-react";
-import { PageHeader, Panel, FilterSelect, th, td, tableWrap, theadRow, tbodyRow } from "@/components/kit";
-import { audit, type AuditType } from "@/lib/data";
+import { auditColor, PageHeader, Panel, FilterSelect, th, td, tableWrap, theadRow, tbodyRow } from "@/components/kit";
+import { audit } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
-export const auditColor: Record<AuditType, { bg: string; text: string; label: string }> = {
-  void: { bg: "bg-destructive/15", text: "text-destructive", label: "Void" },
-  delete: { bg: "bg-destructive/15", text: "text-destructive", label: "Delete" },
-  edit: { bg: "bg-info/15", text: "text-info", label: "Edit" },
-  approve: { bg: "bg-success/15", text: "text-success", label: "Approve" },
-  create: { bg: "bg-primary/15", text: "text-primary", label: "Create" },
-  login: { bg: "bg-muted", text: "text-muted-foreground", label: "Sign-in" },
-};
 
 export const Route = createFileRoute("/audit-log")({
   head: () => ({
