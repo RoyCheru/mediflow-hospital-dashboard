@@ -56,7 +56,7 @@ function Page() {
             <div key={s.name} className="rounded-2xl border border-border bg-secondary/50 p-4">
               <div className="flex items-start justify-between">
                 <span className={`grid h-12 w-12 place-items-center rounded-full font-bold ${s.grad} ${s.grad.includes("yellow") || s.grad.includes("pink") ? "text-ink" : "text-on-gradient"}`}>{s.name.replace(/^(Dr\.|Nurse) /, "").split(" ").map((n) => n[0]).join("")}</span>
-                <Badge tone={s.status === "In Theatre" ? "info" : undefined}>{s.status}</Badge>
+                {s.status === "In Theatre" ? <Badge tone="info">{s.status}</Badge> : <Badge>{s.status}</Badge>}
               </div>
               <p className="mt-3 font-semibold">{s.name}</p>
               <p className="text-xs text-muted-foreground">{s.role} · {s.dept}</p>

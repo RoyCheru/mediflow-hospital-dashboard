@@ -34,7 +34,7 @@ function Page() {
   const [q, setQ] = useState("");
   const [dept, setDept] = useState("All");
   const [status, setStatus] = useState("All");
-  const [sel, setSel] = useState<P>(patients[0]);
+  const [sel, setSel] = useState<P>(patients[0]!);
   const rows = useMemo(() => patients.filter((p) => (dept === "All" || p.dept === dept) && (status === "All" || p.status === status) && (p.name + p.id).toLowerCase().includes(q.toLowerCase())), [q, dept, status]);
 
   return (
