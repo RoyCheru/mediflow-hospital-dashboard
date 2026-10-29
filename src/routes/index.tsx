@@ -42,7 +42,7 @@ function Dashboard() {
       </div>
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-6">
-          <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_280px]">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px] xl:grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_280px]">
             <RevenueChart />
             <PaymentDonut />
           </div>

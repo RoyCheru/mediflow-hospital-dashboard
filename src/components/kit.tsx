@@ -30,7 +30,7 @@ export function StatCard({ label, value, change, icon: Icon, tone }: { label: st
         <span className="min-w-0 truncate font-semibold">{label}</span>
       </div>
       <div className="mt-5 flex items-end justify-between gap-2">
-        <span className="text-2xl font-bold tracking-tight xl:text-3xl">{value}</span>
+        <span className="whitespace-nowrap text-2xl font-bold tracking-tight 2xl:text-3xl">{value}</span>
         <div className="text-right">
           <span className="inline-flex items-center gap-1 rounded-full bg-on-gradient/35 px-2.5 py-1 text-xs font-semibold">
             {up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
