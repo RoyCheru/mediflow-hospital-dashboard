@@ -60,7 +60,7 @@ const statusTone: Record<string, keyof typeof tones> = {
   sha: "sha", "m-pesa": "mpesa", cash: "cash",
 };
 
-export function Badge({ children, tone }: { children: string; tone?: keyof typeof tones }) {
+export function Badge({ children, tone }: { children: string; tone?: keyof typeof tones | undefined }) {
   const t = tone ?? statusTone[children.toLowerCase()] ?? "muted";
   return (
     <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold capitalize", tones[t])}>
