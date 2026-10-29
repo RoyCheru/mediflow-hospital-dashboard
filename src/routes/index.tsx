@@ -82,7 +82,7 @@ function RevenueChart() {
       </div>
       <div className="h-60">
         <ResponsiveContainer>
-          <AreaChart data={data} margin={{ left: -18, right: 6, top: 6 }}>
+          <AreaChart data={data} margin={{ left: -8, right: 6, top: 6 }}>
             <defs>
               {keys.map((k, i) => (
                 <linearGradient key={k.k} id={`g${i}`} x1="0" y1="0" x2="0" y2="1">
@@ -106,7 +106,8 @@ function RevenueChart() {
 function PaymentDonut() {
   return (
     <Panel title="Payment Methods">
-      <div className="relative mx-auto h-44 w-44">
+      <div className="flex flex-col items-center gap-6 sm:flex-row sm:justify-center lg:flex-col xl:flex-row 2xl:flex-col">
+      <div className="relative h-44 w-44 shrink-0">
         <ResponsiveContainer>
           <PieChart>
             <Pie data={paymentSplit} dataKey="value" innerRadius={56} outerRadius={80} paddingAngle={3} stroke="none" cornerRadius={6}>
@@ -118,7 +119,7 @@ function PaymentDonut() {
           <div><p className="text-2xl font-bold">3.76M</p><p className="text-xs text-muted-foreground">KSh this month</p></div>
         </div>
       </div>
-      <ul className="mt-4 space-y-2.5">
+      <ul className="w-full max-w-xs space-y-2.5">
         {paymentSplit.map((p) => (
           <li key={p.name} className="flex items-center justify-between text-sm">
             <span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: p.color }} />{p.name}</span>
@@ -126,6 +127,7 @@ function PaymentDonut() {
           </li>
         ))}
       </ul>
+      </div>
     </Panel>
   );
 }
