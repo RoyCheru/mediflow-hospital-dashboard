@@ -2,9 +2,10 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import {
   LayoutGrid, CalendarDays, Users, Stethoscope, Building2, Receipt, ScrollText, BarChart3, Settings,
-  Search, Bell, MessageSquare, ChevronDown, Menu, X, LogOut, HeartPulse,
+  Search, Menu, X, LogOut, HeartPulse,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { TopBarActions } from "@/components/TopBarActions";
 
 const groups = [
   { label: "General", items: [
@@ -92,19 +93,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <input placeholder="Search patients, invoices, claims…" className="h-11 w-full rounded-xl bg-secondary pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring" />
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
-              <button aria-label="Messages" className="hidden rounded-full p-2.5 hover:bg-secondary sm:block"><MessageSquare className="h-5 w-5" /></button>
-              <button aria-label="Notifications" className="relative rounded-full p-2.5 hover:bg-secondary">
-                <Bell className="h-5 w-5" />
-                <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-destructive ring-2 ring-background" />
-              </button>
-              <button className="flex items-center gap-2.5 rounded-full py-1 pl-1 pr-2 hover:bg-secondary">
-                <span className="grid h-9 w-9 place-items-center rounded-full bg-grad-pink text-sm font-bold text-ink">SN</span>
-                <span className="hidden text-left leading-tight md:block">
-                  <span className="block text-sm font-semibold">Samuel Ndegwa</span>
-                  <span className="block text-xs text-muted-foreground">Administrator</span>
-                </span>
-                <ChevronDown className="hidden h-4 w-4 text-muted-foreground md:block" />
-              </button>
+              <TopBarActions />
             </div>
           </div>
         </header>
