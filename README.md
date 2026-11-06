@@ -1,6 +1,8 @@
 
 # MediFlow
 
+Live Demo: https://mediflow-hospital-rho.vercel.app/
+
 **A role-based hospital management and telehealth platform with multi-method billing (SHA, M-Pesa, cash), AI-assisted workflows, and a full audit trail.**
 
 
@@ -48,7 +50,7 @@ MediFlow is designed for the Kenyan hospital context, including **SHA (Social He
 
 | Admin Dashboard | Doctor Dashboard |
 |---|---|
-| ![Admin dashboard](docs/screenshots/admin-dashboard.png) | ![Doctor dashboard](docs/screenshots/doctor-dashboard.png) |
+| ![Admin dashboard](docs/screenshots/admin-dashboard.png) |  |
 
 | Billing and Claims | Audit Log |
 |---|---|
@@ -469,15 +471,11 @@ Distributed under the MIT License. See `LICENSE` for details.
 
 ## Author
 
-**Your Name**
+**Roy Cheruiyot**
 Full-stack developer focused on AI engineering
 
-[Portfolio](#) · [LinkedIn](#) · [GitHub](#) · [Email](mailto:you@example.com)
+[Portfolio](https://portfolio-one-dusky-2p2jy5182c.vercel.app/) · [LinkedIn](www.linkedin.com/in/roy-cheruiyot-86b76b22b) · [GitHub](https://github.com/RoyCheru) · [Email](roycheruiyot168@gmail.com)
 
 ---
 
-<div align="center">
-
 If this project is useful or interesting, consider giving it a star.
-
-</div>
