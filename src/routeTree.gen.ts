@@ -10,18 +10,27 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AiRouteImport } from './routes/ai'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AppointmentsRouteImport } from './routes/appointments'
 import { Route as AuditLogRouteImport } from './routes/audit-log'
 import { Route as BillingRouteImport } from './routes/billing'
+import { Route as ClaimsRouteImport } from './routes/claims'
 import { Route as DepartmentsRouteImport } from './routes/departments'
+import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as PatientsRouteImport } from './routes/patients'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as StaffRouteImport } from './routes/staff'
+import { Route as VisitsRouteImport } from './routes/visits'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AiRoute = AiRouteImport.update({
+  id: '/ai',
+  path: '/ai',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AnalyticsRoute = AnalyticsRouteImport.update({
@@ -44,9 +53,19 @@ const BillingRoute = BillingRouteImport.update({
   path: '/billing',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClaimsRoute = ClaimsRouteImport.update({
+  id: '/claims',
+  path: '/claims',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DepartmentsRoute = DepartmentsRouteImport.update({
   id: '/departments',
   path: '/departments',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NotificationsRoute = NotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PatientsRoute = PatientsRouteImport.update({
@@ -64,87 +83,120 @@ const StaffRoute = StaffRouteImport.update({
   path: '/staff',
   getParentRoute: () => rootRouteImport,
 } as any)
+const VisitsRoute = VisitsRouteImport.update({
+  id: '/visits',
+  path: '/visits',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/ai': typeof AiRoute
   '/analytics': typeof AnalyticsRoute
   '/appointments': typeof AppointmentsRoute
   '/audit-log': typeof AuditLogRoute
   '/billing': typeof BillingRoute
+  '/claims': typeof ClaimsRoute
   '/departments': typeof DepartmentsRoute
+  '/notifications': typeof NotificationsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
   '/staff': typeof StaffRoute
+  '/visits': typeof VisitsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/ai': typeof AiRoute
   '/analytics': typeof AnalyticsRoute
   '/appointments': typeof AppointmentsRoute
   '/audit-log': typeof AuditLogRoute
   '/billing': typeof BillingRoute
+  '/claims': typeof ClaimsRoute
   '/departments': typeof DepartmentsRoute
+  '/notifications': typeof NotificationsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
   '/staff': typeof StaffRoute
+  '/visits': typeof VisitsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/ai': typeof AiRoute
   '/analytics': typeof AnalyticsRoute
   '/appointments': typeof AppointmentsRoute
   '/audit-log': typeof AuditLogRoute
   '/billing': typeof BillingRoute
+  '/claims': typeof ClaimsRoute
   '/departments': typeof DepartmentsRoute
+  '/notifications': typeof NotificationsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
   '/staff': typeof StaffRoute
+  '/visits': typeof VisitsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/ai'
     | '/analytics'
     | '/appointments'
     | '/audit-log'
     | '/billing'
+    | '/claims'
     | '/departments'
+    | '/notifications'
     | '/patients'
     | '/settings'
     | '/staff'
+    | '/visits'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/ai'
     | '/analytics'
     | '/appointments'
     | '/audit-log'
     | '/billing'
+    | '/claims'
     | '/departments'
+    | '/notifications'
     | '/patients'
     | '/settings'
     | '/staff'
+    | '/visits'
   id:
     | '__root__'
     | '/'
+    | '/ai'
     | '/analytics'
     | '/appointments'
     | '/audit-log'
     | '/billing'
+    | '/claims'
     | '/departments'
+    | '/notifications'
     | '/patients'
     | '/settings'
     | '/staff'
+    | '/visits'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AiRoute: typeof AiRoute
   AnalyticsRoute: typeof AnalyticsRoute
   AppointmentsRoute: typeof AppointmentsRoute
   AuditLogRoute: typeof AuditLogRoute
   BillingRoute: typeof BillingRoute
+  ClaimsRoute: typeof ClaimsRoute
   DepartmentsRoute: typeof DepartmentsRoute
+  NotificationsRoute: typeof NotificationsRoute
   PatientsRoute: typeof PatientsRoute
   SettingsRoute: typeof SettingsRoute
   StaffRoute: typeof StaffRoute
+  VisitsRoute: typeof VisitsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -154,6 +206,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ai': {
+      id: '/ai'
+      path: '/ai'
+      fullPath: '/ai'
+      preLoaderRoute: typeof AiRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/analytics': {
@@ -184,11 +243,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BillingRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/claims': {
+      id: '/claims'
+      path: '/claims'
+      fullPath: '/claims'
+      preLoaderRoute: typeof ClaimsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/departments': {
       id: '/departments'
       path: '/departments'
       fullPath: '/departments'
       preLoaderRoute: typeof DepartmentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notifications': {
+      id: '/notifications'
+      path: '/notifications'
+      fullPath: '/notifications'
+      preLoaderRoute: typeof NotificationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/patients': {
@@ -212,19 +285,30 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StaffRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/visits': {
+      id: '/visits'
+      path: '/visits'
+      fullPath: '/visits'
+      preLoaderRoute: typeof VisitsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AiRoute: AiRoute,
   AnalyticsRoute: AnalyticsRoute,
   AppointmentsRoute: AppointmentsRoute,
   AuditLogRoute: AuditLogRoute,
   BillingRoute: BillingRoute,
+  ClaimsRoute: ClaimsRoute,
   DepartmentsRoute: DepartmentsRoute,
+  NotificationsRoute: NotificationsRoute,
   PatientsRoute: PatientsRoute,
   SettingsRoute: SettingsRoute,
   StaffRoute: StaffRoute,
+  VisitsRoute: VisitsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
