@@ -44,13 +44,32 @@ def _aware(value):
     return value.astimezone(timezone.utc)
 
 
+def _person_name(person):
+    if person is None:
+        return None
+    return getattr(person, "full_name", None) or " ".join(
+        part
+        for part in (getattr(person, "first_name", None), getattr(person, "last_name", None))
+        if part
+    )
+
+
 def serialize_invoice(invoice):
+    patient = getattr(invoice, "patient", None)
+    department = getattr(invoice, "department", None)
+    visit = getattr(invoice, "visit", None)
+    doctor = getattr(visit, "doctor", None) if visit is not None else None
+    doctor_user = getattr(doctor, "user", None) if doctor is not None else None
     return {
         "id": str(invoice.id),
         "invoice_number": invoice.invoice_number,
         "patient_id": str(invoice.patient_id),
+        "patient_name": _person_name(patient),
+        "patient_number": getattr(patient, "patient_number", None),
         "visit_id": str(invoice.visit_id) if invoice.visit_id else None,
+        "doctor_name": _person_name(doctor_user),
         "department_id": str(invoice.department_id) if invoice.department_id else None,
+        "department_name": getattr(department, "name", None),
         "currency": invoice.currency,
         "subtotal_minor": invoice.subtotal_minor,
         "discount_minor": invoice.discount_minor,
@@ -88,9 +107,13 @@ def serialize_invoice(invoice):
 
 
 def serialize_transaction(transaction):
+    invoice = getattr(transaction, "invoice", None)
+    patient = getattr(invoice, "patient", None) if invoice is not None else None
     return {
         "id": str(transaction.id),
         "invoice_id": str(transaction.invoice_id),
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": _person_name(patient),
         "allocation_id": str(transaction.allocation_id) if transaction.allocation_id else None,
         "method": transaction.method.value,
         "amount_minor": transaction.amount_minor,
@@ -122,9 +145,15 @@ def serialize_intent(intent):
 
 
 def serialize_void_request(item):
+    invoice = getattr(item, "invoice", None)
+    patient = getattr(invoice, "patient", None) if invoice is not None else None
     return {
         "id": str(item.id),
         "invoice_id": str(item.invoice_id) if item.invoice_id else None,
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": _person_name(patient),
+        "requested_by_name": _person_name(getattr(item, "requested_by", None)),
+        "reviewed_by_name": _person_name(getattr(item, "reviewed_by", None)),
         "transaction_id": str(item.transaction_id) if item.transaction_id else None,
         "reason": item.reason,
         "status": item.status.value,
@@ -137,9 +166,15 @@ def serialize_void_request(item):
 
 
 def serialize_refund(item):
+    invoice = getattr(item, "invoice", None)
+    patient = getattr(invoice, "patient", None) if invoice is not None else None
     return {
         "id": str(item.id),
         "invoice_id": str(item.invoice_id),
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": _person_name(patient),
+        "requested_by_name": _person_name(getattr(item, "requested_by", None)),
+        "approved_by_name": _person_name(getattr(item, "approved_by", None)),
         "original_transaction_id": str(item.original_transaction_id),
         "amount_minor": item.amount_minor,
         "reason": item.reason,

@@ -56,9 +56,18 @@ def serialize_eligibility(check):
 
 
 def serialize_claim(claim):
+    patient = getattr(claim, "patient", None)
+    invoice = getattr(claim, "invoice", None)
+    department = getattr(invoice, "department", None) if invoice is not None else None
     return {
         "id": str(claim.id),
         "invoice_id": str(claim.invoice_id),
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": " ".join(part for part in (patient.first_name, patient.last_name) if part)
+        if patient is not None
+        else None,
+        "patient_number": getattr(patient, "patient_number", None),
+        "department_name": getattr(department, "name", None),
         "allocation_id": str(claim.allocation_id) if claim.allocation_id else None,
         "patient_id": str(claim.patient_id),
         "eligibility_check_id": str(claim.eligibility_check_id)

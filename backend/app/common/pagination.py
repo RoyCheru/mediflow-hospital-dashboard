@@ -6,8 +6,9 @@ def pagination_args():
         page = max(int(request.args.get("page", 1)), 1)
     except (TypeError, ValueError):
         page = 1
+    requested_size = request.args.get("page_size", request.args.get("per_page"))
     try:
-        per_page = int(request.args.get("per_page", current_app.config["DEFAULT_PAGE_SIZE"]))
+        per_page = int(requested_size or current_app.config["DEFAULT_PAGE_SIZE"])
     except (TypeError, ValueError):
         per_page = current_app.config["DEFAULT_PAGE_SIZE"]
     per_page = max(1, min(per_page, current_app.config["MAX_PAGE_SIZE"]))
@@ -22,6 +23,7 @@ def paginated(query, serializer):
         "meta": {
             "page": pagination.page,
             "per_page": pagination.per_page,
+            "page_size": pagination.per_page,
             "total": pagination.total,
             "pages": pagination.pages,
         },

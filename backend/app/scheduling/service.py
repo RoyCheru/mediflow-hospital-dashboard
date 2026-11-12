@@ -89,9 +89,7 @@ def serialize_service(service):
 
 
 def serialize_doctor(doctor):
-    from app.auth.models import User
-
-    user = User.query.get(doctor.user_id)
+    user = getattr(doctor, "user", None)
     return {
         "id": str(doctor.id),
         "user_id": str(doctor.user_id),
@@ -106,12 +104,24 @@ def serialize_doctor(doctor):
 
 
 def serialize_appointment(appointment):
+    patient = getattr(appointment, "patient", None)
+    doctor = getattr(appointment, "doctor", None)
+    doctor_user = getattr(doctor, "user", None) if doctor is not None else None
+    service = getattr(appointment, "service", None)
+    department = getattr(appointment, "department", None)
     return {
         "id": str(appointment.id),
         "patient_id": str(appointment.patient_id),
+        "patient_name": " ".join(part for part in (patient.first_name, patient.last_name) if part)
+        if patient is not None
+        else None,
+        "patient_number": getattr(patient, "patient_number", None),
         "doctor_id": str(appointment.doctor_id),
+        "doctor_name": doctor_user.full_name if doctor_user is not None else None,
         "service_id": str(appointment.service_id) if appointment.service_id else None,
+        "service_name": getattr(service, "name", None),
         "department_id": str(appointment.department_id) if appointment.department_id else None,
+        "department_name": getattr(department, "name", None),
         "scheduled_start": _iso(_aware(appointment.scheduled_start)),
         "scheduled_end": _iso(_aware(appointment.scheduled_end)),
         "status": appointment.status.value,

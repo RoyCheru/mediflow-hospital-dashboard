@@ -1,9 +1,10 @@
-from datetime import date
+from datetime import date, datetime, time, timezone
 
 from flask import Blueprint, Response, request
+from sqlalchemy import or_
 
 from app.billing import service
-from app.billing.models import Invoice, Transaction
+from app.billing.models import CashReconciliation, Invoice, Refund, Transaction, VoidRequest
 from app.billing.schemas import (
     AllocationSchema,
     CashPaymentSchema,
@@ -17,7 +18,7 @@ from app.billing.schemas import (
 )
 from app.clinical_records.service import get_visit_or_404
 from app.common.decorators import auth_required, current_user
-from app.common.enums import Role
+from app.common.enums import PaymentMethod, RefundStatus, Role, TransactionStatus, VoidRequestStatus
 from app.common.errors import forbidden, not_found, unauthorized
 from app.common.idempotency import begin, complete
 from app.common.pagination import paginated
@@ -43,9 +44,39 @@ def create_invoice(visit_id):
     return created(service.serialize_invoice(invoice))
 
 
+def _date_bound(name, end_of_day=False):
+    value = request.args.get(name)
+    if not value:
+        return None
+    parsed = date.fromisoformat(value)
+    return datetime.combine(parsed, time.max if end_of_day else time.min, tzinfo=timezone.utc)
+
+
+def _sorted(query, default="-created_at"):
+    from app.common.errors import bad_request
+
+    raw = request.args.get("sort") or default
+    descending = raw.startswith("-")
+    field = raw.lstrip("-")
+    columns = {
+        "created_at": Invoice.created_at,
+        "issued_at": Invoice.issued_at,
+        "total_minor": Invoice.total_minor,
+        "balance_minor": Invoice.balance_minor,
+        "invoice_number": Invoice.invoice_number,
+        "status": Invoice.status,
+    }
+    if field not in columns:
+        raise bad_request("Invalid sort field")
+    column = columns[field]
+    return query.order_by(column.desc() if descending else column.asc())
+
+
 @bp.get("/invoices")
 @auth_required(Role.PATIENT, *BILLING)
 def list_invoices():
+    from app.patients.models import PatientProfile
+
     user = current_user()
     query = Invoice.query
     if user.role == Role.PATIENT:
@@ -59,7 +90,32 @@ def list_invoices():
         from uuid import UUID
 
         query = query.filter_by(patient_id=UUID(request.args["patient_id"]))
-    query = query.order_by(Invoice.created_at.desc())
+    if request.args.get("method"):
+        query = query.filter(Invoice.primary_method == PaymentMethod(request.args["method"]))
+    if request.args.get("department_id"):
+        from uuid import UUID
+
+        query = query.filter(Invoice.department_id == UUID(request.args["department_id"]))
+    if request.args.get("date_from"):
+        query = query.filter(Invoice.created_at >= _date_bound("date_from"))
+    if request.args.get("date_to"):
+        query = query.filter(Invoice.created_at <= _date_bound("date_to", end_of_day=True))
+    if request.args.get("q"):
+        like = f"%{request.args['q'].strip()}%"
+        query = query.filter(
+            or_(
+                Invoice.invoice_number.ilike(like),
+                Invoice.patient.has(
+                    or_(
+                        PatientProfile.first_name.ilike(like),
+                        PatientProfile.last_name.ilike(like),
+                        PatientProfile.patient_number.ilike(like),
+                        PatientProfile.phone.ilike(like),
+                    )
+                ),
+            )
+        )
+    query = _sorted(query)
     return ok(paginated(query, service.serialize_invoice))
 
 
@@ -199,6 +255,70 @@ def cash_reconciliation():
     data = CashReconciliationSchema().load(request.get_json(silent=True) or {})
     item = service.cash_reconciliation(data, current_user())
     return created(service.serialize_cash_reconciliation(item))
+
+
+@bp.get("/billing/void-requests")
+@auth_required(*BILLING)
+def list_void_requests():
+    query = VoidRequest.query
+    if request.args.get("status"):
+        query = query.filter(VoidRequest.status == VoidRequestStatus(request.args["status"]))
+    if request.args.get("invoice_id"):
+        from uuid import UUID
+
+        query = query.filter(VoidRequest.invoice_id == UUID(request.args["invoice_id"]))
+    query = query.order_by(VoidRequest.created_at.desc())
+    return ok(paginated(query, service.serialize_void_request))
+
+
+@bp.get("/billing/refunds")
+@auth_required(*BILLING)
+def list_refunds():
+    query = Refund.query
+    if request.args.get("status"):
+        query = query.filter(Refund.status == RefundStatus(request.args["status"]))
+    if request.args.get("invoice_id"):
+        from uuid import UUID
+
+        query = query.filter(Refund.invoice_id == UUID(request.args["invoice_id"]))
+    query = query.order_by(Refund.created_at.desc())
+    return ok(paginated(query, service.serialize_refund))
+
+
+@bp.get("/billing/transactions")
+@auth_required(*BILLING)
+def list_transactions():
+    query = Transaction.query
+    if request.args.get("status"):
+        query = query.filter(Transaction.status == TransactionStatus(request.args["status"]))
+    if request.args.get("method"):
+        query = query.filter(Transaction.method == PaymentMethod(request.args["method"]))
+    if request.args.get("invoice_id"):
+        from uuid import UUID
+
+        query = query.filter(Transaction.invoice_id == UUID(request.args["invoice_id"]))
+    if request.args.get("date_from"):
+        query = query.filter(Transaction.paid_at >= _date_bound("date_from"))
+    if request.args.get("date_to"):
+        query = query.filter(Transaction.paid_at <= _date_bound("date_to", end_of_day=True))
+    if request.args.get("q"):
+        like = f"%{request.args['q'].strip()}%"
+        query = query.filter(
+            or_(
+                Transaction.reference.ilike(like),
+                Transaction.provider_reference.ilike(like),
+                Transaction.invoice.has(Invoice.invoice_number.ilike(like)),
+            )
+        )
+    query = query.order_by(Transaction.created_at.desc())
+    return ok(paginated(query, service.serialize_transaction))
+
+
+@bp.get("/billing/cash-reconciliations")
+@auth_required(*BILLING)
+def list_cash_reconciliations():
+    query = CashReconciliation.query.order_by(CashReconciliation.business_date.desc())
+    return ok(paginated(query, service.serialize_cash_reconciliation))
 
 
 @bp.get("/invoices/<uuid:invoice_id>/pdf")

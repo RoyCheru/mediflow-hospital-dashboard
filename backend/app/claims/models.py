@@ -81,6 +81,8 @@ class Claim(BaseModel, TimestampMixin):
     resubmission_of_id = db.Column(db.Uuid(as_uuid=True), db.ForeignKey("claims.id"), nullable=True)
     created_by_id = db.Column(db.Uuid(as_uuid=True), db.ForeignKey("users.id"), nullable=True)
 
+    patient = db.relationship("PatientProfile", lazy="joined")
+    invoice = db.relationship("Invoice", lazy="joined")
     history = db.relationship(
         "ClaimStatusHistory",
         back_populates="claim",

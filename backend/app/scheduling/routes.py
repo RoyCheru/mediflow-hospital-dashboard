@@ -260,6 +260,16 @@ def list_appointments():
         query = query.filter_by(doctor_id=_doctor_for_user(user).id)
     if request.args.get("status"):
         query = query.filter(Appointment.status == AppointmentStatus(request.args["status"]))
+    if request.args.get("source"):
+        query = query.filter(Appointment.source == AppointmentSource(request.args["source"]))
+    if request.args.get("doctor_id"):
+        from uuid import UUID
+
+        query = query.filter(Appointment.doctor_id == UUID(request.args["doctor_id"]))
+    if request.args.get("department_id"):
+        from uuid import UUID
+
+        query = query.filter(Appointment.department_id == UUID(request.args["department_id"]))
     if request.args.get("date"):
         target = date.fromisoformat(request.args["date"])
         from datetime import datetime, time, timezone
@@ -268,7 +278,36 @@ def list_appointments():
         query = query.filter(Appointment.scheduled_start >= start).filter(
             Appointment.scheduled_start < start.replace(hour=23, minute=59, second=59)
         )
-    query = query.order_by(Appointment.scheduled_start.desc())
+    if request.args.get("q"):
+        from sqlalchemy import String, cast, or_
+
+        from app.patients.models import PatientProfile
+
+        like = f"%{request.args['q'].strip()}%"
+        query = query.filter(
+            or_(
+                Appointment.patient.has(
+                    or_(
+                        PatientProfile.first_name.ilike(like),
+                        PatientProfile.last_name.ilike(like),
+                        PatientProfile.patient_number.ilike(like),
+                        PatientProfile.phone.ilike(like),
+                    )
+                ),
+                Appointment.notes.ilike(like),
+                cast(Appointment.id, String).ilike(like),
+            )
+        )
+    sort = request.args.get("sort") or "-scheduled_start"
+    descending = sort.startswith("-")
+    sort_field = sort.lstrip("-")
+    sort_map = {
+        "scheduled_start": Appointment.scheduled_start,
+        "created_at": Appointment.created_at,
+        "status": Appointment.status,
+    }
+    column = sort_map.get(sort_field, Appointment.scheduled_start)
+    query = query.order_by(column.desc() if descending else column.asc())
     return ok(paginated(query, service.serialize_appointment))
 
 

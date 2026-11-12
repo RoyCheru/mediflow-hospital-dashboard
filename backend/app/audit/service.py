@@ -2,15 +2,19 @@ import csv
 import io
 from datetime import datetime, time, timezone
 
+from sqlalchemy import String, cast, or_
+
 from app.audit.models import AuditLog
 from app.common.audit import record_audit
 from app.extensions import db
 
 
 def serialize_audit(item):
+    actor = getattr(item, "actor", None)
     return {
         "id": str(item.id),
         "actor_user_id": str(item.actor_user_id) if item.actor_user_id else None,
+        "actor_name": actor.full_name if actor is not None else None,
         "actor_role": item.actor_role,
         "action": item.action,
         "entity_type": item.entity_type,
@@ -32,8 +36,30 @@ def filtered_query(
     end_date=None,
     entity_type=None,
     entity_id=None,
+    q=None,
+    sort="-created_at",
 ):
+    from app.auth.models import User
+
     query = AuditLog.query
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.filter(
+            or_(
+                AuditLog.action.ilike(like),
+                AuditLog.entity_type.ilike(like),
+                cast(AuditLog.entity_id, String).ilike(like),
+                AuditLog.request_id.ilike(like),
+                AuditLog.ip_address.ilike(like),
+                AuditLog.actor.has(
+                    or_(
+                        User.first_name.ilike(like),
+                        User.last_name.ilike(like),
+                        User.email.ilike(like),
+                    )
+                ),
+            )
+        )
     if actor_user_id:
         from uuid import UUID
 
@@ -56,7 +82,16 @@ def filtered_query(
         query = query.filter(
             AuditLog.created_at <= datetime.combine(end_date, time.max, tzinfo=timezone.utc)
         )
-    return query.order_by(AuditLog.created_at.desc())
+    descending = sort.startswith("-")
+    field = sort.lstrip("-")
+    columns = {
+        "created_at": AuditLog.created_at,
+        "action": AuditLog.action,
+        "actor_role": AuditLog.actor_role,
+        "entity_type": AuditLog.entity_type,
+    }
+    column = columns.get(field, AuditLog.created_at)
+    return query.order_by(column.desc() if descending else column.asc())
 
 
 def export_csv(items):

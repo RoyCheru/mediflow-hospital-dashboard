@@ -97,7 +97,8 @@ class DoctorProfile(BaseModel, TimestampMixin):
     bio = db.Column(db.Text, nullable=True)
     is_accepting_appointments = db.Column(db.Boolean, nullable=False, default=True)
 
-    department = db.relationship("Department")
+    user = db.relationship("User", lazy="joined")
+    department = db.relationship("Department", lazy="joined")
     availability_rules = db.relationship(
         "AvailabilityRule", back_populates="doctor", lazy="dynamic"
     )
@@ -209,6 +210,11 @@ class Appointment(BaseModel, TimestampMixin):
     cancelled_at = db.Column(db.DateTime(timezone=True), nullable=True)
     cancellation_reason = db.Column(db.Text, nullable=True)
     notes = db.Column(db.Text, nullable=True)
+
+    patient = db.relationship("PatientProfile", lazy="joined")
+    doctor = db.relationship("DoctorProfile", lazy="joined")
+    service = db.relationship("Service", lazy="joined")
+    department = db.relationship("Department", lazy="joined")
 
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())

@@ -56,11 +56,27 @@ def list_patients():
         from app.scheduling.models import DoctorProfile
 
         doctor = DoctorProfile.query.filter_by(user_id=user.id).first()
-    items = [
-        service.serialize_patient_brief(profile)
-        for profile in service.search_patients(query_text, doctor=doctor)
-    ]
-    return ok({"items": items, "meta": {"count": len(items)}})
+    query = service.search_patients(query_text, doctor=doctor, limit=None)
+    if request.args.get("sex"):
+        from app.common.enums import Sex
+
+        query = query.filter(service.PatientProfile.sex == Sex(request.args["sex"].upper()))
+    if request.args.get("is_active") in {"true", "false"}:
+        query = query.filter(
+            service.PatientProfile.is_active == (request.args["is_active"] == "true")
+        )
+    sort = request.args.get("sort") or "name"
+    sort_map = {
+        "name": (
+            service.PatientProfile.last_name.asc(),
+            service.PatientProfile.first_name.asc(),
+        ),
+        "-created_at": (service.PatientProfile.created_at.desc(),),
+        "created_at": (service.PatientProfile.created_at.asc(),),
+        "-patient_number": (service.PatientProfile.patient_number.desc(),),
+    }
+    query = query.order_by(*sort_map.get(sort, sort_map["name"]))
+    return ok(paginated(query, service.serialize_patient_brief))
 
 
 @bp.get("/patients/duplicates")

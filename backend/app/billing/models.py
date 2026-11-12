@@ -54,6 +54,9 @@ class Invoice(BaseModel, TimestampMixin):
     issued_at = db.Column(db.DateTime(timezone=True), nullable=True)
     due_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+    patient = db.relationship("PatientProfile", lazy="joined")
+    department = db.relationship("Department", lazy="joined")
+    visit = db.relationship("Visit", lazy="joined")
     lines = db.relationship(
         "InvoiceLine", back_populates="invoice", cascade="all, delete-orphan", lazy="selectin"
     )
@@ -210,6 +213,10 @@ class VoidRequest(BaseModel, TimestampMixin):
     decision_reason = db.Column(db.Text, nullable=True)
     decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+    invoice = db.relationship("Invoice", lazy="joined")
+    requested_by = db.relationship("User", foreign_keys=[requested_by_id], lazy="joined")
+    reviewed_by = db.relationship("User", foreign_keys=[reviewed_by_id], lazy="joined")
+
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())
         super().__init__(**kwargs)
@@ -240,6 +247,13 @@ class Refund(BaseModel, TimestampMixin):
         default=RefundStatus.PENDING,
     )
     decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    invoice = db.relationship("Invoice", lazy="joined")
+    original_transaction = db.relationship(
+        "Transaction", foreign_keys=[original_transaction_id], lazy="joined"
+    )
+    requested_by = db.relationship("User", foreign_keys=[requested_by_id], lazy="joined")
+    approved_by = db.relationship("User", foreign_keys=[approved_by_id], lazy="joined")
 
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())

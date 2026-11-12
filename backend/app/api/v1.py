@@ -1,5 +1,6 @@
 from flask import Blueprint
 
+from app.admin.routes import bp as admin_bp
 from app.ai_assistance.routes import bp as ai_bp
 from app.analytics.routes import bp as analytics_bp
 from app.audit.routes import bp as audit_bp
@@ -21,6 +22,7 @@ def health():
 
 for blueprint in (
     auth_bp,
+    admin_bp,
     patients_bp,
     scheduling_bp,
     clinical_bp,

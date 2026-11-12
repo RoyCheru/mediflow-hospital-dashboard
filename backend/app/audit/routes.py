@@ -24,6 +24,8 @@ def _filters():
         "end_date": date.fromisoformat(request.args["end_date"])
         if request.args.get("end_date")
         else None,
+        "q": request.args.get("q"),
+        "sort": request.args.get("sort") or "-created_at",
     }
 
 

@@ -221,7 +221,8 @@ def search_patients(query_text, doctor=None, limit=50):
             .subquery()
         )
         query = query.filter(PatientProfile.id.in_(db.select(patient_ids.c.patient_id)))
-    return query.order_by(PatientProfile.last_name, PatientProfile.first_name).limit(limit)
+    query = query.order_by(PatientProfile.last_name, PatientProfile.first_name)
+    return query if limit is None else query.limit(limit)
 
 
 def duplicate_candidates(first_name, last_name, date_of_birth, phone):
