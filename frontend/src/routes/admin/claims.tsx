@@ -45,7 +45,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/claims")({
+export const Route = createFileRoute("/admin/claims")({
   head: () => ({
     meta: [
       { title: "SHA Claims — MediFlow" },

@@ -45,7 +45,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/appointments")({
+export const Route = createFileRoute("/admin/appointments")({
   head: () => ({
     meta: [
       { title: "Appointments — MediFlow" },
@@ -361,7 +361,7 @@ function Page() {
                               title="Create visit"
                               onClick={() => {
                                 toast.success(`Visit created for ${a.patient}`);
-                                navigate({ to: "/visits" });
+                                navigate({ to: "/admin/visits" });
                               }}
                               className="grid h-8 w-8 place-items-center rounded-lg bg-primary/15 text-primary"
                             >
@@ -468,7 +468,7 @@ function Page() {
                     <button
                       onClick={() => {
                         toast.success(`Visit created for ${a.patient}`);
-                        navigate({ to: "/visits" });
+                        navigate({ to: "/admin/visits" });
                       }}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-3 py-1.5 text-xs font-semibold text-primary"
                     >

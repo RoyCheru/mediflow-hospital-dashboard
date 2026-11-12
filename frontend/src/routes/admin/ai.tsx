@@ -44,7 +44,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/ai")({
+export const Route = createFileRoute("/admin/ai")({
   head: () => ({
     meta: [
       { title: "AI Assistant — MediFlow" },

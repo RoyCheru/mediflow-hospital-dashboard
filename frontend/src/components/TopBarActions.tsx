@@ -28,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import type { TopBarLinks } from "@/lib/navigation";
 
 const initialAlerts = [
   {
@@ -35,7 +36,7 @@ const initialAlerts = [
     title: "SHA claim requires review",
     detail: "A rejected claim needs the finance team's attention.",
     time: "5 min ago",
-    to: "/claims",
+    to: "claims",
     read: false,
   },
   {
@@ -43,7 +44,7 @@ const initialAlerts = [
     title: "Cardiology appointment",
     detail: "An upcoming appointment is awaiting check-in.",
     time: "12 min ago",
-    to: "/appointments",
+    to: "appointments",
     read: false,
   },
   {
@@ -51,7 +52,7 @@ const initialAlerts = [
     title: "Maternity bed capacity",
     detail: "Review current bed availability in Maternity.",
     time: "25 min ago",
-    to: "/departments",
+    to: "departments",
     read: false,
   },
   {
@@ -59,7 +60,7 @@ const initialAlerts = [
     title: "Notification delivery failed",
     detail: "A WhatsApp reminder failed after 3 attempts.",
     time: "40 min ago",
-    to: "/notifications",
+    to: "notifications",
     read: false,
   },
   {
@@ -67,7 +68,7 @@ const initialAlerts = [
     title: "Cash variance detected",
     detail: "Yesterday's cash reconciliation is short by KSh 500.",
     time: "1 hr ago",
-    to: "/billing",
+    to: "billing",
     read: false,
   },
 ] as const;
@@ -96,7 +97,24 @@ const contacts = [
 ];
 type Message = { id: number; text: string; mine: boolean; time: string };
 
-export function TopBarActions() {
+export function TopBarActions({
+  roleLabel = "Administrator",
+  userName = "Samuel Ndegwa",
+  userEmail = "s.ndegwa@mediflow.co.ke",
+  links = {
+    claims: "/admin/claims",
+    appointments: "/admin/appointments",
+    departments: "/admin/departments",
+    notifications: "/admin/notifications",
+    billing: "/admin/billing",
+    settings: "/admin/settings",
+  },
+}: {
+  roleLabel?: string;
+  userName?: string;
+  userEmail?: string;
+  links?: TopBarLinks;
+}) {
   const [alerts, setAlerts] = useState(initialAlerts.map((a) => ({ ...a, read: Boolean(a.read) })));
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -110,8 +128,8 @@ export function TopBarActions() {
   const [unreadChats, setUnreadChats] = useState(contacts.map((c) => c.id));
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState({
-    name: "Samuel Ndegwa",
-    email: "s.ndegwa@mediflow.co.ke",
+    name: userName,
+    email: userEmail,
     phone: "+254 712 345 678",
   });
   const [profileDraft, setProfileDraft] = useState(profile);
@@ -314,7 +332,7 @@ export function TopBarActions() {
             {alerts.map((a) => (
               <Link
                 key={a.id}
-                to={a.to}
+                to={links[a.to]}
                 onClick={() => {
                   setAlerts((previous) =>
                     previous.map((item) => (item.id === a.id ? { ...item, read: true } : item)),
@@ -343,7 +361,7 @@ export function TopBarActions() {
           <div className="flex items-center justify-between border-t border-border px-4 py-2">
             <p className="text-xs text-muted-foreground">Sample hospital alerts</p>
             <Link
-              to="/notifications"
+              to={links.notifications}
               onClick={() => setAlertsOpen(false)}
               className="text-xs font-semibold text-primary hover:underline"
             >
@@ -365,7 +383,7 @@ export function TopBarActions() {
             </span>
             <span className="hidden max-w-40 text-left leading-tight md:block">
               <span className="block truncate text-sm font-semibold">{profile.name}</span>
-              <span className="block text-xs text-muted-foreground">Administrator</span>
+              <span className="block text-xs text-muted-foreground">{roleLabel}</span>
             </span>
             <ChevronDown className="hidden text-muted-foreground md:block" />
           </Button>
@@ -392,7 +410,7 @@ export function TopBarActions() {
             My profile
           </DropdownMenuItem>
           <DropdownMenuItem asChild>
-            <Link to="/settings">
+            <Link to={links.settings}>
               <Settings />
               Settings
             </Link>
@@ -403,7 +421,7 @@ export function TopBarActions() {
         <DialogContent className="max-h-[calc(100dvh-24px)] w-[calc(100%-24px)] overflow-y-auto rounded-xl bg-card">
           <DialogHeader>
             <DialogTitle>My profile</DialogTitle>
-            <DialogDescription>Administrator · MediFlow General Hospital</DialogDescription>
+            <DialogDescription>{roleLabel} · MediFlow General Hospital</DialogDescription>
           </DialogHeader>
           <form
             onSubmit={(e) => {

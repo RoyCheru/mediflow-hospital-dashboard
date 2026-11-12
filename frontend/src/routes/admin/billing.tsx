@@ -63,7 +63,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/billing")({
+export const Route = createFileRoute("/admin/billing")({
   head: () => ({
     meta: [
       { title: "Billing & Payments — MediFlow" },
@@ -1068,7 +1068,7 @@ function Page() {
                 Request void
               </button>
               <Link
-                to="/claims"
+                to="/admin/claims"
                 className="inline-flex items-center gap-1.5 rounded-lg bg-secondary px-3 py-1.5 text-xs font-semibold"
               >
                 <ShieldCheck className="h-3.5 w-3.5" />

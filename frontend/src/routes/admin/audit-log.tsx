@@ -30,7 +30,7 @@ import { audit, type AuditEntry } from "@/lib/data";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/audit-log")({
+export const Route = createFileRoute("/admin/audit-log")({
   head: () => ({
     meta: [
       { title: "Audit Log — MediFlow" },

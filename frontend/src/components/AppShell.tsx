@@ -1,64 +1,15 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
-import {
-  LayoutGrid,
-  CalendarDays,
-  Users,
-  Stethoscope,
-  Building2,
-  Receipt,
-  ScrollText,
-  BarChart3,
-  Settings,
-  Search,
-  Menu,
-  X,
-  LogOut,
-  HeartPulse,
-  ClipboardList,
-  ShieldCheck,
-  Bell,
-  Sparkles,
-} from "lucide-react";
+import { HeartPulse, LogOut, Menu, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TopBarActions } from "@/components/TopBarActions";
+import type { RoleNavigation } from "@/lib/navigation";
 
-const groups = [
-  {
-    label: "General",
-    items: [
-      { to: "/", label: "Dashboard", icon: LayoutGrid },
-      { to: "/appointments", label: "Appointments", icon: CalendarDays, badge: 6 },
-      { to: "/patients", label: "Patients", icon: Users },
-      { to: "/visits", label: "Clinical Visits", icon: ClipboardList },
-      { to: "/staff", label: "Doctors & Staff", icon: Stethoscope },
-      { to: "/departments", label: "Departments & Services", icon: Building2 },
-    ],
-  },
-  {
-    label: "Finance & Compliance",
-    items: [
-      { to: "/billing", label: "Billing & Payments", icon: Receipt, badge: 5 },
-      { to: "/claims", label: "SHA Claims", icon: ShieldCheck, badge: 4 },
-      { to: "/audit-log", label: "Audit Log", icon: ScrollText },
-      { to: "/analytics", label: "Analytics & Reports", icon: BarChart3 },
-    ],
-  },
-  {
-    label: "System",
-    items: [
-      { to: "/notifications", label: "Notifications", icon: Bell, badge: 3 },
-      { to: "/ai", label: "AI Assistant", icon: Sparkles },
-      { to: "/settings", label: "Settings", icon: Settings },
-    ],
-  },
-] as const;
-
-function Nav({ onNavigate }: { onNavigate?: () => void }) {
+function Nav({ nav, onNavigate }: { nav: RoleNavigation; onNavigate?: () => void }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   return (
     <div className="flex h-full flex-col px-5 py-6">
-      <Link to="/" className="flex items-center gap-2 px-1" onClick={onNavigate}>
+      <Link to={nav.home} className="flex items-center gap-2 px-1" onClick={onNavigate}>
         <span className="grid h-9 w-9 place-items-center rounded-xl bg-grad-teal text-on-gradient shadow-glow">
           <HeartPulse className="h-5 w-5" />
         </span>
@@ -67,18 +18,21 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
         </span>
       </Link>
       <nav className="mt-8 flex-1 space-y-6 overflow-y-auto">
-        {groups.map((g) => (
-          <div key={g.label}>
+        {nav.groups.map((group) => (
+          <div key={group.label}>
             <p className="mb-2 px-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {g.label}
+              {group.label}
             </p>
             <ul className="space-y-1">
-              {g.items.map((it) => {
-                const active = it.to === "/" ? path === "/" : path.startsWith(it.to);
+              {group.items.map((item) => {
+                const active =
+                  item.to === nav.home
+                    ? path === item.to || path === `${item.to}/`
+                    : path === item.to || path.startsWith(`${item.to}/`);
                 return (
-                  <li key={it.to}>
+                  <li key={item.to}>
                     <Link
-                      to={it.to}
+                      to={item.to}
                       onClick={onNavigate}
                       className={cn(
                         "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
@@ -87,16 +41,16 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
                           : "text-sidebar-foreground hover:bg-sidebar-accent",
                       )}
                     >
-                      <it.icon className="h-[18px] w-[18px] shrink-0" />
-                      <span className="flex-1">{it.label}</span>
-                      {"badge" in it && (
+                      <item.icon className="h-[18px] w-[18px] shrink-0" />
+                      <span className="flex-1">{item.label}</span>
+                      {"badge" in item && item.badge !== undefined && (
                         <span
                           className={cn(
                             "grid h-5 min-w-5 place-items-center rounded-full px-1 text-[11px] font-bold",
                             active ? "bg-primary-foreground text-primary" : "bg-cash text-ink",
                           )}
                         >
-                          {it.badge}
+                          {item.badge}
                         </span>
                       )}
                     </Link>
@@ -107,19 +61,22 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
       </nav>
-      <button className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground">
+      <Link
+        to="/auth/login"
+        className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+      >
         <LogOut className="h-[18px] w-[18px]" /> Log out
-      </button>
+      </Link>
     </div>
   );
 }
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({ nav, children }: { nav: RoleNavigation; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="flex min-h-screen w-full">
       <aside className="sticky top-0 hidden h-screen w-64 shrink-0 border-r border-sidebar-border bg-sidebar lg:block">
-        <Nav />
+        <Nav nav={nav} />
       </aside>
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden">
@@ -135,7 +92,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <X className="h-5 w-5" />
             </button>
-            <Nav onNavigate={() => setOpen(false)} />
+            <Nav nav={nav} onNavigate={() => setOpen(false)} />
           </aside>
         </div>
       )}
@@ -157,7 +114,12 @@ export function AppShell({ children }: { children: ReactNode }) {
               />
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
-              <TopBarActions />
+              <TopBarActions
+                roleLabel={nav.label}
+                links={nav.topBar}
+                userName={nav.user.name}
+                userEmail={nav.user.email}
+              />
             </div>
           </div>
         </header>

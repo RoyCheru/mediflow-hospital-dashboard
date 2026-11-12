@@ -48,7 +48,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/patients")({
+export const Route = createFileRoute("/admin/patients")({
   head: () => ({
     meta: [
       { title: "Patients — MediFlow" },
