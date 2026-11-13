@@ -387,6 +387,45 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
                     cashier or admin,
                 )
 
+    # Ensure the claims tracker covers every lifecycle state.
+    for offset, claim_status in enumerate(
+        [
+            ClaimStatus.SUBMITTED,
+            ClaimStatus.UNDER_REVIEW,
+            ClaimStatus.APPROVED,
+            ClaimStatus.REJECTED,
+            ClaimStatus.PAID,
+        ]
+    ):
+        patient = patients[1 + offset]
+        when = _month_date(1, day=8 + offset)
+        amount = 300000 + offset * 50000
+        invoice = _invoice(
+            patient,
+            departments["CAR"],
+            "Cardiology consultation and review",
+            amount,
+            PaymentMethod.SHA,
+            when,
+            status=InvoiceStatus.PAID if claim_status == ClaimStatus.PAID else InvoiceStatus.ISSUED,
+        )
+        _claim(
+            invoice,
+            patient,
+            amount,
+            claim_status,
+            [20, 35, 10, 45, 5][offset],
+            reception or admin,
+        )
+        if claim_status == ClaimStatus.PAID:
+            _transaction(
+                invoice,
+                PaymentMethod.SHA,
+                amount,
+                when + timedelta(days=2),
+                cashier or admin,
+            )
+
     # Pending approvals and cash reconciliation.
     pending_invoice = (
         Invoice.query.filter(Invoice.status != InvoiceStatus.VOIDED)
