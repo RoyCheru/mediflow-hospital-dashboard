@@ -1,34 +1,30 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Download, Eye, FileText, Monitor, Search, ShieldCheck } from "lucide-react";
 import {
-  Download,
-  Search,
-  Monitor,
-  Eye,
-  ShieldCheck,
-  ScrollText,
-  FileText,
-  Clock,
-} from "lucide-react";
-import {
-  auditColor,
   Badge,
-  EmptyState,
   DetailRow,
+  EmptyState,
   FilterSelect,
   Modal,
   PageHeader,
   Panel,
   StatCard,
-  th,
+  inputCls,
   td,
+  th,
   tableWrap,
-  theadRow,
   tbodyRow,
+  theadRow,
 } from "@/components/kit";
-import { audit, type AuditEntry } from "@/lib/data";
+import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { Button } from "@/components/ui/button";
+import { auditKeys, exportAuditCsv, listAuditEvents } from "@/lib/api/audit";
+import { formatDateTime, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { AuditEntry } from "@/types/api";
 
 export const Route = createFileRoute("/admin/audit-log")({
   head: () => ({
@@ -41,7 +37,7 @@ export const Route = createFileRoute("/admin/audit-log")({
       { property: "og:title", content: "Audit Log — MediFlow" },
       {
         property: "og:description",
-        content: "Searchable compliance trail of every void, edit, approval, export and AI action.",
+        content: "Searchable compliance trail of every sensitive action.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -50,77 +46,58 @@ export const Route = createFileRoute("/admin/audit-log")({
   component: AuditLog,
 });
 
-const dateOf = (ts: string) => ts.split(", ")[0] ?? ts;
+const roles = ["ADMIN", "DOCTOR", "RECEPTIONIST", "CASHIER", "PATIENT"];
 
 function AuditLog() {
   const [q, setQ] = useState("");
-  const [user, setUser] = useState("All");
-  const [type, setType] = useState("All");
   const [role, setRole] = useState("All");
-  const [date, setDate] = useState("All");
-  const [entity, setEntity] = useState("All");
+  const [action, setAction] = useState("");
+  const [entity, setEntity] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<AuditEntry | null>(null);
 
-  const users = [...new Set(audit.map((a) => a.user))];
-  const roles = [...new Set(audit.map((a) => a.role))];
-  const dates = [...new Set(audit.map((a) => dateOf(a.ts)))];
-  const types = [...new Set(audit.map((a) => a.type))];
-  const entities = [...new Set(audit.map((a) => a.entityType))];
-
-  const rows = useMemo(
-    () =>
-      audit.filter(
-        (a) =>
-          (user === "All" || a.user === user) &&
-          (role === "All" || a.role === role) &&
-          (date === "All" || dateOf(a.ts) === date) &&
-          (type === "All" || a.type === type) &&
-          (entity === "All" || a.entityType === entity) &&
-          `${a.action} ${a.record} ${a.user} ${a.requestId} ${a.entityId}`
-            .toLowerCase()
-            .includes(q.toLowerCase()),
-      ),
-    [q, user, type, role, date, entity],
-  );
-
-  const sensitive = audit.filter(
-    (a) => a.type === "void" || a.type === "delete" || a.type === "approve",
-  ).length;
-
-  const exportCsv = () => {
-    const head = [
-      "Timestamp",
-      "User",
-      "Role",
-      "Action Type",
-      "Action",
-      "Entity",
-      "Record",
-      "Request ID",
-      "IP/Device",
-    ];
-    const lines = [
-      head,
-      ...rows.map((a) => [
-        a.ts,
-        a.user,
-        a.role,
-        auditColor[a.type].label,
-        a.action,
-        a.entityType,
-        a.record,
-        a.requestId,
-        a.device,
-      ]),
-    ].map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(","));
-    const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }));
-    const el = document.createElement("a");
-    el.href = url;
-    el.download = "mediflow-audit-log.csv";
-    el.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${rows.length} audit events`);
+  const params = {
+    page,
+    page_size: 15,
+    sort: "-created_at",
+    q: q || undefined,
+    role: role === "All" ? undefined : role,
+    action: action || undefined,
+    entity_type: entity || undefined,
+    start_date: startDate || undefined,
+    end_date: endDate || undefined,
   };
+  const auditQuery = useQuery({
+    queryKey: auditKeys.list(params),
+    queryFn: () => listAuditEvents(params),
+    staleTime: 20_000,
+  });
+
+  const rows = auditQuery.data?.items ?? [];
+  const sensitive = rows.filter((item) => /void|delete|approve|reject/i.test(item.action)).length;
+  const exports = rows.filter((item) => /export/i.test(item.action)).length;
+
+  const resetPage = (fn: () => void) => {
+    fn();
+    setPage(1);
+  };
+
+  async function exportCsv() {
+    try {
+      const blob = await exportAuditCsv(params);
+      const url = URL.createObjectURL(blob);
+      const element = document.createElement("a");
+      element.href = url;
+      element.download = "mediflow-audit-log.csv";
+      element.click();
+      URL.revokeObjectURL(url);
+      toast.success("Audit log exported");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to export the audit log");
+    }
+  }
 
   return (
     <div>
@@ -128,216 +105,226 @@ function AuditLog() {
         title="Audit Log"
         subtitle="Every sensitive action, who did it, and from where."
         actions={
-          <button
-            onClick={exportCsv}
-            className="inline-flex h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-glow hover:opacity-90"
-          >
-            <Download className="h-4 w-4" />
-            Export CSV
-          </button>
+          <Button onClick={() => void exportCsv()}>
+            <Download /> Export CSV
+          </Button>
         }
       />
+
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           tone="teal"
-          icon={ScrollText}
-          label="Audit Events"
-          value={String(audit.length)}
-          change={8.2}
+          icon={FileText}
+          label="Audit events"
+          value={String(auditQuery.data?.meta.total ?? 0)}
+          change={null}
         />
         <StatCard
           tone="yellow"
-          icon={Clock}
-          label="Today"
-          value={String(audit.filter((a) => dateOf(a.ts) === "29 Oct 2026").length)}
-          change={3.4}
+          icon={Monitor}
+          label="On this page"
+          value={String(rows.length)}
+          change={null}
         />
         <StatCard
           tone="pink"
           icon={ShieldCheck}
-          label="Sensitive Actions"
+          label="Sensitive (page)"
           value={String(sensitive)}
-          change={-1.7}
+          change={null}
         />
         <StatCard
           tone="purple"
-          icon={FileText}
-          label="Exports"
-          value={String(audit.filter((a) => a.type === "export").length)}
-          change={2.1}
+          icon={Download}
+          label="Exports (page)"
+          value={String(exports)}
+          change={null}
         />
       </div>
-      <div className="mb-6 flex flex-wrap gap-2">
-        {Object.values(auditColor).map((c) => (
-          <span
-            key={c.label}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold",
-              c.bg,
-              c.text,
-            )}
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-current" />
-            {c.label}
-          </span>
-        ))}
-      </div>
+
       <Panel>
-        <div className="flex flex-col gap-3 xl:flex-row">
-          <div className="relative flex-1">
+        <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
+          <div className="relative xl:col-span-2">
             <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search actions, record IDs or request IDs"
-              className="h-10 w-full rounded-xl border border-input bg-transparent pl-10 pr-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              onChange={(event) => resetPage(() => setQ(event.target.value))}
+              placeholder="Search actor, action, entity or request ID"
+              className={cn(inputCls, "pl-10")}
             />
           </div>
-          <div className="flex flex-wrap gap-2">
-            <FilterSelect label="User" value={user} onChange={setUser} options={users} />
-            <FilterSelect label="Action" value={type} onChange={setType} options={types} />
-            <FilterSelect label="Role" value={role} onChange={setRole} options={roles} />
-            <FilterSelect label="Entity" value={entity} onChange={setEntity} options={entities} />
-            <FilterSelect label="Date" value={date} onChange={setDate} options={dates} />
-          </div>
+          <FilterSelect
+            label="Role"
+            value={role}
+            onChange={(value) => resetPage(() => setRole(value))}
+            options={roles}
+          />
+          <input
+            value={action}
+            onChange={(event) => resetPage(() => setAction(event.target.value))}
+            placeholder="Filter action e.g. invoice.create"
+            className={inputCls}
+          />
+          <input
+            value={entity}
+            onChange={(event) => resetPage(() => setEntity(event.target.value))}
+            placeholder="Filter entity type"
+            className={inputCls}
+          />
+          <label className="block text-sm">
+            <span className="mb-1.5 block text-muted-foreground">From</span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(event) => resetPage(() => setStartDate(event.target.value))}
+              className={inputCls}
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1.5 block text-muted-foreground">To</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(event) => resetPage(() => setEndDate(event.target.value))}
+              className={inputCls}
+            />
+          </label>
         </div>
+
         <div className={cn(tableWrap, "mt-4")}>
           <table className="w-full">
             <thead>
               <tr className={theadRow}>
-                {[
-                  "Timestamp",
-                  "Actor",
-                  "Action",
-                  "Entity",
-                  "Record",
-                  "Request",
-                  "IP / Device",
-                  "Details",
-                ].map((h) => (
-                  <th key={h} className={th}>
-                    {h}
-                  </th>
-                ))}
+                <th className={th}>Timestamp</th>
+                <th className={th}>Actor</th>
+                <th className={th}>Role</th>
+                <th className={th}>Action</th>
+                <th className={th}>Entity</th>
+                <th className={th}>Entity ID</th>
+                <th className={th}>IP / device</th>
+                <th className={th}>Action</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((a) => {
-                const c = auditColor[a.type];
-                return (
-                  <tr key={a.id} className={tbodyRow}>
-                    <td className={cn(td, "text-muted-foreground")}>{a.ts}</td>
-                    <td className={td}>
-                      <div className="flex items-center gap-2.5">
-                        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-secondary text-xs font-bold">
-                          {a.user
-                            .replace(/^(Dr\.|Nurse) /, "")
-                            .split(" ")
-                            .map((w) => w[0])
-                            .join("")}
-                        </span>
-                        <div>
-                          <p className="font-medium">{a.user}</p>
-                          <p className="text-xs text-muted-foreground">{a.role}</p>
-                        </div>
-                      </div>
+              {auditQuery.isLoading ? (
+                <tr>
+                  <td colSpan={8} className="p-0">
+                    <LoadingRows rows={5} className="p-3" />
+                  </td>
+                </tr>
+              ) : auditQuery.error ? (
+                <tr>
+                  <td colSpan={8} className="p-3">
+                    <ErrorBlock
+                      error={auditQuery.error}
+                      onRetry={() => void auditQuery.refetch()}
+                    />
+                  </td>
+                </tr>
+              ) : rows.length === 0 ? (
+                <EmptyState cols={8} message="No audit events match these filters." />
+              ) : (
+                rows.map((entry) => (
+                  <tr key={entry.id} className={tbodyRow}>
+                    <td className={cn(td, "text-muted-foreground")}>
+                      {formatDateTime(entry.created_at)}
                     </td>
+                    <td className={cn(td, "font-medium")}>{entry.actor_name ?? "System"}</td>
                     <td className={td}>
-                      <span
-                        className={cn(
-                          "mr-2 inline-flex rounded-md px-2 py-0.5 text-[11px] font-bold uppercase",
-                          c.bg,
-                          c.text,
-                        )}
-                      >
-                        {c.label}
-                      </span>
-                      {a.action}
+                      {entry.actor_role ? (
+                        <Badge tone="muted">{titleize(entry.actor_role)}</Badge>
+                      ) : (
+                        "—"
+                      )}
                     </td>
-                    <td className={td}>
-                      <Badge tone="info">{a.entityType}</Badge>
-                    </td>
-                    <td className={cn(td, "font-mono text-xs")}>{a.record}</td>
+                    <td className={td}>{titleize(entry.action)}</td>
+                    <td className={td}>{titleize(entry.entity_type)}</td>
                     <td className={cn(td, "font-mono text-xs text-muted-foreground")}>
-                      {a.requestId}
+                      {entry.entity_id?.slice(0, 12) ?? "—"}
                     </td>
-                    <td className={cn(td, "text-xs text-muted-foreground")}>
-                      <Monitor className="mr-1.5 inline h-3.5 w-3.5" />
-                      {a.device}
+                    <td className={cn(td, "max-w-64 truncate text-muted-foreground")}>
+                      {entry.ip_address ?? entry.user_agent ?? "—"}
                     </td>
                     <td className={td}>
-                      <button
-                        onClick={() => setSelected(a)}
-                        aria-label="View audit details"
-                        className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </button>
+                      <Button size="sm" variant="outline" onClick={() => setSelected(entry)}>
+                        <Eye /> View
+                      </Button>
                     </td>
                   </tr>
-                );
-              })}
-              {rows.length === 0 && (
-                <EmptyState cols={8} message="No log entries match these filters." />
+                ))
               )}
             </tbody>
           </table>
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Showing {rows.length} of {audit.length} entries · Logs retained for 7 years · Immutable
-          audit trail
-        </p>
+
+        <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+          <span>
+            Page {page} of {Math.max(auditQuery.data?.meta.pages ?? 1, 1)} ·{" "}
+            {auditQuery.data?.meta.total ?? 0} events
+          </span>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+              disabled={page <= 1}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((value) => value + 1)}
+              disabled={page >= (auditQuery.data?.meta.pages ?? 1)}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
       </Panel>
 
       <Modal
-        open={!!selected}
+        open={Boolean(selected)}
         onClose={() => setSelected(null)}
+        title="Audit event"
+        subtitle={selected ? formatDateTime(selected.created_at) : undefined}
         wide
-        title={selected ? `Audit ${selected.id}` : "Audit event"}
-        subtitle={selected ? `${selected.action} · ${selected.ts}` : undefined}
         footer={
-          <button
-            onClick={() => setSelected(null)}
-            className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-          >
+          <Button variant="outline" onClick={() => setSelected(null)}>
             Close
-          </button>
+          </Button>
         }
       >
         {selected && (
           <div className="space-y-4">
-            <div className="grid gap-2 sm:grid-cols-3">
-              <DetailRow label="Actor" value={`${selected.user} (${selected.role})`} />
-              <DetailRow label="Action type" value={auditColor[selected.type].label} />
-              <DetailRow label="Entity" value={`${selected.entityType} · ${selected.entityId}`} />
-              <DetailRow label="Record" value={selected.record} />
-              <DetailRow label="Request ID" value={selected.requestId} />
-              <DetailRow label="IP address" value={selected.ip} />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <DetailRow label="Actor" value={selected.actor_name ?? "System"} />
+              <DetailRow label="Role" value={titleize(selected.actor_role)} />
+              <DetailRow label="Action" value={titleize(selected.action)} />
+              <DetailRow label="Entity" value={titleize(selected.entity_type)} />
+              <DetailRow label="Entity ID" value={selected.entity_id ?? "—"} />
+              <DetailRow label="Request ID" value={selected.request_id ?? "—"} />
+              <DetailRow label="IP address" value={selected.ip_address ?? "—"} />
+              <DetailRow label="User agent" value={selected.user_agent ?? "—"} />
             </div>
-            <div className="rounded-xl bg-secondary p-3">
-              <p className="text-xs text-muted-foreground">Device</p>
-              <p className="mt-1 text-sm font-semibold">{selected.device}</p>
-            </div>
-            {(selected.before || selected.after) && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Before
-                  </p>
-                  <pre className="overflow-x-auto rounded-xl bg-secondary p-3 text-xs">
-                    {selected.before ? JSON.stringify(selected.before, null, 2) : "—"}
-                  </pre>
-                </div>
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    After
-                  </p>
-                  <pre className="overflow-x-auto rounded-xl bg-secondary p-3 text-xs">
-                    {selected.after ? JSON.stringify(selected.after, null, 2) : "—"}
-                  </pre>
-                </div>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Before
+                </p>
+                <pre className="max-h-64 overflow-auto rounded-xl bg-secondary/60 p-3 text-xs">
+                  {selected.before ? JSON.stringify(selected.before, null, 2) : "—"}
+                </pre>
               </div>
-            )}
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  After
+                </p>
+                <pre className="max-h-64 overflow-auto rounded-xl bg-secondary/60 p-3 text-xs">
+                  {selected.after ? JSON.stringify(selected.after, null, 2) : "—"}
+                </pre>
+              </div>
+            </div>
           </div>
         )}
       </Modal>

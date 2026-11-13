@@ -1,16 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ShieldCheck,
-  FileClock,
-  BadgeCheck,
-  XCircle,
-  Eye,
-  Plus,
-  RefreshCw,
-  Activity,
-  CheckCircle2,
   AlertTriangle,
+  CheckCircle2,
+  FileClock,
+  RefreshCw,
+  ShieldCheck,
+  XCircle,
 } from "lucide-react";
 import {
   Badge,
@@ -24,39 +21,36 @@ import {
   StatCard,
   inputCls,
   textareaCls,
-  th,
   td,
+  th,
   tableWrap,
-  theadRow,
   tbodyRow,
+  theadRow,
 } from "@/components/kit";
+import { EmptyBlock, ErrorBlock, LoadingCards, LoadingRows } from "@/components/DataState";
+import { Button } from "@/components/ui/button";
 import {
-  claims as seedClaims,
-  departments,
-  eligibilityChecks as seedChecks,
-  invoices,
-  ksh,
-  titleize,
-  type Claim,
-  type ClaimStatus,
-  type EligibilityCheck,
-  type EligibilityStatus,
-} from "@/lib/data";
+  claimKeys,
+  getClaim,
+  getClaimAging,
+  listClaims,
+  resubmitClaim,
+  updateClaimStatus,
+} from "@/lib/api/claims";
+import { formatDateTime, formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { Claim, ClaimStatus } from "@/types/api";
 
 export const Route = createFileRoute("/admin/claims")({
   head: () => ({
     meta: [
       { title: "SHA Claims — MediFlow" },
-      {
-        name: "description",
-        content: "SHA eligibility checks, claim submission, aging and resubmissions.",
-      },
+      { name: "description", content: "SHA eligibility, claims tracker and aging follow-up." },
       { property: "og:title", content: "SHA Claims — MediFlow" },
       {
         property: "og:description",
-        content: "SHA eligibility checks, claim submission, aging and resubmissions.",
+        content: "SHA eligibility, claims tracker and aging follow-up.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -65,8 +59,8 @@ export const Route = createFileRoute("/admin/claims")({
   component: Page,
 });
 
-type Tab = "claims" | "eligibility" | "aging";
-const statuses: ClaimStatus[] = [
+type Tab = "claims" | "aging";
+const statuses = [
   "DRAFT",
   "SUBMITTED",
   "UNDER_REVIEW",
@@ -75,640 +69,549 @@ const statuses: ClaimStatus[] = [
   "PAID",
   "CANCELLED",
 ];
-const eligibilityStatuses: EligibilityStatus[] = [
-  "ACTIVE",
-  "INACTIVE",
-  "LIMIT_EXHAUSTED",
-  "UNKNOWN",
+const nextStatuses: Partial<Record<ClaimStatus, ClaimStatus[]>> = {
+  SUBMITTED: ["UNDER_REVIEW", "APPROVED", "REJECTED", "CANCELLED"],
+  UNDER_REVIEW: ["APPROVED", "REJECTED", "CANCELLED"],
+  APPROVED: ["PAID"],
+};
+
+const agingBucketRows: {
+  key: string;
+  label: string;
+  tone: "success" | "warning" | "danger";
+}[] = [
+  { key: "current", label: "0–13 days", tone: "success" },
+  { key: "14_days", label: "14–29 days", tone: "warning" },
+  { key: "30_days", label: "30–59 days", tone: "warning" },
+  { key: "60_days", label: "60+ days", tone: "danger" },
 ];
 
 function Page() {
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("claims");
-  const [claims, setClaims] = useState<Claim[]>(seedClaims);
-  const [checks, setChecks] = useState<EligibilityCheck[]>(seedChecks);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("All");
-  const [dept, setDept] = useState("All");
-  const [modal, setModal] = useState<null | "view" | "status" | "create" | "eligibility">(null);
-  const [targetId, setTargetId] = useState<string | null>(null);
+  const [bucket, setBucket] = useState("All");
+  const [page, setPage] = useState(1);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [statusTarget, setStatusTarget] = useState<Claim | null>(null);
   const [statusForm, setStatusForm] = useState({
     status: "UNDER_REVIEW" as ClaimStatus,
+    approved_amount: "",
+    rejection_reason: "",
     note: "",
-    approved: "",
   });
-  const [claimForm, setClaimForm] = useState({
-    invoice: invoices[0]?.number ?? "",
-    claimed: String(invoices[0]?.total ?? 0),
+  const [resubmitTarget, setResubmitTarget] = useState<Claim | null>(null);
+  const [resubmitForm, setResubmitForm] = useState({ amount: "", note: "" });
+
+  const params = {
+    page,
+    page_size: 10,
+    q: q || undefined,
+    status: status === "All" ? undefined : status,
+    aging_bucket: bucket === "All" ? undefined : bucket,
+  };
+  const claimsQuery = useQuery({
+    queryKey: claimKeys.list(params),
+    queryFn: () => listClaims(params),
+    staleTime: 30_000,
   });
-  const [eligibilityForm, setEligibilityForm] = useState({
-    invoice: invoices[0]?.number ?? "",
-    status: "ACTIVE" as EligibilityStatus,
-    limit: "500000",
-    consumed: "0",
+  const agingQuery = useQuery({
+    queryKey: claimKeys.aging,
+    queryFn: getClaimAging,
+    staleTime: 60_000,
+  });
+  const detailQuery = useQuery({
+    queryKey: claimKeys.detail(selectedId ?? ""),
+    queryFn: () => getClaim(selectedId as string),
+    enabled: Boolean(selectedId),
   });
 
-  const current = claims.find((c) => c.id === targetId);
-  const list = claims.filter(
-    (c) =>
-      (status === "All" || c.status === status) &&
-      (dept === "All" || c.dept === dept) &&
-      `${c.id} ${c.patient} ${c.invoice}`.toLowerCase().includes(q.toLowerCase()),
-  );
-  const openClaims = claims.filter((c) => !["PAID", "CANCELLED"].includes(c.status));
-  const totalClaimed = claims.reduce((a, c) => a + c.claimed, 0);
-  const totalApproved = claims.reduce((a, c) => a + (c.approved ?? 0), 0);
-  const rejected = claims.filter((c) => c.status === "REJECTED").length;
-  const aging = claims
-    .filter((c) => c.days > 0 && !["PAID", "CANCELLED"].includes(c.status))
-    .sort((a, b) => b.days - a.days);
-  const buckets = [
-    { label: "0–7 days", min: 0, max: 7 },
-    { label: "8–14 days", min: 8, max: 14 },
-    { label: "15–21 days", min: 15, max: 21 },
-    { label: "22+ days", min: 22, max: 9999 },
-  ].map((b) => ({
-    ...b,
-    count: aging.filter((c) => c.days >= b.min && c.days <= b.max).length,
-    amount: aging
-      .filter((c) => c.days >= b.min && c.days <= b.max)
-      .reduce((a, c) => a + c.claimed, 0),
-  }));
+  const invalidateClaims = () => queryClient.invalidateQueries({ queryKey: claimKeys.all });
 
-  const patch = (id: string, fn: (c: Claim) => Claim) =>
-    setClaims((list) => list.map((c) => (c.id === id ? fn(c) : c)));
+  const statusMutation = useMutation({
+    mutationFn: async () => {
+      if (!statusTarget) throw new Error("No claim selected");
+      return updateClaimStatus(statusTarget.id, {
+        status: statusForm.status,
+        approved_amount_minor: statusForm.approved_amount
+          ? Math.round(Number(statusForm.approved_amount) * 100)
+          : undefined,
+        rejection_reason: statusForm.rejection_reason || undefined,
+        note: statusForm.note || undefined,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Claim status updated");
+      setStatusTarget(null);
+      void invalidateClaims();
+      void queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
-  const openStatus = (claim: Claim) => {
-    setTargetId(claim.id);
-    setStatusForm({
-      status: claim.status,
-      note: "",
-      approved: claim.approved ? String(claim.approved) : "",
-    });
-    setModal("status");
-  };
+  const resubmitMutation = useMutation({
+    mutationFn: async () => {
+      if (!resubmitTarget) throw new Error("No claim selected");
+      return resubmitClaim(resubmitTarget.id, {
+        amount_minor: resubmitForm.amount
+          ? Math.round(Number(resubmitForm.amount) * 100)
+          : undefined,
+        note: resubmitForm.note || undefined,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Claim resubmitted");
+      setResubmitTarget(null);
+      setResubmitForm({ amount: "", note: "" });
+      void invalidateClaims();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
-  const saveStatus = () => {
-    if (!current) return;
-    const next = statusForm.status;
-    patch(current.id, (c) => ({
-      ...c,
-      status: next,
-      ...(next === "APPROVED" ? { approved: Number(statusForm.approved) || c.claimed } : {}),
-      ...(next === "REJECTED"
-        ? { rejectionReason: statusForm.note || "Rejected by reviewer", days: 0 }
-        : {}),
-      ...(next === "PAID" ? { paid: "29 Oct 2026", days: 0 } : {}),
-      history: [
-        ...c.history,
-        {
-          from: c.status,
-          to: next,
-          note: statusForm.note || `Status changed to ${titleize(next)}`,
-          at: "29 Oct 2026",
-        },
-      ],
-    }));
-    setModal("view");
-    toast.success(`Claim ${current.id} moved to ${titleize(next)}`);
-  };
+  const aging = agingQuery.data;
+  const byStatus = aging?.by_status ?? {};
+  const pending = (byStatus["SUBMITTED"] ?? 0) + (byStatus["UNDER_REVIEW"] ?? 0);
+  const approved = (byStatus["APPROVED"] ?? 0) + (byStatus["PAID"] ?? 0);
+  const rejected = byStatus["REJECTED"] ?? 0;
 
-  const resubmit = (claim: Claim) => {
-    patch(claim.id, (c) => {
-      const { rejectionReason: _rejectionReason, ...rest } = c;
-      return {
-        ...rest,
-        status: "SUBMITTED",
-        days: 0,
-        history: [
-          ...c.history,
-          {
-            from: c.status,
-            to: "SUBMITTED",
-            note: "Resubmitted after correction",
-            at: "29 Oct 2026",
-          },
-        ],
-      };
-    });
-    toast.success(`Claim ${claim.id} resubmitted to SHA`);
-  };
-
-  const createClaim = () => {
-    const invoice = invoices.find((i) => i.number === claimForm.invoice);
-    if (!invoice) {
-      toast.error("Select an invoice");
-      return;
-    }
-    const next: Claim = {
-      id: `SHA-${342 + claims.length}`,
-      invoice: invoice.number,
-      invoiceId: invoice.id,
-      patient: invoice.patient,
-      dept: invoice.dept,
-      claimed: Number(claimForm.claimed) || invoice.total,
-      status: "SUBMITTED",
-      submitted: "29 Oct 2026",
-      days: 0,
-      externalRef: `SHA-CLM-${342 + claims.length}`,
-      history: [{ to: "SUBMITTED", note: "Claim created and submitted", at: "29 Oct 2026" }],
-    };
-    setClaims((c) => [next, ...c]);
-    setModal(null);
-    toast.success(`Claim ${next.id} submitted`);
-  };
-
-  const runEligibility = () => {
-    const invoice = invoices.find((i) => i.number === eligibilityForm.invoice);
-    if (!invoice) {
-      toast.error("Select an invoice");
-      return;
-    }
-    const next: EligibilityCheck = {
-      id: `el-${2202 + checks.length}`,
-      patient: invoice.patient,
-      invoice: invoice.number,
-      status: eligibilityForm.status,
-      limit: Number(eligibilityForm.limit) || 0,
-      consumed: Number(eligibilityForm.consumed) || 0,
-      provider: "simulated",
-      reference: `SHA-EL-${2202 + checks.length}`,
-      checkedAt: "29 Oct 2026, 17:10",
-    };
-    setChecks((c) => [next, ...c]);
-    setModal(null);
-    toast.success(`Eligibility: ${titleize(next.status)}`);
+  const resetPage = (fn: () => void) => {
+    fn();
+    setPage(1);
   };
 
   return (
     <div>
       <PageHeader
         title="SHA Claims"
-        subtitle="Eligibility checks, claim submission, aging and resubmissions."
-        actions={
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => {
-                setEligibilityForm({
-                  invoice: invoices[0]?.number ?? "",
-                  status: "ACTIVE",
-                  limit: "500000",
-                  consumed: "0",
-                });
-                setModal("eligibility");
-              }}
-              className="inline-flex items-center gap-2 rounded-xl border border-primary px-4 py-2.5 text-sm font-semibold text-primary hover:bg-primary/10"
-            >
-              <Activity className="h-4 w-4" />
-              Check eligibility
-            </button>
-            <button
-              onClick={() => {
-                setClaimForm({
-                  invoice: invoices[0]?.number ?? "",
-                  claimed: String(invoices[0]?.total ?? 0),
-                });
-                setModal("create");
-              }}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              <Plus className="h-4 w-4" />
-              Create claim
-            </button>
-          </div>
-        }
+        subtitle="Claims created from live invoices, with aging and status history."
       />
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          tone="teal"
-          icon={ShieldCheck}
-          label="Open Claims"
-          value={String(openClaims.length)}
-          change={4.6}
-        />
-        <StatCard
-          tone="yellow"
-          icon={FileClock}
-          label="Claimed Value"
-          value={ksh(totalClaimed)}
-          change={12.3}
-        />
-        <StatCard
-          tone="pink"
-          icon={BadgeCheck}
-          label="Approved Value"
-          value={ksh(totalApproved)}
-          change={9.1}
-        />
-        <StatCard
-          tone="purple"
-          icon={XCircle}
-          label="Rejected"
-          value={String(rejected)}
-          change={-3.4}
-        />
+
+      {agingQuery.isLoading ? (
+        <div className="mb-6">
+          <LoadingCards />
+        </div>
+      ) : agingQuery.error ? (
+        <div className="mb-6">
+          <ErrorBlock error={agingQuery.error} onRetry={() => void agingQuery.refetch()} />
+        </div>
+      ) : (
+        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            tone="teal"
+            icon={ShieldCheck}
+            label="Total claims"
+            value={String(aging?.total_claims ?? 0)}
+            change={null}
+          />
+          <StatCard
+            tone="yellow"
+            icon={FileClock}
+            label="Pending decision"
+            value={String(pending)}
+            change={null}
+          />
+          <StatCard
+            tone="pink"
+            icon={CheckCircle2}
+            label="Approved / paid"
+            value={String(approved)}
+            change={null}
+          />
+          <StatCard
+            tone="purple"
+            icon={XCircle}
+            label="Rejected"
+            value={String(rejected)}
+            change={null}
+          />
+        </div>
+      )}
+
+      <div className="mb-6 flex flex-wrap gap-2">
+        {(["claims", "aging"] as const).map((value) => (
+          <button
+            key={value}
+            onClick={() => setTab(value)}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-colors",
+              tab === value
+                ? "bg-primary text-primary-foreground shadow-glow"
+                : "bg-secondary text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {value === "claims" ? (
+              <ShieldCheck className="h-4 w-4" />
+            ) : (
+              <FileClock className="h-4 w-4" />
+            )}
+            {value === "claims" ? "Claims tracker" : "Aging"}
+          </button>
+        ))}
       </div>
 
-      <Panel>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex overflow-x-auto rounded-xl bg-secondary p-1">
-            {(
-              [
-                ["claims", "Claims"],
-                ["eligibility", "Eligibility checks"],
-                ["aging", "Aging"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                className={cn(
-                  "whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition",
-                  tab === id
-                    ? "bg-primary text-primary-foreground shadow-glow"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {tab !== "aging" && (
+      {tab === "claims" && (
+        <Panel>
+          <div className="flex flex-col gap-3 xl:flex-row">
+            <input
+              value={q}
+              onChange={(event) => resetPage(() => setQ(event.target.value))}
+              placeholder="Search claim, invoice or patient"
+              className={cn(inputCls, "flex-1")}
+            />
             <div className="flex flex-wrap gap-2">
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search claim, patient, invoice…"
-                className="h-10 min-w-52 rounded-xl border border-input bg-secondary px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              <FilterSelect
+                label="Status"
+                value={status}
+                onChange={(value) => resetPage(() => setStatus(value))}
+                options={statuses}
               />
-              {tab === "claims" && (
-                <FilterSelect
-                  label="Status"
-                  value={status}
-                  onChange={setStatus}
-                  options={statuses}
-                />
-              )}
-              <FilterSelect label="Dept" value={dept} onChange={setDept} options={departments} />
+              <FilterSelect
+                label="Aging"
+                value={bucket}
+                onChange={(value) => resetPage(() => setBucket(value))}
+                options={["current", "14", "30", "60"]}
+              />
             </div>
-          )}
-        </div>
+          </div>
 
-        {tab === "claims" && (
-          <div className={cn(tableWrap, "mt-5")}>
+          <div className={cn(tableWrap, "mt-4")}>
             <table className="w-full">
               <thead>
                 <tr className={theadRow}>
-                  {[
-                    "Claim",
-                    "Invoice",
-                    "Patient",
-                    "Dept",
-                    "Claimed",
-                    "Approved",
-                    "Status",
-                    "Age",
-                    "Actions",
-                  ].map((h) => (
-                    <th key={h} className={th}>
-                      {h}
-                    </th>
-                  ))}
+                  <th className={th}>Claim</th>
+                  <th className={th}>Invoice</th>
+                  <th className={th}>Patient</th>
+                  <th className={th}>Claimed</th>
+                  <th className={th}>Approved</th>
+                  <th className={th}>Status</th>
+                  <th className={th}>Age</th>
+                  <th className={th}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {list.map((c) => (
-                  <tr key={c.id} className={tbodyRow}>
-                    <td className={cn(td, "font-mono text-xs")}>
-                      {c.id}
-                      <p className="font-sans text-[11px] text-muted-foreground">{c.externalRef}</p>
-                    </td>
-                    <td className={cn(td, "font-mono text-xs")}>{c.invoice}</td>
-                    <td className={cn(td, "font-medium")}>{c.patient}</td>
-                    <td className={td}>{c.dept}</td>
-                    <td className={cn(td, "font-semibold")}>{ksh(c.claimed)}</td>
-                    <td className={td}>
-                      {c.approved ? (
-                        ksh(c.approved)
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    <td className={td}>
-                      <Badge
-                        tone={
-                          c.status === "REJECTED"
-                            ? "danger"
-                            : c.status === "PAID" || c.status === "APPROVED"
-                              ? "success"
-                              : c.status === "SUBMITTED"
-                                ? "info"
-                                : "warning"
-                        }
-                      >
-                        {titleize(c.status)}
-                      </Badge>
-                    </td>
-                    <td className={td}>
-                      {c.days > 0 ? (
-                        <span
-                          className={cn(
-                            "font-semibold",
-                            c.days >= 21
-                              ? "text-destructive"
-                              : c.days >= 14
-                                ? "text-warning"
-                                : "text-muted-foreground",
-                          )}
-                        >
-                          {c.days} days
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    <td className={td}>
-                      <div className="flex gap-1.5">
-                        <button
-                          onClick={() => {
-                            setTargetId(c.id);
-                            setModal("view");
-                          }}
-                          aria-label="View claim"
-                          className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => openStatus(c)}
-                          aria-label="Update status"
-                          className="rounded-lg p-2 text-primary hover:bg-primary/15"
-                        >
-                          <RefreshCw className="h-4 w-4" />
-                        </button>
-                        {c.status === "REJECTED" && (
-                          <button
-                            onClick={() => resubmit(c)}
-                            aria-label="Resubmit claim"
-                            className="rounded-lg p-2 text-warning hover:bg-warning/15"
-                          >
-                            <RefreshCw className="h-4 w-4" />
-                          </button>
-                        )}
-                      </div>
+                {claimsQuery.isLoading ? (
+                  <tr>
+                    <td colSpan={8} className="p-0">
+                      <LoadingRows rows={4} className="p-3" />
                     </td>
                   </tr>
-                ))}
-                {list.length === 0 && <EmptyState cols={9} />}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {tab === "eligibility" && (
-          <div className={cn(tableWrap, "mt-5")}>
-            <table className="w-full">
-              <thead>
-                <tr className={theadRow}>
-                  {[
-                    "Patient",
-                    "Invoice",
-                    "Status",
-                    "Annual limit",
-                    "Consumed",
-                    "Provider",
-                    "Reference",
-                    "Checked",
-                  ].map((h) => (
-                    <th key={h} className={th}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {checks.map((e) => (
-                  <tr key={e.id} className={tbodyRow}>
-                    <td className={cn(td, "font-medium")}>{e.patient}</td>
-                    <td className={cn(td, "font-mono text-xs")}>{e.invoice}</td>
-                    <td className={td}>
-                      <Badge
-                        tone={
-                          e.status === "ACTIVE"
-                            ? "success"
-                            : e.status === "LIMIT_EXHAUSTED"
-                              ? "warning"
-                              : "danger"
-                        }
-                      >
-                        {titleize(e.status)}
-                      </Badge>
+                ) : claimsQuery.error ? (
+                  <tr>
+                    <td colSpan={8} className="p-3">
+                      <ErrorBlock
+                        error={claimsQuery.error}
+                        onRetry={() => void claimsQuery.refetch()}
+                      />
                     </td>
-                    <td className={td}>{ksh(e.limit)}</td>
-                    <td className={td}>{ksh(e.consumed)}</td>
-                    <td className={td}>{e.provider}</td>
-                    <td className={cn(td, "font-mono text-xs")}>{e.reference}</td>
-                    <td className={cn(td, "text-muted-foreground")}>{e.checkedAt}</td>
                   </tr>
-                ))}
-                {checks.length === 0 && <EmptyState cols={8} />}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {tab === "aging" && (
-          <div className="mt-5 space-y-5">
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              {buckets.map((b) => (
-                <div key={b.label} className="rounded-2xl border border-border bg-secondary/40 p-4">
-                  <p className="text-sm font-semibold">{b.label}</p>
-                  <p className="mt-2 text-2xl font-bold">{b.count}</p>
-                  <p className="text-xs text-muted-foreground">{ksh(b.amount)} claimed</p>
-                </div>
-              ))}
-            </div>
-            <div className={tableWrap}>
-              <table className="w-full">
-                <thead>
-                  <tr className={theadRow}>
-                    {[
-                      "Claim",
-                      "Patient",
-                      "Dept",
-                      "Status",
-                      "Days pending",
-                      "Claimed",
-                      "Priority",
-                    ].map((h) => (
-                      <th key={h} className={th}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {aging.map((c) => (
-                    <tr key={c.id} className={cn(tbodyRow, c.days >= 21 && "bg-destructive/5")}>
-                      <td className={cn(td, "font-mono text-xs")}>{c.id}</td>
-                      <td className={cn(td, "font-medium")}>{c.patient}</td>
-                      <td className={td}>{c.dept}</td>
+                ) : (claimsQuery.data?.items.length ?? 0) === 0 ? (
+                  <EmptyState cols={8} message="No claims match these filters." />
+                ) : (
+                  claimsQuery.data?.items.map((claim) => (
+                    <tr key={claim.id} className={tbodyRow}>
+                      <td className={cn(td, "font-mono text-xs")}>{claim.id.slice(0, 8)}</td>
+                      <td className={td}>{claim.invoice_number ?? "—"}</td>
+                      <td className={td}>{claim.patient_name ?? "—"}</td>
+                      <td className={td}>{formatKshMinor(claim.claimed_amount_minor)}</td>
                       <td className={td}>
-                        <Badge>{titleize(c.status)}</Badge>
+                        {claim.approved_amount_minor === null
+                          ? "—"
+                          : formatKshMinor(claim.approved_amount_minor)}
+                      </td>
+                      <td className={td}>
+                        <Badge>{titleize(claim.status)}</Badge>
                       </td>
                       <td
                         className={cn(
                           td,
-                          "font-semibold",
-                          c.days >= 21 ? "text-destructive" : c.days >= 14 ? "text-warning" : "",
+                          claim.age_days !== null && claim.age_days >= 30
+                            ? "font-semibold text-destructive"
+                            : claim.age_days !== null && claim.age_days >= 14
+                              ? "font-semibold text-warning"
+                              : "text-muted-foreground",
                         )}
                       >
-                        {c.days}
+                        {claim.age_days === null ? "—" : `${claim.age_days}d`}
                       </td>
-                      <td className={td}>{ksh(c.claimed)}</td>
-                      <td className={td}>
-                        {c.days >= 21 ? (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-destructive">
-                            <AlertTriangle className="h-3.5 w-3.5" />
-                            Escalate
-                          </span>
-                        ) : c.days >= 14 ? (
-                          <span className="text-xs font-semibold text-warning">Follow up</span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Normal</span>
+                      <td className={cn(td, "space-x-2")}>
+                        <Button size="sm" variant="outline" onClick={() => setSelectedId(claim.id)}>
+                          View
+                        </Button>
+                        {nextStatuses[claim.status] && (
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setStatusTarget(claim);
+                              setStatusForm({
+                                status: nextStatuses[claim.status]?.[0] ?? "UNDER_REVIEW",
+                                approved_amount: String(claim.claimed_amount_minor / 100),
+                                rejection_reason: "",
+                                note: "",
+                              });
+                            }}
+                          >
+                            Update
+                          </Button>
+                        )}
+                        {claim.status === "REJECTED" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setResubmitTarget(claim);
+                              setResubmitForm({
+                                amount: String(claim.claimed_amount_minor / 100),
+                                note: "",
+                              });
+                            }}
+                          >
+                            <RefreshCw /> Resubmit
+                          </Button>
                         )}
                       </td>
                     </tr>
-                  ))}
-                  {aging.length === 0 && <EmptyState cols={7} message="No aging claims." />}
-                </tbody>
-              </table>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+            <span>
+              Page {page} of {Math.max(claimsQuery.data?.meta.pages ?? 1, 1)} ·{" "}
+              {claimsQuery.data?.meta.total ?? 0} claims
+            </span>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPage((value) => Math.max(1, value - 1))}
+                disabled={page <= 1}
+              >
+                Previous
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPage((value) => value + 1)}
+                disabled={page >= (claimsQuery.data?.meta.pages ?? 1)}
+              >
+                Next
+              </Button>
             </div>
           </div>
-        )}
-      </Panel>
+        </Panel>
+      )}
 
-      {current && (
-        <Modal
-          open={modal === "view"}
-          onClose={() => setModal(null)}
-          wide
-          title={`Claim ${current.id}`}
-          subtitle={`${current.patient} · ${current.invoice}`}
-          footer={
-            <>
-              <button
-                onClick={() => setModal(null)}
-                className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-              >
-                Close
-              </button>
-              {current.status === "REJECTED" && (
-                <button
-                  onClick={() => {
-                    resubmit(current);
-                    setModal(null);
-                  }}
-                  className="rounded-xl bg-warning px-4 py-2.5 text-sm font-semibold text-ink"
-                >
-                  Resubmit
-                </button>
-              )}
-              <button
-                onClick={() => openStatus(current)}
-                className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-              >
-                Update status
-              </button>
-            </>
-          }
-        >
-          <div className="space-y-4">
-            <div className="grid gap-2 sm:grid-cols-4">
-              <DetailRow label="Claimed" value={ksh(current.claimed)} />
-              <DetailRow label="Approved" value={current.approved ? ksh(current.approved) : "—"} />
-              <DetailRow label="Status" value={titleize(current.status)} />
-              <DetailRow
-                label="Age"
-                value={current.days > 0 ? `${current.days} days` : "Decided"}
-              />
-            </div>
-            <div className="grid gap-2 sm:grid-cols-3">
-              <DetailRow label="Department" value={current.dept} />
-              <DetailRow label="Submitted" value={current.submitted} />
-              <DetailRow label="External ref" value={current.externalRef ?? "—"} />
-            </div>
-            {current.rejectionReason && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-                Rejection: {current.rejectionReason}
-              </div>
-            )}
-            <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Claim history
-              </p>
-              <ol className="space-y-2">
-                {current.history.map((h, i) => (
-                  <li key={`${h.at}-${i}`} className="flex gap-3 rounded-xl bg-secondary p-3">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                    <div>
-                      <p className="text-sm font-medium">{titleize(h.to)}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {h.note} · {h.at}
-                      </p>
-                    </div>
+      {tab === "aging" && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Panel title="Aging buckets">
+            {agingQuery.isLoading ? (
+              <LoadingRows rows={4} />
+            ) : agingQuery.error ? (
+              <ErrorBlock error={agingQuery.error} onRetry={() => void agingQuery.refetch()} />
+            ) : (
+              <ul className="space-y-3">
+                {agingBucketRows.map((bucketRow) => (
+                  <li
+                    key={bucketRow.key}
+                    className="flex items-center justify-between rounded-xl bg-secondary/50 p-3"
+                  >
+                    <span className="flex items-center gap-2 text-sm">
+                      {bucketRow.key === "60_days" && (
+                        <AlertTriangle className="h-4 w-4 text-destructive" />
+                      )}
+                      {bucketRow.label}
+                    </span>
+                    <Badge tone={bucketRow.tone}>
+                      {String(aging?.aging_buckets[bucketRow.key] ?? 0)}
+                    </Badge>
                   </li>
                 ))}
-              </ol>
+              </ul>
+            )}
+          </Panel>
+          <Panel title="Claims by status">
+            {agingQuery.isLoading ? (
+              <LoadingRows rows={4} />
+            ) : agingQuery.error ? (
+              <ErrorBlock error={agingQuery.error} onRetry={() => void agingQuery.refetch()} />
+            ) : Object.keys(byStatus).length === 0 ? (
+              <EmptyBlock
+                title="No claims yet"
+                message="Status counts appear when claims are created."
+              />
+            ) : (
+              <ul className="space-y-3">
+                {Object.entries(byStatus).map(([key, value]) => (
+                  <li
+                    key={key}
+                    className="flex items-center justify-between rounded-xl bg-secondary/50 p-3 text-sm"
+                  >
+                    <span>{titleize(key)}</span>
+                    <Badge>{String(value)}</Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <DetailRow
+                label="Approval rate"
+                value={
+                  aging?.approval_rate === null || aging?.approval_rate === undefined
+                    ? "—"
+                    : `${(aging.approval_rate * 100).toFixed(1)}%`
+                }
+              />
+              <DetailRow
+                label="Avg days to payment"
+                value={
+                  aging?.average_days_to_payment === null ||
+                  aging?.average_days_to_payment === undefined
+                    ? "—"
+                    : `${aging.average_days_to_payment} days`
+                }
+              />
             </div>
-          </div>
-        </Modal>
+          </Panel>
+        </div>
       )}
 
       <Modal
-        open={modal === "status"}
-        onClose={() => setModal("view")}
+        open={Boolean(selectedId)}
+        onClose={() => setSelectedId(null)}
+        title={detailQuery.data ? `Claim ${detailQuery.data.id.slice(0, 8)}` : "Claim"}
+        subtitle={detailQuery.data ? (detailQuery.data.patient_name ?? "Patient") : undefined}
+        wide
+        footer={
+          <Button variant="outline" onClick={() => setSelectedId(null)}>
+            Close
+          </Button>
+        }
+      >
+        {detailQuery.isLoading ? (
+          <LoadingRows rows={3} />
+        ) : detailQuery.error ? (
+          <ErrorBlock error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
+        ) : detailQuery.data ? (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <DetailRow
+                label="Claimed"
+                value={formatKshMinor(detailQuery.data.claimed_amount_minor)}
+              />
+              <DetailRow
+                label="Approved"
+                value={
+                  detailQuery.data.approved_amount_minor === null
+                    ? "—"
+                    : formatKshMinor(detailQuery.data.approved_amount_minor)
+                }
+              />
+              <DetailRow label="Status" value={titleize(detailQuery.data.status)} />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <DetailRow label="Invoice" value={detailQuery.data.invoice_number ?? "—"} />
+              <DetailRow label="Submitted" value={formatDateTime(detailQuery.data.submitted_at)} />
+            </div>
+            {detailQuery.data.rejection_reason && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3">
+                <p className="text-xs font-semibold text-destructive">Rejection reason</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {detailQuery.data.rejection_reason}
+                </p>
+              </div>
+            )}
+            <div>
+              <h3 className="mb-2 text-sm font-semibold">Status history</h3>
+              <ul className="space-y-2">
+                {detailQuery.data.history.map((item) => (
+                  <li key={item.id} className="rounded-xl bg-secondary/50 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium">
+                        {item.from_status ? `${titleize(item.from_status)} → ` : ""}
+                        {titleize(item.to_status)}
+                      </p>
+                      <span className="text-[11px] text-muted-foreground">
+                        {formatDateTime(item.created_at)}
+                      </span>
+                    </div>
+                    {item.note && <p className="mt-1 text-xs text-muted-foreground">{item.note}</p>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(statusTarget)}
+        onClose={() => setStatusTarget(null)}
         title="Update claim status"
-        subtitle={current ? `POST /claims/${current.id}/status` : undefined}
+        subtitle={
+          statusTarget
+            ? `${statusTarget.patient_name ?? "Patient"} · ${titleize(statusTarget.status)}`
+            : undefined
+        }
         footer={
           <>
-            <button
-              onClick={() => setModal("view")}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setStatusTarget(null)}>
               Cancel
-            </button>
-            <button
-              onClick={saveStatus}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Save status
-            </button>
+            </Button>
+            <Button onClick={() => statusMutation.mutate()} disabled={statusMutation.isPending}>
+              {statusMutation.isPending ? "Saving…" : "Save status"}
+            </Button>
           </>
         }
       >
-        <div className="grid gap-3">
-          <Field label="Status">
+        <div className="space-y-3">
+          <Field label="New status">
             <select
               className={inputCls}
               value={statusForm.status}
-              onChange={(e) =>
-                setStatusForm({ ...statusForm, status: e.target.value as ClaimStatus })
+              onChange={(event) =>
+                setStatusForm((current) => ({
+                  ...current,
+                  status: event.target.value as ClaimStatus,
+                }))
               }
             >
-              {statuses.map((s) => (
-                <option key={s} value={s}>
-                  {titleize(s)}
+              {(statusTarget ? (nextStatuses[statusTarget.status] ?? []) : []).map((value) => (
+                <option key={value} value={value}>
+                  {titleize(value)}
                 </option>
               ))}
             </select>
           </Field>
           {statusForm.status === "APPROVED" && (
-            <Field label="Approved amount (KSh)">
+            <Field label="Approved amount (KES)">
               <input
                 type="number"
+                min="0"
+                step="0.01"
                 className={inputCls}
-                value={statusForm.approved}
-                onChange={(e) => setStatusForm({ ...statusForm, approved: e.target.value })}
+                value={statusForm.approved_amount}
+                onChange={(event) =>
+                  setStatusForm((current) => ({
+                    ...current,
+                    approved_amount: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+          )}
+          {statusForm.status === "REJECTED" && (
+            <Field label="Rejection reason">
+              <textarea
+                className={textareaCls}
+                value={statusForm.rejection_reason}
+                onChange={(event) =>
+                  setStatusForm((current) => ({
+                    ...current,
+                    rejection_reason: event.target.value,
+                  }))
+                }
               />
             </Field>
           )}
@@ -716,135 +619,51 @@ function Page() {
             <textarea
               className={textareaCls}
               value={statusForm.note}
-              onChange={(e) => setStatusForm({ ...statusForm, note: e.target.value })}
-              placeholder="Reason or reviewer note"
-            />
-          </Field>
-        </div>
-      </Modal>
-
-      <Modal
-        open={modal === "create"}
-        onClose={() => setModal(null)}
-        title="Create SHA claim"
-        subtitle="POST /invoices/:id/claims"
-        footer={
-          <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={createClaim}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Submit claim
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3">
-          <Field label="Invoice">
-            <select
-              className={inputCls}
-              value={claimForm.invoice}
-              onChange={(e) => {
-                const inv = invoices.find((i) => i.number === e.target.value);
-                setClaimForm({ invoice: e.target.value, claimed: String(inv?.total ?? 0) });
-              }}
-            >
-              {invoices.map((i) => (
-                <option key={i.id} value={i.number}>
-                  {i.number} · {i.patient} · {ksh(i.total)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Claimed amount (KSh)">
-            <input
-              type="number"
-              className={inputCls}
-              value={claimForm.claimed}
-              onChange={(e) => setClaimForm({ ...claimForm, claimed: e.target.value })}
-            />
-          </Field>
-          <p className="text-xs text-muted-foreground">
-            Eligibility should be checked before submission. Claims are simulated against the SHA
-            adapter.
-          </p>
-        </div>
-      </Modal>
-
-      <Modal
-        open={modal === "eligibility"}
-        onClose={() => setModal(null)}
-        title="Run eligibility check"
-        subtitle="POST /invoices/:id/claims/eligibility-check"
-        footer={
-          <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={runEligibility}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Run check
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Invoice" className="sm:col-span-2">
-            <select
-              className={inputCls}
-              value={eligibilityForm.invoice}
-              onChange={(e) => setEligibilityForm({ ...eligibilityForm, invoice: e.target.value })}
-            >
-              {invoices.map((i) => (
-                <option key={i.id} value={i.number}>
-                  {i.number} · {i.patient}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Result">
-            <select
-              className={inputCls}
-              value={eligibilityForm.status}
-              onChange={(e) =>
-                setEligibilityForm({
-                  ...eligibilityForm,
-                  status: e.target.value as EligibilityStatus,
-                })
+              onChange={(event) =>
+                setStatusForm((current) => ({ ...current, note: event.target.value }))
               }
-            >
-              {eligibilityStatuses.map((s) => (
-                <option key={s} value={s}>
-                  {titleize(s)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Annual limit (KSh)">
-            <input
-              type="number"
-              className={inputCls}
-              value={eligibilityForm.limit}
-              onChange={(e) => setEligibilityForm({ ...eligibilityForm, limit: e.target.value })}
             />
           </Field>
-          <Field label="Consumed (KSh)">
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(resubmitTarget)}
+        onClose={() => setResubmitTarget(null)}
+        title="Resubmit rejected claim"
+        subtitle={resubmitTarget?.invoice_number ?? undefined}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setResubmitTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => resubmitMutation.mutate()} disabled={resubmitMutation.isPending}>
+              {resubmitMutation.isPending ? "Submitting…" : "Resubmit"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Field label="Amount (KES)">
             <input
               type="number"
+              min="0"
+              step="0.01"
               className={inputCls}
-              value={eligibilityForm.consumed}
-              onChange={(e) => setEligibilityForm({ ...eligibilityForm, consumed: e.target.value })}
+              value={resubmitForm.amount}
+              onChange={(event) =>
+                setResubmitForm((current) => ({ ...current, amount: event.target.value }))
+              }
+            />
+          </Field>
+          <Field label="Correction note">
+            <textarea
+              className={textareaCls}
+              value={resubmitForm.note}
+              onChange={(event) =>
+                setResubmitForm((current) => ({ ...current, note: event.target.value }))
+              }
+              placeholder="What was corrected before resubmission?"
             />
           </Field>
         </div>
