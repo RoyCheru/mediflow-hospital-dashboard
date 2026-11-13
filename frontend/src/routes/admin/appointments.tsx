@@ -1,18 +1,7 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import {
-  CalendarDays,
-  CalendarCheck,
-  Clock,
-  UserX,
-  Plus,
-  Check,
-  X,
-  Play,
-  RotateCcw,
-  ClipboardList,
-  DoorOpen,
-} from "lucide-react";
+import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CalendarCheck, CalendarPlus, CheckCircle2, Search } from "lucide-react";
 import {
   Badge,
   EmptyState,
@@ -23,38 +12,38 @@ import {
   Panel,
   StatCard,
   inputCls,
-  th,
+  textareaCls,
   td,
+  th,
   tableWrap,
-  theadRow,
   tbodyRow,
+  theadRow,
 } from "@/components/kit";
+import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { Button } from "@/components/ui/button";
 import {
-  appointments as seedAppointments,
-  availabilityRules,
-  departments,
-  doctorNames,
-  patients,
-  services,
-  staff,
-  titleize,
-  type Appointment,
-  type AppointmentStatus,
-  type Urgency,
-} from "@/lib/data";
+  checkInAppointment,
+  createAppointment,
+  createWalkIn,
+  listAppointments,
+  listDoctors,
+  listPatients,
+  listServices,
+  managementKeys,
+  updateAppointment,
+} from "@/lib/api/management";
+import { formatDateTime, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { Appointment, AppointmentStatus, Urgency } from "@/types/api";
 
 export const Route = createFileRoute("/admin/appointments")({
   head: () => ({
     meta: [
       { title: "Appointments — MediFlow" },
-      { name: "description", content: "Book, check in, reschedule and queue patient visits." },
+      { name: "description", content: "Live appointment schedule, queue and bookings." },
       { property: "og:title", content: "Appointments — MediFlow" },
-      {
-        property: "og:description",
-        content: "Book, check in, reschedule and queue patient visits.",
-      },
+      { property: "og:description", content: "Live appointment schedule, queue and bookings." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
@@ -62,8 +51,7 @@ export const Route = createFileRoute("/admin/appointments")({
   component: Page,
 });
 
-type Tab = "schedule" | "queue" | "availability";
-const statusOptions = [
+const statuses = [
   "SCHEDULED",
   "CHECKED_IN",
   "IN_CONSULTATION",
@@ -71,614 +59,506 @@ const statusOptions = [
   "NO_SHOW",
   "CANCELLED",
 ];
-const days = ["Mon 26", "Tue 27", "Wed 28", "Thu 29", "Fri 30", "Sat 31"];
+const sources = ["ONLINE", "RECEPTION", "WALK_IN"];
+const urgencies: Urgency[] = ["ROUTINE", "URGENT", "EMERGENCY"];
 
-const blankForm = {
-  patient: "Wanjiru Kamau",
-  doctor: "Dr. Peter Kiprono",
-  service: "General consultation",
-  date: "2026-10-29",
-  time: "16:00",
+const blankBooking = {
+  kind: "scheduled" as "scheduled" | "walk-in",
+  patient_id: "",
+  doctor_id: "",
+  service_id: "",
+  scheduled_start: "",
   urgency: "ROUTINE" as Urgency,
   notes: "",
 };
 
 function Page() {
-  const navigate = useNavigate();
-  const [tab, setTab] = useState<Tab>("schedule");
-  const [list, setList] = useState<Appointment[]>(seedAppointments);
-  const [dept, setDept] = useState("All");
+  const queryClient = useQueryClient();
+  const [q, setQ] = useState("");
   const [status, setStatus] = useState("All");
-  const [day, setDay] = useState("Thu 29");
-  const [open, setOpen] = useState<null | "book" | "walkin" | "reschedule">(null);
+  const [source, setSource] = useState("All");
+  const [date, setDate] = useState("");
+  const [page, setPage] = useState(1);
+  const [bookingOpen, setBookingOpen] = useState(false);
+  const [booking, setBooking] = useState(blankBooking);
   const [target, setTarget] = useState<Appointment | null>(null);
-  const [form, setForm] = useState(blankForm);
-  const [availDoctor, setAvailDoctor] = useState(doctorNames[0] ?? "");
-  const [availDate, setAvailDate] = useState("2026-10-29");
+  const [updateForm, setUpdateForm] = useState({
+    status: "SCHEDULED" as AppointmentStatus,
+    urgency: "ROUTINE" as Urgency,
+    notes: "",
+  });
 
-  const rows = useMemo(
-    () =>
-      list.filter(
-        (a) => (dept === "All" || a.dept === dept) && (status === "All" || a.status === status),
-      ),
-    [list, dept, status],
-  );
-  // Status filter options are the raw backend enum values.
-  const queue = list.filter((a) => a.status === "CHECKED_IN" || a.status === "IN_CONSULTATION");
-  const today = list.filter((a) => a.date === "2026-10-29");
+  const params = {
+    page,
+    page_size: 15,
+    q: q || undefined,
+    status: status === "All" ? undefined : status,
+    source: source === "All" ? undefined : source,
+    date: date || undefined,
+    sort: "-scheduled_start",
+  };
+  const appointmentsQuery = useQuery({
+    queryKey: managementKeys.appointments(params),
+    queryFn: () => listAppointments(params),
+    staleTime: 20_000,
+  });
+  const doctorsQuery = useQuery({
+    queryKey: managementKeys.doctors({}),
+    queryFn: () => listDoctors({}),
+    staleTime: 120_000,
+  });
+  const servicesQuery = useQuery({
+    queryKey: managementKeys.services({}),
+    queryFn: () => listServices({}),
+    staleTime: 120_000,
+  });
+  const patientsQuery = useQuery({
+    queryKey: managementKeys.patients({ page_size: 100, sort: "name" }),
+    queryFn: () => listPatients({ page_size: 100, sort: "name" }),
+    staleTime: 120_000,
+    enabled: bookingOpen,
+  });
 
-  const setStatusOf = (id: string, next: AppointmentStatus) => {
-    setList((l) => l.map((a) => (a.id === id ? { ...a, status: next } : a)));
-    toast.success(`Appointment ${id} → ${titleize(next)}`);
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["admin", "appointments"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
   };
 
-  const book = () => {
-    if (!form.patient.trim()) return;
-    const patient = patients.find((p) => p.name === form.patient);
-    const doctor = staff.find((s) => s.name === form.doctor);
-    const service = services.find((s) => s.name === form.service);
-    const next: Appointment = {
-      id: `A-78${String(10 + list.length).padStart(2, "0")}`,
-      patient: form.patient,
-      patientId: patient?.id ?? "P-4021",
-      doctor: form.doctor,
-      doctorId: doctor?.id ?? "doc-kiprono",
-      dept: doctor?.department ?? "Outpatient",
-      service: service?.name ?? form.service,
-      date: form.date,
-      time: form.time,
-      status: open === "walkin" ? "CHECKED_IN" : "SCHEDULED",
-      source: open === "walkin" ? "WALK_IN" : "RECEPTION",
-      urgency: form.urgency,
-      notes: form.notes,
-      noShowScore: patient?.noShowScore ?? 0.1,
-    };
-    setList((l) =>
-      [...l, next].sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)),
-    );
-    toast.success(open === "walkin" ? "Walk-in added to the queue" : "Appointment booked");
-    setOpen(null);
-    setForm(blankForm);
+  const bookingMutation = useMutation({
+    mutationFn: () => {
+      if (!booking.patient_id || !booking.doctor_id) {
+        throw new Error("Patient and doctor are required");
+      }
+      if (booking.kind === "scheduled" && !booking.scheduled_start) {
+        throw new Error("Appointment date and time are required");
+      }
+      const payload = {
+        patient_id: booking.patient_id,
+        doctor_id: booking.doctor_id,
+        service_id: booking.service_id || undefined,
+        urgency: booking.urgency,
+        notes: booking.notes || undefined,
+      };
+      if (booking.kind === "walk-in") return createWalkIn(payload);
+      return createAppointment({
+        ...payload,
+        scheduled_start: new Date(booking.scheduled_start).toISOString(),
+      });
+    },
+    onSuccess: () => {
+      toast.success(booking.kind === "walk-in" ? "Walk-in added to queue" : "Appointment booked");
+      setBookingOpen(false);
+      setBooking(blankBooking);
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: () => {
+      if (!target) throw new Error("No appointment selected");
+      return updateAppointment(target.id, {
+        status: updateForm.status,
+        urgency: updateForm.urgency,
+        notes: updateForm.notes || undefined,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Appointment updated");
+      setTarget(null);
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const checkInMutation = useMutation({
+    mutationFn: (id: string) => checkInAppointment(id),
+    onSuccess: () => {
+      toast.success("Patient checked in");
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const resetPage = (fn: () => void) => {
+    fn();
+    setPage(1);
   };
 
-  const reschedule = () => {
-    if (!target) return;
-    setList((l) =>
-      l.map((a) =>
-        a.id === target.id ? { ...a, date: form.date, time: form.time, status: "SCHEDULED" } : a,
-      ),
-    );
-    toast.success(`Appointment ${target.id} rescheduled`);
-    setOpen(null);
-    setTarget(null);
-  };
-
-  const slots = useMemo(() => {
-    const weekday = new Date(availDate).getDay();
-    const rule = availabilityRules.find((r) => r.doctor === availDoctor && r.weekday === weekday);
-    const start = rule?.start ?? "08:00";
-    const end = rule?.end ?? "16:00";
-    const step = rule?.slot ?? 30;
-    const [sh, sm] = start.split(":").map(Number);
-    const [eh, em] = end.split(":").map(Number);
-    const out: string[] = [];
-    for (let m = (sh ?? 8) * 60 + (sm ?? 0); m < (eh ?? 16) * 60 + (em ?? 0); m += step) {
-      out.push(`${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
-    }
-    return out;
-  }, [availDoctor, availDate]);
+  const rows = appointmentsQuery.data?.items ?? [];
+  const scheduled = rows.filter((item) => item.status === "SCHEDULED").length;
+  const active = rows.filter((item) =>
+    ["CHECKED_IN", "IN_CONSULTATION"].includes(item.status),
+  ).length;
+  const completed = rows.filter((item) => item.status === "COMPLETED").length;
 
   return (
     <div>
       <PageHeader
         title="Appointments"
-        subtitle="Book, check in, reschedule and queue patient visits."
+        subtitle="Live schedule, check-in and queue from the MediFlow API."
         actions={
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => {
-                setForm(blankForm);
-                setOpen("walkin");
-              }}
-              className="inline-flex items-center gap-2 rounded-xl border border-primary px-4 py-2.5 text-sm font-semibold text-primary hover:bg-primary/10"
-            >
-              <DoorOpen className="h-4 w-4" />
-              Walk-in
-            </button>
-            <button
-              onClick={() => {
-                setForm(blankForm);
-                setOpen("book");
-              }}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              <Plus className="h-4 w-4" />
-              Book appointment
-            </button>
-          </div>
+          <Button onClick={() => setBookingOpen(true)}>
+            <CalendarPlus /> Book / walk-in
+          </Button>
         }
       />
+
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           tone="teal"
-          icon={CalendarDays}
-          label="Today's Appointments"
-          value={String(today.length)}
-          change={8.4}
+          icon={CalendarCheck}
+          label="Appointments (page)"
+          value={String(rows.length)}
+          change={null}
         />
         <StatCard
           tone="yellow"
-          icon={CalendarCheck}
-          label="Checked In"
-          value={String(list.filter((a) => a.status === "CHECKED_IN").length)}
-          change={5.2}
+          icon={CalendarPlus}
+          label="Scheduled (page)"
+          value={String(scheduled)}
+          change={null}
         />
         <StatCard
           tone="pink"
-          icon={Clock}
-          label="In Consultation"
-          value={String(list.filter((a) => a.status === "IN_CONSULTATION").length)}
-          change={-6.1}
+          icon={CheckCircle2}
+          label="Active (page)"
+          value={String(active)}
+          change={null}
         />
         <StatCard
           tone="purple"
-          icon={UserX}
-          label="No-shows"
-          value={String(list.filter((a) => a.status === "NO_SHOW").length)}
-          change={-2.0}
+          icon={CheckCircle2}
+          label="Completed (page)"
+          value={String(completed)}
+          change={null}
         />
       </div>
 
       <Panel>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex overflow-x-auto rounded-xl bg-secondary p-1">
-            {(
-              [
-                ["schedule", "Schedule"],
-                ["queue", "Live queue"],
-                ["availability", "Availability"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                className={cn(
-                  "whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition",
-                  tab === id
-                    ? "bg-primary text-primary-foreground shadow-glow"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
+        <div className="flex flex-col gap-3 xl:flex-row">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={q}
+              onChange={(event) => resetPage(() => setQ(event.target.value))}
+              placeholder="Search patient, notes or appointment ID"
+              className={cn(inputCls, "pl-10")}
+            />
           </div>
-          {tab === "schedule" && (
-            <div className="flex flex-wrap gap-2">
-              <FilterSelect
-                label="Department"
-                value={dept}
-                onChange={setDept}
-                options={departments}
-              />
-              <FilterSelect
-                label="Status"
-                value={status}
-                onChange={setStatus}
-                options={statusOptions}
-              />
-            </div>
-          )}
+          <div className="flex flex-wrap gap-2">
+            <FilterSelect
+              label="Status"
+              value={status}
+              onChange={(value) => resetPage(() => setStatus(value))}
+              options={statuses}
+            />
+            <FilterSelect
+              label="Source"
+              value={source}
+              onChange={(value) => resetPage(() => setSource(value))}
+              options={sources}
+            />
+            <input
+              type="date"
+              value={date}
+              onChange={(event) => resetPage(() => setDate(event.target.value))}
+              className={inputCls}
+            />
+          </div>
         </div>
 
-        {tab === "schedule" && (
-          <>
-            <div className="mb-4 mt-5 grid grid-cols-3 gap-2 sm:grid-cols-6">
-              {days.map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setDay(d)}
-                  className={`rounded-xl px-3 py-3 text-center text-sm font-semibold transition-colors ${d === day ? "bg-grad-teal text-on-gradient shadow-glow" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
-                >
-                  {d}
-                </button>
-              ))}
-            </div>
-            <div className={tableWrap}>
-              <table className="w-full">
-                <thead>
-                  <tr className={theadRow}>
-                    {[
-                      "Time",
-                      "Patient",
-                      "Doctor",
-                      "Department",
-                      "Service",
-                      "Urgency",
-                      "Status",
-                      "Actions",
-                    ].map((h) => (
-                      <th key={h} className={th}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(day === "Thu 29" ? rows : rows.slice(0, 3)).map((a) => (
-                    <tr key={a.id} className={tbodyRow}>
-                      <td className={`${td} font-semibold text-primary`}>{a.time}</td>
-                      <td className={td}>
-                        <div className="font-medium">{a.patient}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {a.id} · {titleize(a.source)}
-                        </div>
-                      </td>
-                      <td className={td}>{a.doctor}</td>
-                      <td className={td}>{a.dept}</td>
-                      <td className={td}>{a.service}</td>
-                      <td className={td}>
-                        <Badge
-                          tone={
-                            a.urgency === "EMERGENCY"
-                              ? "danger"
-                              : a.urgency === "URGENT"
-                                ? "warning"
-                                : "muted"
-                          }
+        <div className={cn(tableWrap, "mt-4")}>
+          <table className="w-full">
+            <thead>
+              <tr className={theadRow}>
+                <th className={th}>Time</th>
+                <th className={th}>Patient</th>
+                <th className={th}>Doctor</th>
+                <th className={th}>Service</th>
+                <th className={th}>Status</th>
+                <th className={th}>Urgency</th>
+                <th className={th}>Source</th>
+                <th className={th}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {appointmentsQuery.isLoading ? (
+                <tr>
+                  <td colSpan={8} className="p-0">
+                    <LoadingRows rows={5} className="p-3" />
+                  </td>
+                </tr>
+              ) : appointmentsQuery.error ? (
+                <tr>
+                  <td colSpan={8} className="p-3">
+                    <ErrorBlock
+                      error={appointmentsQuery.error}
+                      onRetry={() => void appointmentsQuery.refetch()}
+                    />
+                  </td>
+                </tr>
+              ) : rows.length === 0 ? (
+                <EmptyState cols={8} message="No appointments match these filters." />
+              ) : (
+                rows.map((appointment) => (
+                  <tr key={appointment.id} className={tbodyRow}>
+                    <td className={td}>{formatDateTime(appointment.scheduled_start)}</td>
+                    <td className={cn(td, "font-medium")}>
+                      {appointment.patient_name ?? "—"}
+                      <p className="text-xs text-muted-foreground">
+                        {appointment.patient_number ?? ""}
+                      </p>
+                    </td>
+                    <td className={td}>{appointment.doctor_name ?? "—"}</td>
+                    <td className={td}>
+                      {appointment.service_name ?? "Consultation"}
+                      <p className="text-xs text-muted-foreground">
+                        {appointment.department_name ?? "—"}
+                      </p>
+                    </td>
+                    <td className={td}>
+                      <Badge>{titleize(appointment.status)}</Badge>
+                    </td>
+                    <td className={td}>
+                      <Badge
+                        tone={
+                          appointment.urgency === "EMERGENCY"
+                            ? "danger"
+                            : appointment.urgency === "URGENT"
+                              ? "warning"
+                              : "muted"
+                        }
+                      >
+                        {titleize(appointment.urgency)}
+                      </Badge>
+                    </td>
+                    <td className={td}>{titleize(appointment.source)}</td>
+                    <td className={cn(td, "space-x-2")}>
+                      {appointment.status === "SCHEDULED" && (
+                        <Button
+                          size="sm"
+                          onClick={() => checkInMutation.mutate(appointment.id)}
+                          disabled={checkInMutation.isPending}
                         >
-                          {titleize(a.urgency)}
-                        </Badge>
-                      </td>
-                      <td className={td}>
-                        <Badge>{titleize(a.status)}</Badge>
-                      </td>
-                      <td className={td}>
-                        <div className="flex flex-wrap gap-1.5">
-                          {a.status === "SCHEDULED" && (
-                            <button
-                              aria-label="Check in"
-                              title="Check in"
-                              onClick={() => setStatusOf(a.id, "CHECKED_IN")}
-                              className="grid h-8 w-8 place-items-center rounded-lg bg-success/15 text-success"
-                            >
-                              <Check className="h-4 w-4" />
-                            </button>
-                          )}
-                          {a.status === "CHECKED_IN" && (
-                            <button
-                              aria-label="Start consultation"
-                              title="Start consultation"
-                              onClick={() => setStatusOf(a.id, "IN_CONSULTATION")}
-                              className="grid h-8 w-8 place-items-center rounded-lg bg-info/15 text-info"
-                            >
-                              <Play className="h-4 w-4" />
-                            </button>
-                          )}
-                          {a.status === "IN_CONSULTATION" && (
-                            <button
-                              aria-label="Create visit"
-                              title="Create visit"
-                              onClick={() => {
-                                toast.success(`Visit created for ${a.patient}`);
-                                navigate({ to: "/admin/visits" });
-                              }}
-                              className="grid h-8 w-8 place-items-center rounded-lg bg-primary/15 text-primary"
-                            >
-                              <ClipboardList className="h-4 w-4" />
-                            </button>
-                          )}
-                          {(a.status === "SCHEDULED" || a.status === "CHECKED_IN") && (
-                            <button
-                              aria-label="Mark no-show"
-                              title="Mark no-show"
-                              onClick={() => setStatusOf(a.id, "NO_SHOW")}
-                              className="grid h-8 w-8 place-items-center rounded-lg bg-warning/15 text-warning"
-                            >
-                              <UserX className="h-4 w-4" />
-                            </button>
-                          )}
-                          {(a.status === "SCHEDULED" || a.status === "CHECKED_IN") && (
-                            <button
-                              aria-label="Reschedule"
-                              title="Reschedule"
-                              onClick={() => {
-                                setTarget(a);
-                                setForm({
-                                  ...blankForm,
-                                  patient: a.patient,
-                                  doctor: a.doctor,
-                                  service: a.service,
-                                  date: a.date,
-                                  time: a.time,
-                                });
-                                setOpen("reschedule");
-                              }}
-                              className="grid h-8 w-8 place-items-center rounded-lg bg-secondary text-muted-foreground hover:text-foreground"
-                            >
-                              <RotateCcw className="h-4 w-4" />
-                            </button>
-                          )}
-                          {a.status !== "CANCELLED" && a.status !== "COMPLETED" && (
-                            <button
-                              aria-label="Cancel"
-                              title="Cancel"
-                              onClick={() => setStatusOf(a.id, "CANCELLED")}
-                              className="grid h-8 w-8 place-items-center rounded-lg bg-destructive/15 text-destructive"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {rows.length === 0 && <EmptyState cols={8} />}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
+                          Check in
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setTarget(appointment);
+                          setUpdateForm({
+                            status: appointment.status,
+                            urgency: appointment.urgency,
+                            notes: appointment.notes ?? "",
+                          });
+                        }}
+                      >
+                        Update
+                      </Button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
 
-        {tab === "queue" && (
-          <div className="mt-5 space-y-3">
-            {queue.length === 0 && (
-              <p className="py-10 text-center text-sm text-muted-foreground">The queue is empty.</p>
-            )}
-            {queue.map((a, index) => (
-              <div
-                key={a.id}
-                className="flex flex-col gap-3 rounded-xl border border-border bg-secondary/40 p-4 sm:flex-row sm:items-center"
-              >
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
-                  {index + 1}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold">
-                    {a.patient}{" "}
-                    <span className="text-xs font-normal text-muted-foreground">· {a.id}</span>
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {a.doctor} · {a.dept} · {a.service}
-                  </p>
-                </div>
-                <Badge
-                  tone={
-                    a.urgency === "EMERGENCY"
-                      ? "danger"
-                      : a.urgency === "URGENT"
-                        ? "warning"
-                        : "muted"
-                  }
-                >
-                  {titleize(a.urgency)}
-                </Badge>
-                <Badge>{titleize(a.status)}</Badge>
-                <div className="flex gap-2">
-                  {a.status === "CHECKED_IN" && (
-                    <button
-                      onClick={() => setStatusOf(a.id, "IN_CONSULTATION")}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-info/15 px-3 py-1.5 text-xs font-semibold text-info"
-                    >
-                      <Play className="h-3.5 w-3.5" />
-                      Start
-                    </button>
-                  )}
-                  {a.status === "IN_CONSULTATION" && (
-                    <button
-                      onClick={() => {
-                        toast.success(`Visit created for ${a.patient}`);
-                        navigate({ to: "/admin/visits" });
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-3 py-1.5 text-xs font-semibold text-primary"
-                    >
-                      <ClipboardList className="h-3.5 w-3.5" />
-                      Open visit
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setStatusOf(a.id, "NO_SHOW")}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-destructive/15 px-3 py-1.5 text-xs font-semibold text-destructive"
-                  >
-                    <UserX className="h-3.5 w-3.5" />
-                    No-show
-                  </button>
-                </div>
-              </div>
-            ))}
+        <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+          <span>
+            Page {page} of {Math.max(appointmentsQuery.data?.meta.pages ?? 1, 1)} ·{" "}
+            {appointmentsQuery.data?.meta.total ?? 0} appointments
+          </span>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+              disabled={page <= 1}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((value) => value + 1)}
+              disabled={page >= (appointmentsQuery.data?.meta.pages ?? 1)}
+            >
+              Next
+            </Button>
           </div>
-        )}
-
-        {tab === "availability" && (
-          <div className="mt-5 grid gap-5 lg:grid-cols-[300px_1fr]">
-            <div className="space-y-3">
-              <Field label="Doctor">
-                <select
-                  className={inputCls}
-                  value={availDoctor}
-                  onChange={(e) => setAvailDoctor(e.target.value)}
-                >
-                  {doctorNames.map((d) => (
-                    <option key={d}>{d}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Date">
-                <input
-                  type="date"
-                  className={inputCls}
-                  value={availDate}
-                  onChange={(e) => setAvailDate(e.target.value)}
-                />
-              </Field>
-              <p className="text-xs text-muted-foreground">
-                GET /availability · slots are generated from the doctor's weekly rule and
-                exceptions.
-              </p>
-            </div>
-            <div>
-              <p className="mb-2 text-sm font-semibold">{slots.length} open slots</p>
-              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-                {slots.map((slot) => (
-                  <button
-                    key={slot}
-                    onClick={() => {
-                      setForm({ ...blankForm, doctor: availDoctor, date: availDate, time: slot });
-                      setOpen("book");
-                    }}
-                    className="rounded-xl bg-secondary px-3 py-2 text-sm font-semibold hover:bg-primary hover:text-primary-foreground"
-                  >
-                    {slot}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+        </div>
       </Panel>
 
       <Modal
-        open={open === "book" || open === "walkin"}
-        onClose={() => setOpen(null)}
-        title={open === "walkin" ? "Add walk-in" : "Book appointment"}
-        subtitle={
-          open === "walkin"
-            ? "Walk-ins are checked in immediately and added to the queue."
-            : "Create a scheduled appointment for a patient."
-        }
+        open={bookingOpen}
+        onClose={() => setBookingOpen(false)}
+        title="Book appointment"
+        subtitle="Create a scheduled appointment or add a walk-in to the queue."
+        wide
         footer={
           <>
-            <button
-              onClick={() => setOpen(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setBookingOpen(false)}>
               Cancel
-            </button>
-            <button
-              onClick={book}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              {open === "walkin" ? "Add to queue" : "Book"}
-            </button>
+            </Button>
+            <Button onClick={() => bookingMutation.mutate()} disabled={bookingMutation.isPending}>
+              {bookingMutation.isPending ? "Saving…" : "Save appointment"}
+            </Button>
           </>
         }
       >
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Patient" className="sm:col-span-2">
+          <Field label="Type">
             <select
               className={inputCls}
-              value={form.patient}
-              onChange={(e) => setForm({ ...form, patient: e.target.value })}
+              value={booking.kind}
+              onChange={(event) =>
+                setBooking({
+                  ...booking,
+                  kind: event.target.value as "scheduled" | "walk-in",
+                })
+              }
             >
-              {patients.map((p) => (
-                <option key={p.id}>{p.name}</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="walk-in">Walk-in</option>
+            </select>
+          </Field>
+          <Field label="Patient">
+            <select
+              className={inputCls}
+              value={booking.patient_id}
+              onChange={(event) => setBooking({ ...booking, patient_id: event.target.value })}
+            >
+              <option value="">Select patient</option>
+              {(patientsQuery.data?.items ?? []).map((patient) => (
+                <option key={patient.id} value={patient.id}>
+                  {patient.first_name} {patient.last_name} · {patient.patient_number}
+                </option>
               ))}
             </select>
           </Field>
           <Field label="Doctor">
             <select
               className={inputCls}
-              value={form.doctor}
-              onChange={(e) => setForm({ ...form, doctor: e.target.value })}
+              value={booking.doctor_id}
+              onChange={(event) => setBooking({ ...booking, doctor_id: event.target.value })}
             >
-              {doctorNames.map((d) => (
-                <option key={d}>{d}</option>
+              <option value="">Select doctor</option>
+              {(doctorsQuery.data?.items ?? []).map((doctor) => (
+                <option key={doctor.id} value={doctor.id}>
+                  {doctor.name ?? doctor.id} · {doctor.specialty ?? "Doctor"}
+                </option>
               ))}
             </select>
           </Field>
           <Field label="Service">
             <select
               className={inputCls}
-              value={form.service}
-              onChange={(e) => setForm({ ...form, service: e.target.value })}
+              value={booking.service_id}
+              onChange={(event) => setBooking({ ...booking, service_id: event.target.value })}
             >
-              {services.map((s) => (
-                <option key={s.id}>{s.name}</option>
+              <option value="">No service</option>
+              {(servicesQuery.data?.items ?? []).map((service) => (
+                <option key={service.id} value={service.id}>
+                  {service.name}
+                </option>
               ))}
             </select>
           </Field>
-          <Field label="Date">
-            <input
-              type="date"
-              className={inputCls}
-              value={form.date}
-              onChange={(e) => setForm({ ...form, date: e.target.value })}
-            />
-          </Field>
-          <Field label="Time">
-            <input
-              type="time"
-              className={inputCls}
-              value={form.time}
-              onChange={(e) => setForm({ ...form, time: e.target.value })}
-            />
-          </Field>
+          {booking.kind === "scheduled" && (
+            <Field label="Start">
+              <input
+                type="datetime-local"
+                className={inputCls}
+                value={booking.scheduled_start}
+                onChange={(event) =>
+                  setBooking({ ...booking, scheduled_start: event.target.value })
+                }
+              />
+            </Field>
+          )}
           <Field label="Urgency">
             <select
               className={inputCls}
-              value={form.urgency}
-              onChange={(e) => setForm({ ...form, urgency: e.target.value as Urgency })}
+              value={booking.urgency}
+              onChange={(event) =>
+                setBooking({ ...booking, urgency: event.target.value as Urgency })
+              }
             >
-              {["ROUTINE", "URGENT", "EMERGENCY"].map((u) => (
-                <option key={u} value={u}>
-                  {titleize(u)}
+              {urgencies.map((value) => (
+                <option key={value} value={value}>
+                  {titleize(value)}
                 </option>
               ))}
             </select>
           </Field>
           <Field label="Notes" className="sm:col-span-2">
             <textarea
-              className="min-h-20 w-full rounded-xl border border-input bg-secondary px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              className={textareaCls}
+              value={booking.notes}
+              onChange={(event) => setBooking({ ...booking, notes: event.target.value })}
             />
           </Field>
         </div>
       </Modal>
 
       <Modal
-        open={open === "reschedule"}
-        onClose={() => {
-          setOpen(null);
-          setTarget(null);
-        }}
-        title="Reschedule appointment"
-        subtitle={target ? `${target.patient} · ${target.id}` : undefined}
+        open={Boolean(target)}
+        onClose={() => setTarget(null)}
+        title="Update appointment"
+        subtitle={target ? (target.patient_name ?? target.id.slice(0, 8)) : undefined}
         footer={
           <>
-            <button
-              onClick={() => {
-                setOpen(null);
-                setTarget(null);
-              }}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setTarget(null)}>
               Cancel
-            </button>
-            <button
-              onClick={reschedule}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Reschedule
-            </button>
+            </Button>
+            <Button onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? "Saving…" : "Save changes"}
+            </Button>
           </>
         }
       >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="New date">
-            <input
-              type="date"
+        <div className="space-y-3">
+          <Field label="Status">
+            <select
               className={inputCls}
-              value={form.date}
-              onChange={(e) => setForm({ ...form, date: e.target.value })}
-            />
+              value={updateForm.status}
+              onChange={(event) =>
+                setUpdateForm({
+                  ...updateForm,
+                  status: event.target.value as AppointmentStatus,
+                })
+              }
+            >
+              {statuses.map((value) => (
+                <option key={value} value={value}>
+                  {titleize(value)}
+                </option>
+              ))}
+            </select>
           </Field>
-          <Field label="New time">
-            <input
-              type="time"
+          <Field label="Urgency">
+            <select
               className={inputCls}
-              value={form.time}
-              onChange={(e) => setForm({ ...form, time: e.target.value })}
+              value={updateForm.urgency}
+              onChange={(event) =>
+                setUpdateForm({ ...updateForm, urgency: event.target.value as Urgency })
+              }
+            >
+              {urgencies.map((value) => (
+                <option key={value} value={value}>
+                  {titleize(value)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Notes">
+            <textarea
+              className={textareaCls}
+              value={updateForm.notes}
+              onChange={(event) => setUpdateForm({ ...updateForm, notes: event.target.value })}
             />
           </Field>
         </div>

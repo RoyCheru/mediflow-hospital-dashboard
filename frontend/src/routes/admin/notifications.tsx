@@ -1,19 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import {
-  Bell,
-  CheckCircle2,
-  Mail,
-  MessageSquare,
-  RefreshCw,
-  Send,
-  Smartphone,
-  BellRing,
-  Eye,
-  Plus,
-} from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bell, Mail, RefreshCw, Send, Smartphone } from "lucide-react";
 import {
   Badge,
+  DetailRow,
   EmptyState,
   Field,
   FilterSelect,
@@ -23,36 +14,35 @@ import {
   StatCard,
   inputCls,
   textareaCls,
-  th,
   td,
+  th,
   tableWrap,
-  theadRow,
   tbodyRow,
+  theadRow,
 } from "@/components/kit";
+import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { Button } from "@/components/ui/button";
 import {
-  notifications as seedNotifications,
-  notificationTemplates as seedTemplates,
-  titleize,
-  type Notification,
-  type NotificationChannel,
-  type NotificationStatus,
-  type NotificationTemplate,
-} from "@/lib/data";
+  listNotifications,
+  listTemplates,
+  notificationKeys,
+  retryNotification,
+  updateTemplate,
+} from "@/lib/api/notifications";
+import { formatDateTime, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { NotificationTemplate } from "@/types/api";
 
 export const Route = createFileRoute("/admin/notifications")({
   head: () => ({
     meta: [
       { title: "Notifications — MediFlow" },
-      {
-        name: "description",
-        content: "Delivery logs, retries and message templates for patients and staff.",
-      },
+      { name: "description", content: "Patient communication delivery log and templates." },
       { property: "og:title", content: "Notifications — MediFlow" },
       {
         property: "og:description",
-        content: "Delivery logs, retries and message templates for patients and staff.",
+        content: "Patient communication delivery log and templates.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -61,600 +51,348 @@ export const Route = createFileRoute("/admin/notifications")({
   component: Page,
 });
 
-type Tab = "log" | "templates" | "retry";
-const channels: NotificationChannel[] = ["WHATSAPP", "EMAIL", "SMS", "IN_APP"];
-const statuses: NotificationStatus[] = [
-  "QUEUED",
-  "SENDING",
-  "SENT",
-  "DELIVERED",
-  "FAILED",
-  "CANCELLED",
-];
-const channelIcon = {
-  WHATSAPP: MessageSquare,
-  EMAIL: Mail,
-  SMS: Smartphone,
-  IN_APP: BellRing,
-} as const;
+const channels = ["WHATSAPP", "EMAIL", "SMS", "IN_APP"];
+const statuses = ["QUEUED", "SENDING", "SENT", "DELIVERED", "FAILED", "CANCELLED"];
 
 function Page() {
-  const [tab, setTab] = useState<Tab>("log");
-  const [logs, setLogs] = useState<Notification[]>(seedNotifications);
-  const [templates, setTemplates] = useState<NotificationTemplate[]>(seedTemplates);
+  const queryClient = useQueryClient();
+  const [tab, setTab] = useState<"log" | "templates">("log");
   const [channel, setChannel] = useState("All");
   const [status, setStatus] = useState("All");
-  const [q, setQ] = useState("");
-  const [modal, setModal] = useState<null | "view" | "template" | "test">(null);
-  const [targetId, setTargetId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [template, setTemplate] = useState<NotificationTemplate | null>(null);
   const [templateForm, setTemplateForm] = useState({ subject: "", body: "", active: true });
-  const [testForm, setTestForm] = useState({
-    channel: "WHATSAPP" as NotificationChannel,
-    template: "booking_confirmation",
-    recipient: "",
+
+  const params = {
+    page,
+    page_size: 15,
+    channel: channel === "All" ? undefined : channel,
+    status: status === "All" ? undefined : status,
+  };
+  const notificationsQuery = useQuery({
+    queryKey: notificationKeys.list(params),
+    queryFn: () => listNotifications(params),
+    staleTime: 20_000,
+  });
+  const templatesQuery = useQuery({
+    queryKey: notificationKeys.templates,
+    queryFn: listTemplates,
+    staleTime: 120_000,
   });
 
-  const current = logs.find((n) => n.id === targetId);
-  const currentTemplate = templates.find((t) => t.id === targetId);
-  const list = logs.filter(
-    (n) =>
-      (channel === "All" || n.channel === channel) &&
-      (status === "All" || n.status === status) &&
-      `${n.id} ${n.template} ${n.recipient}`.toLowerCase().includes(q.toLowerCase()),
-  );
-  const failed = logs.filter((n) => n.status === "FAILED");
-  const delivered = logs.filter((n) => n.status === "DELIVERED").length;
-  const queued = logs.filter((n) => n.status === "QUEUED" || n.status === "SENDING").length;
+  const retryMutation = useMutation({
+    mutationFn: (id: string) => retryNotification(id),
+    onSuccess: () => {
+      toast.success("Notification queued for retry");
+      void queryClient.invalidateQueries({ queryKey: ["admin", "notifications"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
-  const retry = (id: string) => {
-    setLogs((list) =>
-      list.map((n) => {
-        if (n.id !== id) return n;
-        const { error: _error, ...rest } = n;
-        return {
-          ...rest,
-          status: "SENT",
-          sent: "29 Oct 2026, 17:20",
-          attempts: n.attempts + 1,
-          log: [...n.log, { attempt: n.attempts + 1, status: "SUCCESS", at: "29 Oct 2026, 17:20" }],
-        };
-      }),
-    );
-    toast.success("Notification retried successfully");
+  const templateMutation = useMutation({
+    mutationFn: () => {
+      if (!template) throw new Error("No template selected");
+      return updateTemplate(template.id, {
+        subject: templateForm.subject || undefined,
+        body: templateForm.body,
+        is_active: templateForm.active,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Template updated");
+      setTemplate(null);
+      void queryClient.invalidateQueries({ queryKey: notificationKeys.templates });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const resetPage = (fn: () => void) => {
+    fn();
+    setPage(1);
   };
 
-  const retryAll = () => {
-    setLogs((list) =>
-      list.map((n) => {
-        if (n.status !== "FAILED") return n;
-        const { error: _error, ...rest } = n;
-        return {
-          ...rest,
-          status: "SENT",
-          sent: "29 Oct 2026, 17:20",
-          attempts: n.attempts + 1,
-          log: [...n.log, { attempt: n.attempts + 1, status: "SUCCESS", at: "29 Oct 2026, 17:20" }],
-        };
-      }),
-    );
-    toast.success(`${failed.length} notifications queued for retry`);
-  };
-
-  const openTemplate = (t: NotificationTemplate) => {
-    setTargetId(t.id);
-    setTemplateForm({ subject: t.subject, body: t.body, active: t.active });
-    setModal("template");
-  };
-
-  const saveTemplate = () => {
-    if (!currentTemplate) return;
-    setTemplates((list) =>
-      list.map((t) =>
-        t.id === currentTemplate.id
-          ? {
-              ...t,
-              subject: templateForm.subject,
-              body: templateForm.body,
-              active: templateForm.active,
-              version: t.version + 1,
-            }
-          : t,
-      ),
-    );
-    setModal(null);
-    toast.success(`Template ${currentTemplate.key} published as v${currentTemplate.version + 1}`);
-  };
-
-  const sendTest = () => {
-    if (!testForm.recipient.trim()) {
-      toast.error("Recipient is required");
-      return;
-    }
-    const next: Notification = {
-      id: `nt-${6102 + logs.length}`,
-      channel: testForm.channel,
-      template: testForm.template,
-      recipient: testForm.recipient,
-      status: "QUEUED",
-      attempts: 0,
-      scheduled: "29 Oct 2026, 17:25",
-      createdAt: "29 Oct 2026, 17:24",
-      log: [],
-    };
-    setLogs((list) => [next, ...list]);
-    setModal(null);
-    setTestForm({ channel: "WHATSAPP", template: "booking_confirmation", recipient: "" });
-    toast.success("Test notification queued");
-  };
+  const rows = notificationsQuery.data?.items ?? [];
+  const failed = rows.filter((item) => item.status === "FAILED").length;
+  const queued = rows.filter((item) => item.status === "QUEUED").length;
+  const sent = rows.filter((item) => ["SENT", "DELIVERED"].includes(item.status)).length;
 
   return (
     <div>
       <PageHeader
         title="Notifications"
-        subtitle="Delivery logs, retries and message templates for patients and staff."
-        actions={
-          <button
-            onClick={() => setModal("test")}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-          >
-            <Send className="h-4 w-4" />
-            Send test
-          </button>
-        }
+        subtitle="Delivery log, provider errors and editable templates."
       />
+
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           tone="teal"
-          icon={Send}
-          label="Sent Today"
-          value={String(logs.filter((n) => n.status === "SENT" || n.status === "DELIVERED").length)}
-          change={7.2}
+          icon={Bell}
+          label="Notifications"
+          value={String(notificationsQuery.data?.meta.total ?? 0)}
+          change={null}
         />
         <StatCard
           tone="yellow"
-          icon={CheckCircle2}
-          label="Delivered"
-          value={String(delivered)}
-          change={5.8}
+          icon={Send}
+          label="Sent (page)"
+          value={String(sent)}
+          change={null}
         />
         <StatCard
           tone="pink"
           icon={RefreshCw}
-          label="Failed"
-          value={String(failed.length)}
-          change={-1.9}
+          label="Queued (page)"
+          value={String(queued)}
+          change={null}
         />
-        <StatCard tone="purple" icon={Bell} label="Queued" value={String(queued)} change={2.4} />
+        <StatCard
+          tone="purple"
+          icon={Mail}
+          label="Failed (page)"
+          value={String(failed)}
+          change={null}
+        />
       </div>
 
-      <Panel>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex overflow-x-auto rounded-xl bg-secondary p-1">
-            {(
-              [
-                ["log", "Delivery log"],
-                ["templates", "Templates"],
-                ["retry", `Retry queue (${failed.length})`],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                className={cn(
-                  "whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition",
-                  tab === id
-                    ? "bg-primary text-primary-foreground shadow-glow"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {tab === "log" && (
-            <div className="flex flex-wrap gap-2">
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search recipient or template…"
-                className="h-10 min-w-52 rounded-xl border border-input bg-secondary px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              />
-              <FilterSelect
-                label="Channel"
-                value={channel}
-                onChange={setChannel}
-                options={channels}
-              />
-              <FilterSelect label="Status" value={status} onChange={setStatus} options={statuses} />
-            </div>
-          )}
-          {tab === "templates" && (
-            <button
-              onClick={() => setModal("test")}
-              className="inline-flex items-center gap-2 rounded-xl border border-primary px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/10"
-            >
-              <Plus className="h-4 w-4" />
-              Send test
-            </button>
-          )}
-          {tab === "retry" && (
-            <button
-              onClick={retryAll}
-              disabled={failed.length === 0}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-40"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Retry all
-            </button>
-          )}
-        </div>
+      <div className="mb-6 flex flex-wrap gap-2">
+        {(["log", "templates"] as const).map((value) => (
+          <button
+            key={value}
+            onClick={() => setTab(value)}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-colors",
+              tab === value
+                ? "bg-primary text-primary-foreground shadow-glow"
+                : "bg-secondary text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {value === "log" ? <Bell className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
+            {value === "log" ? "Delivery log" : "Templates"}
+          </button>
+        ))}
+      </div>
 
-        {tab === "log" && (
-          <div className={cn(tableWrap, "mt-5")}>
+      {tab === "log" ? (
+        <Panel>
+          <div className="flex flex-wrap gap-2">
+            <FilterSelect
+              label="Channel"
+              value={channel}
+              onChange={(value) => resetPage(() => setChannel(value))}
+              options={channels}
+            />
+            <FilterSelect
+              label="Status"
+              value={status}
+              onChange={(value) => resetPage(() => setStatus(value))}
+              options={statuses}
+            />
+          </div>
+
+          <div className={cn(tableWrap, "mt-4")}>
             <table className="w-full">
               <thead>
                 <tr className={theadRow}>
-                  {[
-                    "ID",
-                    "Channel",
-                    "Template",
-                    "Recipient",
-                    "Status",
-                    "Attempts",
-                    "Scheduled",
-                    "Actions",
-                  ].map((h) => (
-                    <th key={h} className={th}>
-                      {h}
-                    </th>
-                  ))}
+                  <th className={th}>Channel</th>
+                  <th className={th}>Template</th>
+                  <th className={th}>Status</th>
+                  <th className={th}>Attempts</th>
+                  <th className={th}>Scheduled</th>
+                  <th className={th}>Sent</th>
+                  <th className={th}>Last error</th>
+                  <th className={th}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {list.map((n) => {
-                  const Icon = channelIcon[n.channel];
-                  return (
-                    <tr key={n.id} className={tbodyRow}>
-                      <td className={cn(td, "font-mono text-xs")}>{n.id}</td>
-                      <td className={td}>
-                        <span className="inline-flex items-center gap-1.5">
-                          <Icon className="h-4 w-4 text-muted-foreground" />
-                          {titleize(n.channel)}
-                        </span>
-                      </td>
-                      <td className={cn(td, "font-mono text-xs")}>{n.template}</td>
-                      <td className={cn(td, "max-w-56 truncate")}>{n.recipient}</td>
-                      <td className={td}>
-                        <Badge
-                          tone={
-                            n.status === "FAILED"
-                              ? "danger"
-                              : n.status === "DELIVERED"
-                                ? "success"
-                                : n.status === "SENT"
-                                  ? "info"
-                                  : "warning"
-                          }
-                        >
-                          {titleize(n.status)}
-                        </Badge>
-                      </td>
-                      <td className={td}>{n.attempts}</td>
-                      <td className={cn(td, "text-muted-foreground")}>{n.sent ?? n.scheduled}</td>
-                      <td className={td}>
-                        <div className="flex gap-1.5">
-                          <button
-                            onClick={() => {
-                              setTargetId(n.id);
-                              setModal("view");
-                            }}
-                            aria-label="View delivery log"
-                            className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </button>
-                          {n.status === "FAILED" && (
-                            <button
-                              onClick={() => retry(n.id)}
-                              aria-label="Retry notification"
-                              className="rounded-lg p-2 text-warning hover:bg-warning/15"
-                            >
-                              <RefreshCw className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {list.length === 0 && <EmptyState cols={8} />}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {tab === "templates" && (
-          <div className={cn(tableWrap, "mt-5")}>
-            <table className="w-full">
-              <thead>
-                <tr className={theadRow}>
-                  {["Template", "Channel", "Subject", "Version", "Status", "Actions"].map((h) => (
-                    <th key={h} className={th}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {templates.map((t) => (
-                  <tr key={t.id} className={tbodyRow}>
-                    <td className={td}>
-                      <div className="font-medium">{t.name}</div>
-                      <div className="font-mono text-xs text-muted-foreground">{t.key}</div>
-                    </td>
-                    <td className={td}>
-                      <Badge tone="info">{titleize(t.channel)}</Badge>
-                    </td>
-                    <td className={cn(td, "max-w-64 truncate text-muted-foreground")}>
-                      {t.subject}
-                    </td>
-                    <td className={td}>v{t.version}</td>
-                    <td className={td}>
-                      <Badge tone={t.active ? "success" : "muted"}>
-                        {t.active ? "Active" : "Inactive"}
-                      </Badge>
-                    </td>
-                    <td className={td}>
-                      <button
-                        onClick={() => openTemplate(t)}
-                        className="rounded-lg border border-primary px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10"
-                      >
-                        Edit
-                      </button>
+                {notificationsQuery.isLoading ? (
+                  <tr>
+                    <td colSpan={8} className="p-0">
+                      <LoadingRows rows={5} className="p-3" />
                     </td>
                   </tr>
-                ))}
+                ) : notificationsQuery.error ? (
+                  <tr>
+                    <td colSpan={8} className="p-3">
+                      <ErrorBlock
+                        error={notificationsQuery.error}
+                        onRetry={() => void notificationsQuery.refetch()}
+                      />
+                    </td>
+                  </tr>
+                ) : rows.length === 0 ? (
+                  <EmptyState cols={8} message="No notifications match these filters." />
+                ) : (
+                  rows.map((item) => (
+                    <tr key={item.id} className={tbodyRow}>
+                      <td className={td}>
+                        <span className="inline-flex items-center gap-2">
+                          {item.channel === "EMAIL" ? (
+                            <Mail className="h-4 w-4" />
+                          ) : (
+                            <Smartphone className="h-4 w-4" />
+                          )}
+                          {titleize(item.channel)}
+                        </span>
+                      </td>
+                      <td className={td}>{item.template_key}</td>
+                      <td className={td}>
+                        <Badge>{titleize(item.status)}</Badge>
+                      </td>
+                      <td className={td}>{item.attempts}</td>
+                      <td className={td}>{formatDateTime(item.scheduled_at)}</td>
+                      <td className={td}>{formatDateTime(item.sent_at)}</td>
+                      <td className={cn(td, "max-w-64 truncate text-muted-foreground")}>
+                        {item.last_error ?? "—"}
+                      </td>
+                      <td className={td}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => retryMutation.mutate(item.id)}
+                          disabled={retryMutation.isPending}
+                        >
+                          <RefreshCw /> Retry
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
-        )}
 
-        {tab === "retry" && (
-          <div className="mt-5 space-y-2">
-            {failed.map((n) => (
-              <div
-                key={n.id}
-                className="flex flex-col gap-3 rounded-xl border border-destructive/20 bg-destructive/5 p-4 sm:flex-row sm:items-center sm:justify-between"
+          <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+            <span>
+              Page {page} of {Math.max(notificationsQuery.data?.meta.pages ?? 1, 1)} ·{" "}
+              {notificationsQuery.data?.meta.total ?? 0} notifications
+            </span>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPage((value) => Math.max(1, value - 1))}
+                disabled={page <= 1}
               >
-                <div>
-                  <p className="text-sm font-semibold">
-                    {n.template} · {n.recipient}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {n.channel} · {n.attempts} attempts · {n.error}
-                  </p>
-                </div>
-                <button
-                  onClick={() => retry(n.id)}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Retry now
-                </button>
-              </div>
-            ))}
-            {failed.length === 0 && (
-              <p className="py-10 text-center text-sm text-muted-foreground">
-                No failed notifications. You're all caught up.
-              </p>
-            )}
-          </div>
-        )}
-      </Panel>
-
-      {current && (
-        <Modal
-          open={modal === "view"}
-          onClose={() => setModal(null)}
-          title={`Delivery ${current.id}`}
-          subtitle={`${current.template} · ${current.recipient}`}
-          footer={
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
-              Close
-            </button>
-          }
-        >
-          <div className="space-y-4">
-            <div className="grid gap-2 sm:grid-cols-3">
-              <div className="rounded-xl bg-secondary p-3">
-                <p className="text-xs text-muted-foreground">Channel</p>
-                <p className="mt-1 text-sm font-semibold">{titleize(current.channel)}</p>
-              </div>
-              <div className="rounded-xl bg-secondary p-3">
-                <p className="text-xs text-muted-foreground">Status</p>
-                <p className="mt-1">
-                  <Badge
-                    tone={
-                      current.status === "FAILED"
-                        ? "danger"
-                        : current.status === "DELIVERED"
-                          ? "success"
-                          : "info"
-                    }
-                  >
-                    {titleize(current.status)}
-                  </Badge>
-                </p>
-              </div>
-              <div className="rounded-xl bg-secondary p-3">
-                <p className="text-xs text-muted-foreground">Attempts</p>
-                <p className="mt-1 text-sm font-semibold">{current.attempts}</p>
-              </div>
+                Previous
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPage((value) => value + 1)}
+                disabled={page >= (notificationsQuery.data?.meta.pages ?? 1)}
+              >
+                Next
+              </Button>
             </div>
-            {current.error && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-                {current.error}
-              </div>
-            )}
-            <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Attempt history
-              </p>
-              {current.log.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No attempts yet.</p>
-              ) : (
-                <ol className="space-y-2">
-                  {current.log.map((a) => (
-                    <li
-                      key={a.attempt}
-                      className="flex items-center justify-between rounded-xl bg-secondary p-3"
-                    >
-                      <div>
-                        <p className="text-sm font-medium">
-                          Attempt {a.attempt} · {a.status}
-                        </p>
-                        {a.error && <p className="text-xs text-destructive">{a.error}</p>}
-                      </div>
-                      <span className="text-xs text-muted-foreground">{a.at}</span>
-                    </li>
+          </div>
+        </Panel>
+      ) : (
+        <Panel title="Notification templates">
+          {templatesQuery.isLoading ? (
+            <LoadingRows rows={5} />
+          ) : templatesQuery.error ? (
+            <ErrorBlock
+              error={templatesQuery.error}
+              onRetry={() => void templatesQuery.refetch()}
+            />
+          ) : (
+            <div className={tableWrap}>
+              <table className="w-full">
+                <thead>
+                  <tr className={theadRow}>
+                    <th className={th}>Key</th>
+                    <th className={th}>Channel</th>
+                    <th className={th}>Name</th>
+                    <th className={th}>Subject</th>
+                    <th className={th}>Status</th>
+                    <th className={th}>Version</th>
+                    <th className={th}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {templatesQuery.data?.items.map((item) => (
+                    <tr key={item.id} className={tbodyRow}>
+                      <td className={cn(td, "font-mono text-xs")}>{item.key}</td>
+                      <td className={td}>{titleize(item.channel)}</td>
+                      <td className={td}>{item.name}</td>
+                      <td className={cn(td, "max-w-64 truncate")}>{item.subject ?? "—"}</td>
+                      <td className={td}>
+                        <Badge tone={item.is_active ? "success" : "muted"}>
+                          {item.is_active ? "Active" : "Inactive"}
+                        </Badge>
+                      </td>
+                      <td className={td}>{item.version}</td>
+                      <td className={td}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setTemplate(item);
+                            setTemplateForm({
+                              subject: item.subject ?? "",
+                              body: item.body,
+                              active: item.is_active,
+                            });
+                          }}
+                        >
+                          Edit
+                        </Button>
+                      </td>
+                    </tr>
                   ))}
-                </ol>
-              )}
+                </tbody>
+              </table>
             </div>
-            {current.status === "FAILED" && (
-              <button
-                onClick={() => {
-                  retry(current.id);
-                  setModal(null);
-                }}
-                className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-              >
-                <RefreshCw className="h-4 w-4" />
-                Retry now
-              </button>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {currentTemplate && (
-        <Modal
-          open={modal === "template"}
-          onClose={() => setModal(null)}
-          wide
-          title={`Edit template · ${currentTemplate.name}`}
-          subtitle={`PATCH /admin/notification-templates/${currentTemplate.id}`}
-          footer={
-            <>
-              <button
-                onClick={() => setModal(null)}
-                className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={saveTemplate}
-                className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-              >
-                Publish v{currentTemplate.version + 1}
-              </button>
-            </>
-          }
-        >
-          <div className="grid gap-3">
-            <Field label="Subject">
-              <input
-                className={inputCls}
-                value={templateForm.subject}
-                onChange={(e) => setTemplateForm({ ...templateForm, subject: e.target.value })}
-              />
-            </Field>
-            <Field label="Body">
-              <textarea
-                className={textareaCls}
-                value={templateForm.body}
-                onChange={(e) => setTemplateForm({ ...templateForm, body: e.target.value })}
-              />
-            </Field>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-primary"
-                checked={templateForm.active}
-                onChange={(e) => setTemplateForm({ ...templateForm, active: e.target.checked })}
-              />
-              Active
-            </label>
-            <p className="text-xs text-muted-foreground">
-              Placeholders such as {"{patient_name}"} and {"{scheduled_start}"} are rendered at send
-              time.
-            </p>
-          </div>
-        </Modal>
+          )}
+        </Panel>
       )}
 
       <Modal
-        open={modal === "test"}
-        onClose={() => setModal(null)}
-        title="Send test notification"
-        subtitle="POST /admin/notifications/:id/retry · simulated delivery"
+        open={Boolean(template)}
+        onClose={() => setTemplate(null)}
+        title="Edit notification template"
+        subtitle={template ? `${template.key} · ${template.channel}` : undefined}
+        wide
         footer={
           <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setTemplate(null)}>
               Cancel
-            </button>
-            <button
-              onClick={sendTest}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Queue test
-            </button>
+            </Button>
+            <Button onClick={() => templateMutation.mutate()} disabled={templateMutation.isPending}>
+              {templateMutation.isPending ? "Saving…" : "Save template"}
+            </Button>
           </>
         }
       >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Channel">
-            <select
-              className={inputCls}
-              value={testForm.channel}
-              onChange={(e) =>
-                setTestForm({ ...testForm, channel: e.target.value as NotificationChannel })
-              }
-            >
-              {channels.map((c) => (
-                <option key={c} value={c}>
-                  {titleize(c)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Template">
-            <select
-              className={inputCls}
-              value={testForm.template}
-              onChange={(e) => setTestForm({ ...testForm, template: e.target.value })}
-            >
-              {templates.map((t) => (
-                <option key={t.id} value={t.key}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Recipient" className="sm:col-span-2">
+        <div className="space-y-3">
+          <DetailRow label="Template name" value={template?.name ?? "—"} />
+          <Field label="Subject">
             <input
               className={inputCls}
-              value={testForm.recipient}
-              onChange={(e) => setTestForm({ ...testForm, recipient: e.target.value })}
-              placeholder="0712 345 678 or name@example.com"
+              value={templateForm.subject}
+              onChange={(event) =>
+                setTemplateForm({ ...templateForm, subject: event.target.value })
+              }
             />
           </Field>
+          <Field label="Body">
+            <textarea
+              className={textareaCls}
+              value={templateForm.body}
+              onChange={(event) => setTemplateForm({ ...templateForm, body: event.target.value })}
+            />
+          </Field>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-primary"
+              checked={templateForm.active}
+              onChange={(event) =>
+                setTemplateForm({ ...templateForm, active: event.target.checked })
+              }
+            />
+            Active
+          </label>
         </div>
       </Modal>
     </div>

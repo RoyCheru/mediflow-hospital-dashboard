@@ -1,15 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import {
-  Building2,
-  BedDouble,
-  Activity,
-  Clock,
-  Plus,
-  Pencil,
-  Tag,
-  Stethoscope,
-} from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Building2, CircleDollarSign, Plus } from "lucide-react";
 import {
   Badge,
   EmptyState,
@@ -17,38 +9,39 @@ import {
   Modal,
   PageHeader,
   Panel,
-  StatCard,
   inputCls,
-  textareaCls,
-  th,
   td,
+  th,
   tableWrap,
-  theadRow,
   tbodyRow,
+  theadRow,
 } from "@/components/kit";
+import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { Button } from "@/components/ui/button";
 import {
-  departmentRecords as seedDepartments,
-  ksh,
-  services as seedServices,
-  titleize,
-  type Department,
-  type Service,
-} from "@/lib/data";
+  addServicePrice,
+  createDepartment,
+  createService,
+  listDepartments,
+  listServices,
+  managementKeys,
+  updateDepartment,
+  updateService,
+} from "@/lib/api/management";
+import { formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { Department, Service } from "@/types/api";
 
 export const Route = createFileRoute("/admin/departments")({
   head: () => ({
     meta: [
       { title: "Departments & Services — MediFlow" },
-      {
-        name: "description",
-        content: "Department capacity, service catalog and effective-dated pricing.",
-      },
+      { name: "description", content: "Manage departments, services and price lists." },
       { property: "og:title", content: "Departments & Services — MediFlow" },
       {
         property: "og:description",
-        content: "Department capacity, service catalog and effective-dated pricing.",
+        content: "Manage departments, services and price lists.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -58,443 +51,354 @@ export const Route = createFileRoute("/admin/departments")({
 });
 
 type Tab = "departments" | "services";
-const blankDept = { name: "", code: "", description: "", active: true };
+
+const blankDepartment = { name: "", code: "", description: "", is_active: true };
 const blankService = {
-  department: "Outpatient",
+  department_id: "",
   name: "",
   code: "",
   description: "",
-  price: "0",
-  active: true,
+  amount: "",
+  is_active: true,
 };
 
 function Page() {
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("departments");
-  const [depts, setDepts] = useState<Department[]>(seedDepartments);
-  const [svc, setSvc] = useState<Service[]>(seedServices);
-  const [modal, setModal] = useState<
-    null | "dept" | "deptEdit" | "service" | "serviceEdit" | "price"
-  >(null);
-  const [targetDept, setTargetDept] = useState<Department | null>(null);
-  const [targetService, setTargetService] = useState<Service | null>(null);
-  const [deptForm, setDeptForm] = useState(blankDept);
+  const [departmentOpen, setDepartmentOpen] = useState(false);
+  const [serviceOpen, setServiceOpen] = useState(false);
+  const [priceTarget, setPriceTarget] = useState<Service | null>(null);
+  const [departmentForm, setDepartmentForm] = useState(blankDepartment);
   const [serviceForm, setServiceForm] = useState(blankService);
-  const [priceForm, setPriceForm] = useState({ amount: "0", effectiveFrom: "2026-10-29" });
+  const [price, setPrice] = useState("");
 
-  const beds = depts.reduce((a, d) => a + d.beds, 0);
-  const used = depts.reduce((a, d) => a + d.used, 0);
+  const departmentsQuery = useQuery({
+    queryKey: managementKeys.departments,
+    queryFn: listDepartments,
+    staleTime: 120_000,
+  });
+  const servicesQuery = useQuery({
+    queryKey: managementKeys.services({}),
+    queryFn: () => listServices({}),
+    staleTime: 60_000,
+  });
 
-  const createDept = () => {
-    if (!deptForm.name.trim() || !deptForm.code.trim()) {
-      toast.error("Name and code are required");
-      return;
-    }
-    setDepts((d) => [
-      ...d,
-      {
-        id: `dep-${d.length + 1}`,
-        name: deptForm.name,
-        code: deptForm.code,
-        description: deptForm.description,
-        active: deptForm.active,
-        head: "Unassigned",
-        beds: 0,
-        used: 0,
-        staff: 0,
-        revenue: 0,
-        wait: 0,
-      },
-    ]);
-    setModal(null);
-    setDeptForm(blankDept);
-    toast.success("Department created");
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: managementKeys.departments });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "services"] });
   };
 
-  const saveDept = () => {
-    if (!targetDept) return;
-    setDepts((d) =>
-      d.map((x) =>
-        x.id === targetDept.id
-          ? {
-              ...x,
-              name: deptForm.name,
-              description: deptForm.description,
-              active: deptForm.active,
-            }
-          : x,
-      ),
-    );
-    setModal(null);
-    toast.success("Department updated");
-  };
+  const departmentMutation = useMutation({
+    mutationFn: () => {
+      if (!departmentForm.name || !departmentForm.code) {
+        throw new Error("Department name and code are required");
+      }
+      return createDepartment({
+        ...departmentForm,
+        description: departmentForm.description || undefined,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Department created");
+      setDepartmentOpen(false);
+      setDepartmentForm(blankDepartment);
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
-  const createService = () => {
-    if (!serviceForm.name.trim() || !serviceForm.code.trim()) {
-      toast.error("Name and code are required");
-      return;
-    }
-    setSvc((s) => [
-      ...s,
-      {
-        id: `svc-${s.length + 1}`,
-        department: serviceForm.department,
+  const serviceMutation = useMutation({
+    mutationFn: () => {
+      if (!serviceForm.department_id || !serviceForm.name || !serviceForm.code) {
+        throw new Error("Department, service name and code are required");
+      }
+      if (!serviceForm.amount) throw new Error("Price is required");
+      return createService({
+        department_id: serviceForm.department_id,
         name: serviceForm.name,
         code: serviceForm.code,
-        description: serviceForm.description,
-        price: Number(serviceForm.price) || 0,
-        active: serviceForm.active,
-        priceHistory: [{ amount: Number(serviceForm.price) || 0, effectiveFrom: "2026-10-29" }],
-      },
-    ]);
-    setModal(null);
-    setServiceForm(blankService);
-    toast.success("Service created");
-  };
+        description: serviceForm.description || undefined,
+        is_active: serviceForm.is_active,
+        amount_minor: Math.round(Number(serviceForm.amount) * 100),
+      });
+    },
+    onSuccess: () => {
+      toast.success("Service created");
+      setServiceOpen(false);
+      setServiceForm(blankService);
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
-  const saveService = () => {
-    if (!targetService) return;
-    setSvc((s) =>
-      s.map((x) =>
-        x.id === targetService.id
-          ? {
-              ...x,
-              name: serviceForm.name,
-              description: serviceForm.description,
-              active: serviceForm.active,
-            }
-          : x,
-      ),
-    );
-    setModal(null);
-    toast.success("Service updated");
-  };
+  const priceMutation = useMutation({
+    mutationFn: () => {
+      if (!priceTarget) throw new Error("No service selected");
+      if (!price) throw new Error("Price is required");
+      return addServicePrice(priceTarget.id, {
+        amount_minor: Math.round(Number(price) * 100),
+      });
+    },
+    onSuccess: () => {
+      toast.success("Price updated");
+      setPriceTarget(null);
+      setPrice("");
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
-  const updatePrice = () => {
-    if (!targetService) return;
-    const amount = Number(priceForm.amount) || 0;
-    setSvc((s) =>
-      s.map((x) =>
-        x.id === targetService.id
-          ? {
-              ...x,
-              price: amount,
-              priceHistory: [{ amount, effectiveFrom: priceForm.effectiveFrom }, ...x.priceHistory],
-            }
-          : x,
-      ),
-    );
-    setModal(null);
-    toast.success("New price effective from " + priceForm.effectiveFrom);
-  };
+  const toggleDepartment = useMutation({
+    mutationFn: (department: Department) =>
+      updateDepartment(department.id, { is_active: !department.is_active }),
+    onSuccess: () => {
+      toast.success("Department updated");
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const toggleService = useMutation({
+    mutationFn: (service: Service) => updateService(service.id, { is_active: !service.is_active }),
+    onSuccess: () => {
+      toast.success("Service updated");
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const departments = departmentsQuery.data?.items ?? [];
+  const services = servicesQuery.data?.items ?? [];
 
   return (
     <div>
       <PageHeader
         title="Departments & Services"
-        subtitle="Department capacity, service catalog and effective-dated pricing."
+        subtitle="Clinical catalogue and price lists from the live API."
         actions={
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => {
-                setDeptForm(blankDept);
-                setModal("dept");
-              }}
-              className="inline-flex items-center gap-2 rounded-xl border border-primary px-4 py-2.5 text-sm font-semibold text-primary hover:bg-primary/10"
-            >
-              <Plus className="h-4 w-4" />
-              Department
-            </button>
-            <button
-              onClick={() => {
-                setServiceForm(blankService);
-                setModal("service");
-              }}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              <Plus className="h-4 w-4" />
-              Service
-            </button>
-          </div>
+          <Button
+            onClick={() => (tab === "departments" ? setDepartmentOpen(true) : setServiceOpen(true))}
+          >
+            <Plus /> {tab === "departments" ? "Add department" : "Add service"}
+          </Button>
         }
       />
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          tone="teal"
-          icon={Building2}
-          label="Departments"
-          value={String(depts.length)}
-          change={0}
-        />
-        <StatCard
-          tone="yellow"
-          icon={BedDouble}
-          label="Bed Occupancy"
-          value={`${Math.round((used / Math.max(1, beds)) * 100)}%`}
-          change={3.8}
-        />
-        <StatCard tone="pink" icon={Activity} label="Admissions Today" value="37" change={6.5} />
-        <StatCard tone="purple" icon={Clock} label="Avg. Wait" value="21 min" change={-4.2} />
+
+      <div className="mb-6 flex flex-wrap gap-2">
+        {(["departments", "services"] as const).map((value) => (
+          <button
+            key={value}
+            onClick={() => setTab(value)}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-colors",
+              tab === value
+                ? "bg-primary text-primary-foreground shadow-glow"
+                : "bg-secondary text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {value === "departments" ? (
+              <Building2 className="h-4 w-4" />
+            ) : (
+              <CircleDollarSign className="h-4 w-4" />
+            )}
+            {titleize(value)}
+          </button>
+        ))}
       </div>
 
-      <Panel>
-        <div className="flex overflow-x-auto rounded-xl bg-secondary p-1">
-          {(
-            [
-              ["departments", "Departments"],
-              ["services", "Service catalog"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={cn(
-                "whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition",
-                tab === id
-                  ? "bg-primary text-primary-foreground shadow-glow"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {tab === "departments" && (
-          <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {depts.map((d) => {
-              const pct = d.beds ? Math.round((d.used / d.beds) * 100) : 0;
-              const bar = pct >= 90 ? "bg-destructive" : pct >= 75 ? "bg-warning" : "bg-success";
-              return (
-                <div key={d.id} className="rounded-2xl border border-border bg-secondary/40 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-grad-teal text-on-gradient">
-                        <Building2 className="h-5 w-5" />
-                      </span>
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold">{d.name}</p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {d.code} · Head: {d.head}
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setTargetDept(d);
-                        setDeptForm({
-                          name: d.name,
-                          code: d.code,
-                          description: d.description,
-                          active: d.active,
-                        });
-                        setModal("deptEdit");
-                      }}
-                      aria-label="Edit department"
-                      className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </button>
-                  </div>
-                  <div className="mt-4">
-                    <div className="mb-1.5 flex justify-between text-xs">
-                      <span className="text-muted-foreground">Bed occupancy</span>
-                      <span className="font-semibold">
-                        {d.beds ? `${d.used}/${d.beds} · ${pct}%` : "Day service"}
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-muted">
-                      <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-                  <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
-                    <div className="rounded-xl bg-card p-2.5">
-                      <p className="text-muted-foreground">Staff</p>
-                      <p className="mt-0.5 font-semibold">{d.staff}</p>
-                    </div>
-                    <div className="rounded-xl bg-card p-2.5">
-                      <p className="text-muted-foreground">Wait</p>
-                      <p className="mt-0.5 font-semibold">{d.wait} min</p>
-                    </div>
-                    <div className="rounded-xl bg-card p-2.5">
-                      <p className="text-muted-foreground">Oct revenue</p>
-                      <p className="mt-0.5 font-semibold">{ksh(d.revenue / 1000)}K</p>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between">
-                    <Badge tone={d.active ? "success" : "muted"}>
-                      {d.active ? "Active" : "Inactive"}
-                    </Badge>
-                    <span className="text-[11px] text-muted-foreground">
-                      {svc.filter((s) => s.department === d.name).length} services
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {tab === "services" && (
-          <div className={cn(tableWrap, "mt-5")}>
+      {tab === "departments" ? (
+        <Panel title="Departments">
+          <div className={tableWrap}>
             <table className="w-full">
               <thead>
                 <tr className={theadRow}>
-                  {[
-                    "Service",
-                    "Department",
-                    "Code",
-                    "Current price",
-                    "Prices",
-                    "Status",
-                    "Actions",
-                  ].map((h) => (
-                    <th key={h} className={th}>
-                      {h}
-                    </th>
-                  ))}
+                  <th className={th}>Name</th>
+                  <th className={th}>Code</th>
+                  <th className={th}>Description</th>
+                  <th className={th}>Status</th>
+                  <th className={th}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {svc.map((s) => (
-                  <tr key={s.id} className={tbodyRow}>
-                    <td className={td}>
-                      <div className="font-medium">{s.name}</div>
-                      <div className="text-xs text-muted-foreground">{s.description}</div>
-                    </td>
-                    <td className={td}>{s.department}</td>
-                    <td className={cn(td, "font-mono text-xs")}>{s.code}</td>
-                    <td className={cn(td, "font-semibold")}>{ksh(s.price)}</td>
-                    <td className={td}>
-                      <span className="text-xs text-muted-foreground">
-                        {s.priceHistory.length} effective-dated
-                      </span>
-                    </td>
-                    <td className={td}>
-                      <Badge tone={s.active ? "success" : "muted"}>
-                        {s.active ? "Active" : "Inactive"}
-                      </Badge>
-                    </td>
-                    <td className={td}>
-                      <div className="flex gap-1.5">
-                        <button
-                          onClick={() => {
-                            setTargetService(s);
-                            setServiceForm({
-                              department: s.department,
-                              name: s.name,
-                              code: s.code,
-                              description: s.description,
-                              price: String(s.price),
-                              active: s.active,
-                            });
-                            setModal("serviceEdit");
-                          }}
-                          aria-label="Edit service"
-                          title="Edit service"
-                          className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => {
-                            setTargetService(s);
-                            setPriceForm({ amount: String(s.price), effectiveFrom: "2026-10-29" });
-                            setModal("price");
-                          }}
-                          aria-label="Update price"
-                          title="Update price"
-                          className="rounded-lg p-2 text-primary hover:bg-primary/15"
-                        >
-                          <Tag className="h-4 w-4" />
-                        </button>
-                      </div>
+                {departmentsQuery.isLoading ? (
+                  <tr>
+                    <td colSpan={5} className="p-0">
+                      <LoadingRows rows={4} className="p-3" />
                     </td>
                   </tr>
-                ))}
-                {svc.length === 0 && <EmptyState cols={7} />}
+                ) : departmentsQuery.error ? (
+                  <tr>
+                    <td colSpan={5} className="p-3">
+                      <ErrorBlock
+                        error={departmentsQuery.error}
+                        onRetry={() => void departmentsQuery.refetch()}
+                      />
+                    </td>
+                  </tr>
+                ) : departments.length === 0 ? (
+                  <EmptyState cols={5} message="No departments yet." />
+                ) : (
+                  departments.map((department) => (
+                    <tr key={department.id} className={tbodyRow}>
+                      <td className={cn(td, "font-medium")}>{department.name}</td>
+                      <td className={td}>{department.code}</td>
+                      <td className={td}>{department.description ?? "—"}</td>
+                      <td className={td}>
+                        <Badge tone={department.is_active ? "success" : "muted"}>
+                          {department.is_active ? "Active" : "Inactive"}
+                        </Badge>
+                      </td>
+                      <td className={td}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => toggleDepartment.mutate(department)}
+                        >
+                          {department.is_active ? "Deactivate" : "Activate"}
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
-        )}
-      </Panel>
+        </Panel>
+      ) : (
+        <Panel title="Services & prices">
+          <div className={tableWrap}>
+            <table className="w-full">
+              <thead>
+                <tr className={theadRow}>
+                  <th className={th}>Service</th>
+                  <th className={th}>Code</th>
+                  <th className={th}>Department</th>
+                  <th className={th}>Price</th>
+                  <th className={th}>Status</th>
+                  <th className={th}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {servicesQuery.isLoading ? (
+                  <tr>
+                    <td colSpan={6} className="p-0">
+                      <LoadingRows rows={4} className="p-3" />
+                    </td>
+                  </tr>
+                ) : servicesQuery.error ? (
+                  <tr>
+                    <td colSpan={6} className="p-3">
+                      <ErrorBlock
+                        error={servicesQuery.error}
+                        onRetry={() => void servicesQuery.refetch()}
+                      />
+                    </td>
+                  </tr>
+                ) : services.length === 0 ? (
+                  <EmptyState cols={6} message="No services yet." />
+                ) : (
+                  services.map((service) => (
+                    <tr key={service.id} className={tbodyRow}>
+                      <td className={cn(td, "font-medium")}>{service.name}</td>
+                      <td className={td}>{service.code}</td>
+                      <td className={td}>
+                        {departments.find((item) => item.id === service.department_id)?.name ?? "—"}
+                      </td>
+                      <td className={td}>{formatKshMinor(service.current_price_minor ?? 0)}</td>
+                      <td className={td}>
+                        <Badge tone={service.is_active ? "success" : "muted"}>
+                          {service.is_active ? "Active" : "Inactive"}
+                        </Badge>
+                      </td>
+                      <td className={cn(td, "space-x-2")}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setPriceTarget(service);
+                            setPrice(String((service.current_price_minor ?? 0) / 100));
+                          }}
+                        >
+                          Update price
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => toggleService.mutate(service)}
+                        >
+                          {service.is_active ? "Deactivate" : "Activate"}
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
       <Modal
-        open={modal === "dept" || modal === "deptEdit"}
-        onClose={() => setModal(null)}
-        title={modal === "dept" ? "Create department" : "Edit department"}
-        subtitle={modal === "dept" ? "POST /admin/departments" : "PATCH /admin/departments/:id"}
+        open={departmentOpen}
+        onClose={() => setDepartmentOpen(false)}
+        title="Add department"
         footer={
           <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setDepartmentOpen(false)}>
               Cancel
-            </button>
-            <button
-              onClick={modal === "dept" ? createDept : saveDept}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
+            </Button>
+            <Button
+              onClick={() => departmentMutation.mutate()}
+              disabled={departmentMutation.isPending}
             >
-              {modal === "dept" ? "Create" : "Save"}
-            </button>
+              {departmentMutation.isPending ? "Saving…" : "Create department"}
+            </Button>
           </>
         }
       >
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-3">
           <Field label="Name">
             <input
               className={inputCls}
-              value={deptForm.name}
-              onChange={(e) => setDeptForm({ ...deptForm, name: e.target.value })}
+              value={departmentForm.name}
+              onChange={(event) =>
+                setDepartmentForm({ ...departmentForm, name: event.target.value })
+              }
             />
           </Field>
           <Field label="Code">
             <input
               className={inputCls}
-              value={deptForm.code}
-              onChange={(e) => setDeptForm({ ...deptForm, code: e.target.value })}
-              disabled={modal === "deptEdit"}
+              value={departmentForm.code}
+              onChange={(event) =>
+                setDepartmentForm({ ...departmentForm, code: event.target.value })
+              }
             />
           </Field>
-          <Field label="Description" className="sm:col-span-2">
-            <textarea
-              className={textareaCls}
-              value={deptForm.description}
-              onChange={(e) => setDeptForm({ ...deptForm, description: e.target.value })}
-            />
-          </Field>
-          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+          <Field label="Description">
             <input
-              type="checkbox"
-              className="h-4 w-4 accent-primary"
-              checked={deptForm.active}
-              onChange={(e) => setDeptForm({ ...deptForm, active: e.target.checked })}
+              className={inputCls}
+              value={departmentForm.description}
+              onChange={(event) =>
+                setDepartmentForm({ ...departmentForm, description: event.target.value })
+              }
             />
-            Active
-          </label>
+          </Field>
         </div>
       </Modal>
 
       <Modal
-        open={modal === "service" || modal === "serviceEdit"}
-        onClose={() => setModal(null)}
-        wide
-        title={modal === "service" ? "Create service" : "Edit service"}
-        subtitle={modal === "service" ? "POST /admin/services" : "PATCH /admin/services/:id"}
+        open={serviceOpen}
+        onClose={() => setServiceOpen(false)}
+        title="Add service"
         footer={
           <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setServiceOpen(false)}>
               Cancel
-            </button>
-            <button
-              onClick={modal === "service" ? createService : saveService}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              {modal === "service" ? "Create" : "Save"}
-            </button>
+            </Button>
+            <Button onClick={() => serviceMutation.mutate()} disabled={serviceMutation.isPending}>
+              {serviceMutation.isPending ? "Saving…" : "Create service"}
+            </Button>
           </>
         }
       >
@@ -502,12 +406,16 @@ function Page() {
           <Field label="Department">
             <select
               className={inputCls}
-              value={serviceForm.department}
-              onChange={(e) => setServiceForm({ ...serviceForm, department: e.target.value })}
-              disabled={modal === "serviceEdit"}
+              value={serviceForm.department_id}
+              onChange={(event) =>
+                setServiceForm({ ...serviceForm, department_id: event.target.value })
+              }
             >
-              {depts.map((d) => (
-                <option key={d.id}>{d.name}</option>
+              <option value="">Select department</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
               ))}
             </select>
           </Field>
@@ -515,106 +423,64 @@ function Page() {
             <input
               className={inputCls}
               value={serviceForm.name}
-              onChange={(e) => setServiceForm({ ...serviceForm, name: e.target.value })}
+              onChange={(event) => setServiceForm({ ...serviceForm, name: event.target.value })}
             />
           </Field>
           <Field label="Code">
             <input
               className={inputCls}
               value={serviceForm.code}
-              onChange={(e) => setServiceForm({ ...serviceForm, code: e.target.value })}
-              disabled={modal === "serviceEdit"}
+              onChange={(event) => setServiceForm({ ...serviceForm, code: event.target.value })}
             />
           </Field>
-          <Field label="Price (KSh)">
+          <Field label="Price (KES)">
             <input
               type="number"
+              min="0"
+              step="0.01"
               className={inputCls}
-              value={serviceForm.price}
-              onChange={(e) => setServiceForm({ ...serviceForm, price: e.target.value })}
-              disabled={modal === "serviceEdit"}
+              value={serviceForm.amount}
+              onChange={(event) => setServiceForm({ ...serviceForm, amount: event.target.value })}
             />
           </Field>
           <Field label="Description" className="sm:col-span-2">
-            <textarea
-              className={textareaCls}
+            <input
+              className={inputCls}
               value={serviceForm.description}
-              onChange={(e) => setServiceForm({ ...serviceForm, description: e.target.value })}
+              onChange={(event) =>
+                setServiceForm({ ...serviceForm, description: event.target.value })
+              }
             />
           </Field>
-          <label className="flex items-center gap-2 text-sm sm:col-span-2">
-            <input
-              type="checkbox"
-              className="h-4 w-4 accent-primary"
-              checked={serviceForm.active}
-              onChange={(e) => setServiceForm({ ...serviceForm, active: e.target.checked })}
-            />
-            Active
-          </label>
         </div>
       </Modal>
 
       <Modal
-        open={modal === "price"}
-        onClose={() => setModal(null)}
-        title="Update service price"
-        subtitle={
-          targetService
-            ? `${targetService.name} · POST /admin/services/${targetService.id}/prices`
-            : undefined
-        }
+        open={Boolean(priceTarget)}
+        onClose={() => setPriceTarget(null)}
+        title="Update price"
+        subtitle={priceTarget?.name}
         footer={
           <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setPriceTarget(null)}>
               Cancel
-            </button>
-            <button
-              onClick={updatePrice}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Publish price
-            </button>
+            </Button>
+            <Button onClick={() => priceMutation.mutate()} disabled={priceMutation.isPending}>
+              {priceMutation.isPending ? "Saving…" : "Save price"}
+            </Button>
           </>
         }
       >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Amount (KSh)">
-            <input
-              type="number"
-              className={inputCls}
-              value={priceForm.amount}
-              onChange={(e) => setPriceForm({ ...priceForm, amount: e.target.value })}
-            />
-          </Field>
-          <Field label="Effective from">
-            <input
-              type="date"
-              className={inputCls}
-              value={priceForm.effectiveFrom}
-              onChange={(e) => setPriceForm({ ...priceForm, effectiveFrom: e.target.value })}
-            />
-          </Field>
-        </div>
-        {targetService && (
-          <div className="mt-4 rounded-xl bg-secondary p-3">
-            <p className="text-xs text-muted-foreground">Price history</p>
-            <ul className="mt-1 space-y-1 text-xs">
-              {targetService.priceHistory.map((p) => (
-                <li key={p.effectiveFrom} className="flex justify-between">
-                  <span>{p.effectiveFrom}</span>
-                  <span className="font-semibold">{ksh(p.amount)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <p className="mt-3 text-[11px] text-muted-foreground">
-          <Stethoscope className="mr-1 inline h-3.5 w-3.5" />
-          Previous price is closed automatically when a new price is published.
-        </p>
+        <Field label="New price (KES)">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            className={inputCls}
+            value={price}
+            onChange={(event) => setPrice(event.target.value)}
+          />
+        </Field>
       </Modal>
     </div>
   );

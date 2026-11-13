@@ -1,18 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import {
-  Stethoscope,
-  UserCheck,
-  CalendarClock,
-  Star,
-  Phone,
-  Mail,
-  Plus,
-  Pencil,
-  Trash2,
-  UserPlus,
-  Clock,
-} from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CheckCircle2, Plus, Search, UserX, Users } from "lucide-react";
 import {
   Badge,
   EmptyState,
@@ -23,40 +12,37 @@ import {
   Panel,
   StatCard,
   inputCls,
-  textareaCls,
-  th,
   td,
+  th,
   tableWrap,
-  theadRow,
   tbodyRow,
+  theadRow,
 } from "@/components/kit";
+import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { Button } from "@/components/ui/button";
 import {
-  availabilityExceptions,
-  availabilityRules,
-  departments,
-  staff as seedStaff,
-  titleize,
-  type AvailabilityException,
-  type AvailabilityRule,
-  type StaffMember,
-  type StaffRole,
-  type UserStatus,
-} from "@/lib/data";
+  createUser,
+  listDepartments,
+  listDoctors,
+  listUsers,
+  managementKeys,
+  updateDoctor,
+  updateUser,
+} from "@/lib/api/management";
+import { formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { Role, UserStatus } from "@/types/api";
 
 export const Route = createFileRoute("/admin/staff")({
   head: () => ({
     meta: [
       { title: "Doctors & Staff — MediFlow" },
-      {
-        name: "description",
-        content: "Staff accounts, doctor profiles, rosters and availability rules.",
-      },
+      { name: "description", content: "Staff accounts, roles, doctors and clinical profiles." },
       { property: "og:title", content: "Doctors & Staff — MediFlow" },
       {
         property: "og:description",
-        content: "Staff accounts, doctor profiles, rosters and availability rules.",
+        content: "Staff accounts, roles, doctors and clinical profiles.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -65,512 +51,330 @@ export const Route = createFileRoute("/admin/staff")({
   component: Page,
 });
 
-type Tab = "team" | "users" | "availability";
-const roles: StaffRole[] = ["ADMIN", "DOCTOR", "RECEPTIONIST", "CASHIER"];
-const userStatuses: UserStatus[] = ["ACTIVE", "INACTIVE", "SUSPENDED", "PENDING_VERIFICATION"];
-const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const roles: Role[] = ["ADMIN", "DOCTOR", "RECEPTIONIST", "CASHIER"];
+const statuses: UserStatus[] = ["ACTIVE", "INACTIVE", "SUSPENDED", "PENDING_VERIFICATION"];
+
 const blankStaff = {
-  firstName: "",
-  lastName: "",
+  first_name: "",
+  last_name: "",
   email: "",
   phone: "",
   password: "",
-  role: "DOCTOR" as StaffRole,
-  department: "Outpatient",
+  role: "DOCTOR" as Role,
+  department_id: "",
   specialty: "",
-  license: "",
-  fee: "0",
-};
-const blankRule = { doctor: "", weekday: "1", start: "08:00", end: "16:00", slot: "30" };
-const blankException = {
-  doctor: "",
-  start: "2026-11-02T09:00",
-  end: "2026-11-02T13:00",
-  kind: "BLOCKED" as AvailabilityException["kind"],
-  reason: "",
+  license_number: "",
+  fee: "",
 };
 
 function Page() {
-  const [tab, setTab] = useState<Tab>("team");
-  const [team, setTeam] = useState<StaffMember[]>(seedStaff);
-  const [rules, setRules] = useState<AvailabilityRule[]>(availabilityRules);
-  const [exceptions, setExceptions] = useState<AvailabilityException[]>(availabilityExceptions);
-  const [dept, setDept] = useState("All");
+  const queryClient = useQueryClient();
+  const [q, setQ] = useState("");
+  const [role, setRole] = useState("All");
   const [status, setStatus] = useState("All");
-  const [modal, setModal] = useState<null | "create" | "user" | "doctor" | "rule" | "exception">(
-    null,
-  );
-  const [target, setTarget] = useState<StaffMember | null>(null);
-  const [staffForm, setStaffForm] = useState(blankStaff);
-  const [userForm, setUserForm] = useState({
-    firstName: "",
-    lastName: "",
-    role: "DOCTOR" as StaffRole,
-    status: "ACTIVE" as UserStatus,
+  const [page, setPage] = useState(1);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form, setForm] = useState(blankStaff);
+
+  const params = {
+    page,
+    page_size: 15,
+    search: q || undefined,
+    role: role === "All" ? undefined : role,
+    status: status === "All" ? undefined : status,
+  };
+  const usersQuery = useQuery({
+    queryKey: managementKeys.users(params),
+    queryFn: () => listUsers(params),
+    staleTime: 30_000,
   });
-  const [doctorForm, setDoctorForm] = useState({
-    department: "Outpatient",
-    specialty: "",
-    license: "",
-    fee: "0",
-    bio: "",
-    accepting: true,
+  const doctorsQuery = useQuery({
+    queryKey: managementKeys.doctors({}),
+    queryFn: () => listDoctors({}),
+    staleTime: 60_000,
   });
-  const [ruleForm, setRuleForm] = useState(blankRule);
-  const [exceptionForm, setExceptionForm] = useState(blankException);
+  const departmentsQuery = useQuery({
+    queryKey: managementKeys.departments,
+    queryFn: listDepartments,
+    staleTime: 300_000,
+  });
 
-  const doctors = team.filter((s) => s.role === "DOCTOR");
-  const list = team.filter(
-    (s) =>
-      s.role !== "ADMIN" &&
-      (dept === "All" || s.department === dept) &&
-      (status === "All" || s.status === status),
+  const doctorByUser = new Map(
+    (doctorsQuery.data?.items ?? []).map((doctor) => [doctor.user_id, doctor]),
   );
 
-  const openDoctor = (member: StaffMember) => {
-    setTarget(member);
-    setDoctorForm({
-      department: member.department,
-      specialty: member.specialty ?? "",
-      license: member.license ?? "",
-      fee: String(member.fee ?? 0),
-      bio: member.bio ?? "",
-      accepting: member.accepting ?? true,
-    });
-    setModal("doctor");
+  const createMutation = useMutation({
+    mutationFn: () => {
+      if (!form.first_name || !form.last_name || !form.email || !form.password) {
+        throw new Error("First name, last name, email and password are required");
+      }
+      return createUser({
+        first_name: form.first_name,
+        last_name: form.last_name,
+        email: form.email,
+        phone: form.phone || undefined,
+        password: form.password,
+        role: form.role,
+        department_id: form.department_id || undefined,
+        specialty: form.specialty || undefined,
+        license_number: form.license_number || undefined,
+        consultation_fee_minor: form.fee ? Math.round(Number(form.fee) * 100) : 0,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Staff account created");
+      setCreateOpen(false);
+      setForm(blankStaff);
+      void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "doctors"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: (payload: { id: string; status: UserStatus }) =>
+      updateUser(payload.id, { status: payload.status }),
+    onSuccess: () => {
+      toast.success("Staff status updated");
+      void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const doctorMutation = useMutation({
+    mutationFn: (payload: { id: string; accepting: boolean }) =>
+      updateDoctor(payload.id, { is_accepting_appointments: payload.accepting }),
+    onSuccess: () => {
+      toast.success("Doctor availability updated");
+      void queryClient.invalidateQueries({ queryKey: ["admin", "doctors"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const resetPage = (fn: () => void) => {
+    fn();
+    setPage(1);
   };
 
-  const openUser = (member: StaffMember) => {
-    setTarget(member);
-    setUserForm({
-      firstName: member.name.split(" ")[0] ?? "",
-      lastName: member.name.split(" ").slice(1).join(" "),
-      role: member.role,
-      status: member.status,
-    });
-    setModal("user");
-  };
-
-  const createStaff = () => {
-    if (
-      !staffForm.firstName.trim() ||
-      !staffForm.lastName.trim() ||
-      !staffForm.email.trim() ||
-      !staffForm.password
-    ) {
-      toast.error("Name, email and password are required");
-      return;
-    }
-    const next: StaffMember = {
-      id: `usr-${team.length + 1}`,
-      name: `${staffForm.firstName} ${staffForm.lastName}`,
-      email: staffForm.email,
-      phone: staffForm.phone,
-      role: staffForm.role,
-      department: staffForm.department,
-      ...(staffForm.specialty ? { specialty: staffForm.specialty } : {}),
-      ...(staffForm.license ? { license: staffForm.license } : {}),
-      ...(staffForm.role === "DOCTOR" ? { fee: Number(staffForm.fee) || 0, accepting: true } : {}),
-      status: "ACTIVE",
-      lastActive: "—",
-      shift: "08:00 – 17:00",
-      patients: 0,
-      rating: 0,
-      grad: "bg-grad-teal",
-    };
-    setTeam((t) => [next, ...t]);
-    setModal(null);
-    setStaffForm(blankStaff);
-    toast.success(`Staff account created for ${next.name}`);
-  };
-
-  const saveUser = () => {
-    if (!target) return;
-    setTeam((t) =>
-      t.map((s) =>
-        s.id === target.id
-          ? {
-              ...s,
-              name: `${userForm.firstName} ${userForm.lastName}`,
-              role: userForm.role,
-              status: userForm.status,
-            }
-          : s,
-      ),
-    );
-    setModal(null);
-    toast.success("User account updated");
-  };
-
-  const saveDoctor = () => {
-    if (!target) return;
-    setTeam((t) =>
-      t.map((s) =>
-        s.id === target.id
-          ? {
-              ...s,
-              department: doctorForm.department,
-              specialty: doctorForm.specialty,
-              license: doctorForm.license,
-              fee: Number(doctorForm.fee) || 0,
-              bio: doctorForm.bio,
-              accepting: doctorForm.accepting,
-            }
-          : s,
-      ),
-    );
-    setModal(null);
-    toast.success("Doctor profile updated");
-  };
-
-  const addRule = () => {
-    if (!ruleForm.doctor) return;
-    const next: AvailabilityRule = {
-      id: `av-${rules.length + 1}`,
-      doctor: ruleForm.doctor,
-      weekday: Number(ruleForm.weekday),
-      start: ruleForm.start,
-      end: ruleForm.end,
-      slot: Number(ruleForm.slot) || 30,
-      timezone: "Africa/Nairobi",
-      active: true,
-    };
-    setRules((r) => [...r, next]);
-    setModal(null);
-    setRuleForm(blankRule);
-    toast.success("Availability rule added");
-  };
-
-  const addException = () => {
-    if (!exceptionForm.doctor) return;
-    const next: AvailabilityException = { id: `ex-${exceptions.length + 1}`, ...exceptionForm };
-    setExceptions((e) => [...e, next]);
-    setModal(null);
-    setExceptionForm(blankException);
-    toast.success("Availability exception added");
-  };
-
-  const removeRule = (id: string) => {
-    setRules((r) => r.filter((rule) => rule.id !== id));
-    toast.success("Availability rule removed");
-  };
+  const members = usersQuery.data?.items ?? [];
+  const active = members.filter((member) => member.status === "ACTIVE").length;
+  const doctorCount = members.filter((member) => member.role === "DOCTOR").length;
 
   return (
     <div>
       <PageHeader
         title="Doctors & Staff"
-        subtitle="Staff accounts, doctor profiles, rosters and availability."
+        subtitle="Live staff directory, roles and doctor profiles."
         actions={
-          <button
-            onClick={() => {
-              setStaffForm(blankStaff);
-              setModal("create");
-            }}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-          >
-            <UserPlus className="h-4 w-4" />
-            Create staff account
-          </button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus /> Add staff
+          </Button>
         }
       />
+
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           tone="teal"
-          icon={Stethoscope}
-          label="Total Staff"
-          value={String(team.length)}
-          change={2.1}
+          icon={Users}
+          label="Staff on page"
+          value={String(members.length)}
+          change={null}
         />
         <StatCard
           tone="yellow"
-          icon={UserCheck}
-          label="Active Accounts"
-          value={String(team.filter((s) => s.status === "ACTIVE").length)}
-          change={4.0}
+          icon={CheckCircle2}
+          label="Active on page"
+          value={String(active)}
+          change={null}
         />
         <StatCard
           tone="pink"
-          icon={CalendarClock}
-          label="Availability Rules"
-          value={String(rules.length)}
-          change={-12.5}
+          icon={Users}
+          label="Doctors on page"
+          value={String(doctorCount)}
+          change={null}
         />
-        <StatCard tone="purple" icon={Star} label="Patient Rating" value="4.7 / 5" change={1.3} />
+        <StatCard
+          tone="purple"
+          icon={UserX}
+          label="Total staff"
+          value={String(usersQuery.data?.meta.total ?? 0)}
+          change={null}
+        />
       </div>
+
       <Panel>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex overflow-x-auto rounded-xl bg-secondary p-1">
-            {(
-              [
-                ["team", "Doctors & staff"],
-                ["users", "User accounts"],
-                ["availability", "Availability"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                className={cn(
-                  "whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition",
-                  tab === id
-                    ? "bg-primary text-primary-foreground shadow-glow"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
+        <div className="flex flex-col gap-3 xl:flex-row">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={q}
+              onChange={(event) => resetPage(() => setQ(event.target.value))}
+              placeholder="Search name, email or phone"
+              className={cn(inputCls, "pl-10")}
+            />
           </div>
-          {tab === "team" && (
-            <div className="flex flex-wrap gap-2">
-              <FilterSelect
-                label="Department"
-                value={dept}
-                onChange={setDept}
-                options={departments}
-              />
-              <FilterSelect
-                label="Status"
-                value={status}
-                onChange={setStatus}
-                options={userStatuses}
-              />
-            </div>
-          )}
-          {tab === "availability" && (
-            <button
-              onClick={() => {
-                setRuleForm(blankRule);
-                setModal("rule");
-              }}
-              className="inline-flex items-center gap-2 rounded-xl border border-primary px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/10"
-            >
-              <Plus className="h-4 w-4" />
-              Add rule
-            </button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            <FilterSelect
+              label="Role"
+              value={role}
+              onChange={(value) => resetPage(() => setRole(value))}
+              options={roles}
+            />
+            <FilterSelect
+              label="Status"
+              value={status}
+              onChange={(value) => resetPage(() => setStatus(value))}
+              options={statuses}
+            />
+          </div>
         </div>
 
-        {tab === "team" && (
-          <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {list.map((s) => (
-              <div key={s.id} className="rounded-2xl border border-border bg-secondary/50 p-4">
-                <div className="flex items-start justify-between">
-                  <span
-                    className={`grid h-12 w-12 place-items-center rounded-full font-bold ${s.grad} ${s.grad.includes("yellow") || s.grad.includes("pink") ? "text-ink" : "text-on-gradient"}`}
-                  >
-                    {s.name
-                      .replace(/^(Dr\.|Nurse) /, "")
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
-                  </span>
-                  <Badge>{titleize(s.status)}</Badge>
-                </div>
-                <p className="mt-3 font-semibold">{s.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {s.specialty ?? titleize(s.role)} · {s.department}
-                </p>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-lg bg-card p-2">
-                    <p className="text-muted-foreground">Patients today</p>
-                    <p className="font-semibold">{s.patients}</p>
-                  </div>
-                  <div className="rounded-lg bg-card p-2">
-                    <p className="text-muted-foreground">Rating</p>
-                    <p className="font-semibold">★ {s.rating || "—"}</p>
-                  </div>
-                </div>
-                <p className="mt-3 text-xs text-muted-foreground">Shift: {s.shift}</p>
-                {s.role === "DOCTOR" && (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Fee: {s.fee ? `KSh ${s.fee.toLocaleString("en-KE")}` : "—"} ·{" "}
-                    {s.accepting ? "Accepting bookings" : "Not accepting"}
-                  </p>
-                )}
-                <div className="mt-3 flex gap-2">
-                  <button
-                    onClick={() => openDoctor(s)}
-                    disabled={s.role !== "DOCTOR"}
-                    className="grid h-8 flex-1 place-items-center rounded-lg bg-primary/15 text-primary disabled:opacity-30"
-                    aria-label="Edit doctor profile"
-                    title="Edit doctor profile"
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => openUser(s)}
-                    className="grid h-8 flex-1 place-items-center rounded-lg bg-primary/15 text-primary"
-                    aria-label="Edit user account"
-                    title="Edit user account"
-                  >
-                    <UserCheck className="h-4 w-4" />
-                  </button>
-                  <button
-                    className="grid h-8 flex-1 place-items-center rounded-lg bg-secondary text-muted-foreground"
-                    aria-label="Contact"
-                    title="Contact"
-                  >
-                    <Phone className="h-4 w-4" />
-                  </button>
-                  <button
-                    className="grid h-8 flex-1 place-items-center rounded-lg bg-secondary text-muted-foreground"
-                    aria-label="Email"
-                    title="Email"
-                  >
-                    <Mail className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {tab === "users" && (
-          <div className={cn(tableWrap, "mt-5")}>
-            <table className="w-full">
-              <thead>
-                <tr className={theadRow}>
-                  {["User", "Role", "Department", "Last active", "Status", "Actions"].map((h) => (
-                    <th key={h} className={th}>
-                      {h}
-                    </th>
-                  ))}
+        <div className={cn(tableWrap, "mt-4")}>
+          <table className="w-full">
+            <thead>
+              <tr className={theadRow}>
+                <th className={th}>Name</th>
+                <th className={th}>Contact</th>
+                <th className={th}>Role</th>
+                <th className={th}>Status</th>
+                <th className={th}>Clinical profile</th>
+                <th className={th}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usersQuery.isLoading ? (
+                <tr>
+                  <td colSpan={6} className="p-0">
+                    <LoadingRows rows={5} className="p-3" />
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {team.map((s) => (
-                  <tr key={s.id} className={tbodyRow}>
-                    <td className={td}>
-                      <div className="font-medium">{s.name}</div>
-                      <div className="text-xs text-muted-foreground">{s.email}</div>
-                    </td>
-                    <td className={td}>
-                      <Badge tone="info">{titleize(s.role)}</Badge>
-                    </td>
-                    <td className={td}>{s.department}</td>
-                    <td className={td}>{s.lastActive}</td>
-                    <td className={td}>
-                      <Badge>{titleize(s.status)}</Badge>
-                    </td>
-                    <td className={td}>
-                      <button
-                        onClick={() => openUser(s)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-primary px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        Edit
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {team.length === 0 && <EmptyState cols={6} />}
-              </tbody>
-            </table>
-          </div>
-        )}
+              ) : usersQuery.error ? (
+                <tr>
+                  <td colSpan={6} className="p-3">
+                    <ErrorBlock
+                      error={usersQuery.error}
+                      onRetry={() => void usersQuery.refetch()}
+                    />
+                  </td>
+                </tr>
+              ) : members.length === 0 ? (
+                <EmptyState cols={6} message="No staff match these filters." />
+              ) : (
+                members.map((member) => {
+                  const doctor = doctorByUser.get(member.id);
+                  return (
+                    <tr key={member.id} className={tbodyRow}>
+                      <td className={cn(td, "font-medium")}>{member.full_name}</td>
+                      <td className={td}>
+                        <p>{member.email ?? "—"}</p>
+                        <p className="text-xs text-muted-foreground">{member.phone ?? "—"}</p>
+                      </td>
+                      <td className={td}>
+                        <Badge tone="muted">{titleize(member.role)}</Badge>
+                      </td>
+                      <td className={td}>
+                        <Badge>{titleize(member.status)}</Badge>
+                      </td>
+                      <td className={td}>
+                        {doctor ? (
+                          <div>
+                            <p className="text-sm">{doctor.specialty ?? "Doctor"}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {formatKshMinor(doctor.consultation_fee_minor)} ·{" "}
+                              {doctor.is_accepting_appointments ? "Accepting" : "Not accepting"}
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className={cn(td, "space-x-2")}>
+                        {member.status === "ACTIVE" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              statusMutation.mutate({ id: member.id, status: "INACTIVE" })
+                            }
+                          >
+                            Deactivate
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            onClick={() =>
+                              statusMutation.mutate({ id: member.id, status: "ACTIVE" })
+                            }
+                          >
+                            Activate
+                          </Button>
+                        )}
+                        {doctor && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              doctorMutation.mutate({
+                                id: doctor.id,
+                                accepting: !doctor.is_accepting_appointments,
+                              })
+                            }
+                          >
+                            {doctor.is_accepting_appointments
+                              ? "Pause bookings"
+                              : "Accept bookings"}
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
 
-        {tab === "availability" && (
-          <div className="mt-5 grid gap-5 xl:grid-cols-2">
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-semibold">Weekly rules</h3>
-                <button
-                  onClick={() => {
-                    setExceptionForm(blankException);
-                    setModal("exception");
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10"
-                >
-                  <Clock className="h-3.5 w-3.5" />
-                  Add exception
-                </button>
-              </div>
-              <div className="space-y-2">
-                {rules.map((r) => (
-                  <div
-                    key={r.id}
-                    className="flex items-center justify-between rounded-xl border border-border bg-secondary/40 px-3 py-2.5"
-                  >
-                    <div>
-                      <p className="text-sm font-semibold">{r.doctor}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {weekdays[r.weekday]} · {r.start}–{r.end} · {r.slot} min slots ·{" "}
-                        {r.timezone}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => removeRule(r.id)}
-                      aria-label="Delete rule"
-                      className="rounded-lg p-2 text-destructive hover:bg-destructive/15"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
-                {rules.length === 0 && (
-                  <p className="py-6 text-center text-sm text-muted-foreground">
-                    No availability rules.
-                  </p>
-                )}
-              </div>
-            </div>
-            <div>
-              <h3 className="mb-3 text-sm font-semibold">Upcoming exceptions</h3>
-              <div className="space-y-2">
-                {exceptions.map((e) => (
-                  <div
-                    key={e.id}
-                    className="rounded-xl border border-border bg-secondary/40 px-3 py-2.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-semibold">{e.doctor}</p>
-                      <Badge
-                        tone={
-                          e.kind === "LEAVE" ? "warning" : e.kind === "EXTRA" ? "success" : "danger"
-                        }
-                      >
-                        {titleize(e.kind)}
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {e.start.replace("T", " ")} → {e.end.replace("T", " ")}
-                    </p>
-                    {e.reason && <p className="mt-1 text-xs text-muted-foreground">{e.reason}</p>}
-                  </div>
-                ))}
-                {exceptions.length === 0 && (
-                  <p className="py-6 text-center text-sm text-muted-foreground">No exceptions.</p>
-                )}
-              </div>
-              <p className="mt-3 text-[11px] text-muted-foreground">
-                Rules drive GET /availability; exceptions block or add sessions.
-              </p>
-            </div>
+        <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+          <span>
+            Page {page} of {Math.max(usersQuery.data?.meta.pages ?? 1, 1)} ·{" "}
+            {usersQuery.data?.meta.total ?? 0} staff
+          </span>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+              disabled={page <= 1}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((value) => value + 1)}
+              disabled={page >= (usersQuery.data?.meta.pages ?? 1)}
+            >
+              Next
+            </Button>
           </div>
-        )}
+        </div>
       </Panel>
 
       <Modal
-        open={modal === "create"}
-        onClose={() => setModal(null)}
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Add staff"
+        subtitle="Creates a staff account and, for doctors, a clinical profile."
         wide
-        title="Create staff account"
-        subtitle="POST /admin/users"
         footer={
           <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>
               Cancel
-            </button>
-            <button
-              onClick={createStaff}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Create account
-            </button>
+            </Button>
+            <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
+              {createMutation.isPending ? "Saving…" : "Create account"}
+            </Button>
           </>
         }
       >
@@ -578,382 +382,95 @@ function Page() {
           <Field label="First name">
             <input
               className={inputCls}
-              value={staffForm.firstName}
-              onChange={(e) => setStaffForm({ ...staffForm, firstName: e.target.value })}
+              value={form.first_name}
+              onChange={(event) => setForm({ ...form, first_name: event.target.value })}
             />
           </Field>
           <Field label="Last name">
             <input
               className={inputCls}
-              value={staffForm.lastName}
-              onChange={(e) => setStaffForm({ ...staffForm, lastName: e.target.value })}
+              value={form.last_name}
+              onChange={(event) => setForm({ ...form, last_name: event.target.value })}
             />
           </Field>
           <Field label="Email">
             <input
               type="email"
               className={inputCls}
-              value={staffForm.email}
-              onChange={(e) => setStaffForm({ ...staffForm, email: e.target.value })}
+              value={form.email}
+              onChange={(event) => setForm({ ...form, email: event.target.value })}
             />
           </Field>
           <Field label="Phone">
             <input
               className={inputCls}
-              value={staffForm.phone}
-              onChange={(e) => setStaffForm({ ...staffForm, phone: e.target.value })}
+              value={form.phone}
+              onChange={(event) => setForm({ ...form, phone: event.target.value })}
             />
           </Field>
           <Field label="Temporary password">
             <input
               type="password"
               className={inputCls}
-              value={staffForm.password}
-              onChange={(e) => setStaffForm({ ...staffForm, password: e.target.value })}
+              value={form.password}
+              onChange={(event) => setForm({ ...form, password: event.target.value })}
             />
           </Field>
           <Field label="Role">
             <select
               className={inputCls}
-              value={staffForm.role}
-              onChange={(e) => setStaffForm({ ...staffForm, role: e.target.value as StaffRole })}
+              value={form.role}
+              onChange={(event) => setForm({ ...form, role: event.target.value as Role })}
             >
-              {roles.map((r) => (
-                <option key={r} value={r}>
-                  {titleize(r)}
+              {roles.map((value) => (
+                <option key={value} value={value}>
+                  {titleize(value)}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Department">
-            <select
-              className={inputCls}
-              value={staffForm.department}
-              onChange={(e) => setStaffForm({ ...staffForm, department: e.target.value })}
-            >
-              {departments.map((d) => (
-                <option key={d}>{d}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Specialty">
-            <input
-              className={inputCls}
-              value={staffForm.specialty}
-              onChange={(e) => setStaffForm({ ...staffForm, specialty: e.target.value })}
-            />
-          </Field>
-          <Field label="License number">
-            <input
-              className={inputCls}
-              value={staffForm.license}
-              onChange={(e) => setStaffForm({ ...staffForm, license: e.target.value })}
-            />
-          </Field>
-          <Field label="Consultation fee (KSh)">
-            <input
-              type="number"
-              className={inputCls}
-              value={staffForm.fee}
-              onChange={(e) => setStaffForm({ ...staffForm, fee: e.target.value })}
-            />
-          </Field>
-        </div>
-      </Modal>
-
-      <Modal
-        open={modal === "user"}
-        onClose={() => setModal(null)}
-        title="Edit user account"
-        subtitle={target ? `PATCH /admin/users/${target.id}` : undefined}
-        footer={
-          <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={saveUser}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Save changes
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="First name">
-            <input
-              className={inputCls}
-              value={userForm.firstName}
-              onChange={(e) => setUserForm({ ...userForm, firstName: e.target.value })}
-            />
-          </Field>
-          <Field label="Last name">
-            <input
-              className={inputCls}
-              value={userForm.lastName}
-              onChange={(e) => setUserForm({ ...userForm, lastName: e.target.value })}
-            />
-          </Field>
-          <Field label="Role">
-            <select
-              className={inputCls}
-              value={userForm.role}
-              onChange={(e) => setUserForm({ ...userForm, role: e.target.value as StaffRole })}
-            >
-              {roles.map((r) => (
-                <option key={r} value={r}>
-                  {titleize(r)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Status">
-            <select
-              className={inputCls}
-              value={userForm.status}
-              onChange={(e) => setUserForm({ ...userForm, status: e.target.value as UserStatus })}
-            >
-              {userStatuses.map((s) => (
-                <option key={s} value={s}>
-                  {titleize(s)}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-      </Modal>
-
-      <Modal
-        open={modal === "doctor"}
-        onClose={() => setModal(null)}
-        wide
-        title="Edit doctor profile"
-        subtitle={target ? `PATCH /admin/doctors/${target.id}` : undefined}
-        footer={
-          <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={saveDoctor}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Save changes
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Department">
-            <select
-              className={inputCls}
-              value={doctorForm.department}
-              onChange={(e) => setDoctorForm({ ...doctorForm, department: e.target.value })}
-            >
-              {departments.map((d) => (
-                <option key={d}>{d}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Specialty">
-            <input
-              className={inputCls}
-              value={doctorForm.specialty}
-              onChange={(e) => setDoctorForm({ ...doctorForm, specialty: e.target.value })}
-            />
-          </Field>
-          <Field label="License number">
-            <input
-              className={inputCls}
-              value={doctorForm.license}
-              onChange={(e) => setDoctorForm({ ...doctorForm, license: e.target.value })}
-            />
-          </Field>
-          <Field label="Consultation fee (KSh)">
-            <input
-              type="number"
-              className={inputCls}
-              value={doctorForm.fee}
-              onChange={(e) => setDoctorForm({ ...doctorForm, fee: e.target.value })}
-            />
-          </Field>
-          <Field label="Bio" className="sm:col-span-2">
-            <textarea
-              className={textareaCls}
-              value={doctorForm.bio}
-              onChange={(e) => setDoctorForm({ ...doctorForm, bio: e.target.value })}
-            />
-          </Field>
-          <label className="flex items-center gap-2 text-sm sm:col-span-2">
-            <input
-              type="checkbox"
-              className="h-4 w-4 accent-primary"
-              checked={doctorForm.accepting}
-              onChange={(e) => setDoctorForm({ ...doctorForm, accepting: e.target.checked })}
-            />
-            Accepting new appointments
-          </label>
-        </div>
-      </Modal>
-
-      <Modal
-        open={modal === "rule"}
-        onClose={() => setModal(null)}
-        title="Add availability rule"
-        subtitle="POST /doctors/me/availability"
-        footer={
-          <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={addRule}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Add rule
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Doctor" className="sm:col-span-2">
-            <select
-              className={inputCls}
-              value={ruleForm.doctor}
-              onChange={(e) => setRuleForm({ ...ruleForm, doctor: e.target.value })}
-            >
-              <option value="">Select doctor</option>
-              {doctors.map((d) => (
-                <option key={d.id}>{d.name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Weekday">
-            <select
-              className={inputCls}
-              value={ruleForm.weekday}
-              onChange={(e) => setRuleForm({ ...ruleForm, weekday: e.target.value })}
-            >
-              {weekdays.map((d, i) => (
-                <option key={d} value={i}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Slot minutes">
-            <input
-              type="number"
-              className={inputCls}
-              value={ruleForm.slot}
-              onChange={(e) => setRuleForm({ ...ruleForm, slot: e.target.value })}
-            />
-          </Field>
-          <Field label="Start time">
-            <input
-              type="time"
-              className={inputCls}
-              value={ruleForm.start}
-              onChange={(e) => setRuleForm({ ...ruleForm, start: e.target.value })}
-            />
-          </Field>
-          <Field label="End time">
-            <input
-              type="time"
-              className={inputCls}
-              value={ruleForm.end}
-              onChange={(e) => setRuleForm({ ...ruleForm, end: e.target.value })}
-            />
-          </Field>
-        </div>
-      </Modal>
-
-      <Modal
-        open={modal === "exception"}
-        onClose={() => setModal(null)}
-        title="Add availability exception"
-        subtitle="POST /doctors/me/exceptions"
-        footer={
-          <>
-            <button
-              onClick={() => setModal(null)}
-              className="rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={addException}
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
-            >
-              Add exception
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Doctor" className="sm:col-span-2">
-            <select
-              className={inputCls}
-              value={exceptionForm.doctor}
-              onChange={(e) => setExceptionForm({ ...exceptionForm, doctor: e.target.value })}
-            >
-              <option value="">Select doctor</option>
-              {doctors.map((d) => (
-                <option key={d.id}>{d.name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Start">
-            <input
-              type="datetime-local"
-              className={inputCls}
-              value={exceptionForm.start}
-              onChange={(e) => setExceptionForm({ ...exceptionForm, start: e.target.value })}
-            />
-          </Field>
-          <Field label="End">
-            <input
-              type="datetime-local"
-              className={inputCls}
-              value={exceptionForm.end}
-              onChange={(e) => setExceptionForm({ ...exceptionForm, end: e.target.value })}
-            />
-          </Field>
-          <Field label="Kind">
-            <select
-              className={inputCls}
-              value={exceptionForm.kind}
-              onChange={(e) =>
-                setExceptionForm({
-                  ...exceptionForm,
-                  kind: e.target.value as AvailabilityException["kind"],
-                })
-              }
-            >
-              {["BLOCKED", "LEAVE", "EXTRA"].map((k) => (
-                <option key={k} value={k}>
-                  {titleize(k)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Reason">
-            <input
-              className={inputCls}
-              value={exceptionForm.reason}
-              onChange={(e) => setExceptionForm({ ...exceptionForm, reason: e.target.value })}
-            />
-          </Field>
+          {form.role === "DOCTOR" && (
+            <>
+              <Field label="Department">
+                <select
+                  className={inputCls}
+                  value={form.department_id}
+                  onChange={(event) => setForm({ ...form, department_id: event.target.value })}
+                >
+                  <option value="">Select department</option>
+                  {(departmentsQuery.data?.items ?? []).map((department) => (
+                    <option key={department.id} value={department.id}>
+                      {department.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Specialty">
+                <input
+                  className={inputCls}
+                  value={form.specialty}
+                  onChange={(event) => setForm({ ...form, specialty: event.target.value })}
+                />
+              </Field>
+              <Field label="License number">
+                <input
+                  className={inputCls}
+                  value={form.license_number}
+                  onChange={(event) => setForm({ ...form, license_number: event.target.value })}
+                />
+              </Field>
+              <Field label="Consultation fee (KES)">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className={inputCls}
+                  value={form.fee}
+                  onChange={(event) => setForm({ ...form, fee: event.target.value })}
+                />
+              </Field>
+            </>
+          )}
         </div>
       </Modal>
     </div>
