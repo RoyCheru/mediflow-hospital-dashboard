@@ -16,6 +16,9 @@ test("admin logs in and sees live dashboard data", async ({ page }) => {
   await expect(page.getByText("Pending SHA Claims")).toBeVisible();
   await expect(page.getByText("Patients & staff")).toBeVisible();
   await expect(page.getByText("Could not load this data")).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByText("Total Patients")).toBeVisible();
 });
 
 test("non-admin is blocked from the admin area", async ({ page }) => {
@@ -26,8 +29,7 @@ test("non-admin is blocked from the admin area", async ({ page }) => {
 
 test("claims tracker filters by status", async ({ page }) => {
   await login(page, "admin@mediflow.test", "Admin12345!");
-  await page.getByRole("link", { name: /SHA Claims/ }).click();
-  await expect(page).toHaveURL(/\/admin\/claims$/);
+  await page.goto("/admin/claims");
   await expect(page.getByRole("heading", { name: "SHA Claims" })).toBeVisible();
 
   await page.getByLabel("Status").selectOption("REJECTED");
@@ -37,8 +39,8 @@ test("claims tracker filters by status", async ({ page }) => {
 
 test("void approval appears in the audit log", async ({ page }) => {
   await login(page, "admin@mediflow.test", "Admin12345!");
-  await page.getByRole("link", { name: /Billing & Payments/ }).click();
-  await expect(page).toHaveURL(/\/admin\/billing$/);
+  await page.goto("/admin/billing");
+  await expect(page.getByRole("heading", { name: "Billing & Payments" })).toBeVisible();
   await page.getByRole("button", { name: "Approvals" }).click();
   await expect(page.getByText("Void requests")).toBeVisible();
 

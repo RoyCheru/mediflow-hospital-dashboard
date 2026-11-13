@@ -34,6 +34,8 @@ Why: this matches the backend's current contract without inventing a cookie/prox
 - There is no CSRF exposure because tokens are not sent automatically as cookies.
 - Route guards are UX only. Every admin endpoint enforces `Role.ADMIN` server-side and returns 403 for other roles.
 
+Because tokens live in localStorage, the admin route's `beforeLoad` guard runs on the client only. During SSR it returns without redirecting, and the layout shows a short "Checking your session…" state until `GET /auth/me` confirms the session. This keeps direct reloads of `/admin/*` working.
+
 If the backend later adopts httpOnly cookies, replace `auth-storage.ts` and the API client's auth header; the rest of the pages do not need to change.
 
 ## Endpoint-to-page map
@@ -178,6 +180,6 @@ cd frontend && npm run test:e2e
 
 - Backend: `ruff check app tests`, `ruff format --check app tests`, `.venv/bin/pytest` — **45 passed**.
 - Frontend: `npx tsc --noEmit`, `npm run lint` (0 errors), `npm run build`, `npm test` — **14 passed**.
-- Playwright: **4 passed** (admin login/live dashboard, non-admin blocked, claims filter, void approval visible in audit log).
+- Playwright: **4 passed** (admin login/live dashboard including a full reload, non-admin blocked, claims filter, void approval visible in audit log).
 - SQL spot-check against the E2E SQLite database matched the dashboard summary exactly for total patients, month revenue, pending claims, pending voids and pending refunds.
 - `flask seed` verified against SQLite and confirmed to produce data for every admin screen.

@@ -7,6 +7,9 @@ import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/admin")({
   beforeLoad: () => {
+    // Tokens live in localStorage, which is unavailable during SSR. The admin
+    // layout validates the session on the client before rendering any page.
+    if (typeof window === "undefined") return;
     const session = getStoredSession();
     if (!session) {
       throw redirect({ to: "/auth/login" });
