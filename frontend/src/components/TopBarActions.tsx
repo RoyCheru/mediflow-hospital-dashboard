@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Bell,
   MessageSquare,
@@ -9,7 +9,9 @@ import {
   Send,
   UserRound,
   Settings,
+  LogOut,
 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -115,6 +117,8 @@ export function TopBarActions({
   userEmail?: string;
   links?: TopBarLinks;
 }) {
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [alerts, setAlerts] = useState(initialAlerts.map((a) => ({ ...a, read: Boolean(a.read) })));
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -128,9 +132,9 @@ export function TopBarActions({
   const [unreadChats, setUnreadChats] = useState(contacts.map((c) => c.id));
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState({
-    name: userName,
-    email: userEmail,
-    phone: "+254 712 345 678",
+    name: user?.full_name || userName,
+    email: user?.email || userEmail,
+    phone: user?.phone || "+254 712 345 678",
   });
   const [profileDraft, setProfileDraft] = useState(profile);
   const unread = alerts.filter((a) => !a.read).length;
@@ -414,6 +418,14 @@ export function TopBarActions({
               <Settings />
               Settings
             </Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              void logout().then(() => navigate({ to: "/auth/login", replace: true }));
+            }}
+          >
+            <LogOut />
+            Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

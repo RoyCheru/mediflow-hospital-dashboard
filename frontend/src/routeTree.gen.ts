@@ -17,6 +17,7 @@ import { Route as DoctorRouteRouteImport } from './routes/doctor/route'
 import { Route as ForbiddenRouteImport } from './routes/forbidden'
 import { Route as PatientRouteRouteImport } from './routes/patient/route'
 import { Route as ReceptionistRouteRouteImport } from './routes/receptionist/route'
+import { Route as UnauthorizedRouteImport } from './routes/unauthorized'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as AdminAiRouteImport } from './routes/admin/ai'
 import { Route as AdminAnalyticsRouteImport } from './routes/admin/analytics'
@@ -110,6 +111,11 @@ const PatientRouteRoute = PatientRouteRouteImport.update({
 const ReceptionistRouteRoute = ReceptionistRouteRouteImport.update({
   id: '/receptionist',
   path: '/receptionist',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UnauthorizedRoute = UnauthorizedRouteImport.update({
+  id: '/unauthorized',
+  path: '/unauthorized',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminIndexRoute = AdminIndexRouteImport.update({
@@ -394,6 +400,7 @@ export interface FileRoutesByFullPath {
   '/patient': typeof PatientRouteRouteWithChildren
   '/receptionist': typeof ReceptionistRouteRouteWithChildren
   '/forbidden': typeof ForbiddenRoute
+  '/unauthorized': typeof UnauthorizedRoute
   '/admin/ai': typeof AdminAiRoute
   '/admin/analytics': typeof AdminAnalyticsRoute
   '/admin/appointments': typeof AdminAppointmentsRoute
@@ -452,6 +459,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/forbidden': typeof ForbiddenRoute
+  '/unauthorized': typeof UnauthorizedRoute
   '/admin/ai': typeof AdminAiRoute
   '/admin/analytics': typeof AdminAnalyticsRoute
   '/admin/appointments': typeof AdminAppointmentsRoute
@@ -517,6 +525,7 @@ export interface FileRoutesById {
   '/patient': typeof PatientRouteRouteWithChildren
   '/receptionist': typeof ReceptionistRouteRouteWithChildren
   '/forbidden': typeof ForbiddenRoute
+  '/unauthorized': typeof UnauthorizedRoute
   '/admin/ai': typeof AdminAiRoute
   '/admin/analytics': typeof AdminAnalyticsRoute
   '/admin/appointments': typeof AdminAppointmentsRoute
@@ -583,6 +592,7 @@ export interface FileRouteTypes {
     | '/patient'
     | '/receptionist'
     | '/forbidden'
+    | '/unauthorized'
     | '/admin/ai'
     | '/admin/analytics'
     | '/admin/appointments'
@@ -641,6 +651,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/forbidden'
+    | '/unauthorized'
     | '/admin/ai'
     | '/admin/analytics'
     | '/admin/appointments'
@@ -705,6 +716,7 @@ export interface FileRouteTypes {
     | '/patient'
     | '/receptionist'
     | '/forbidden'
+    | '/unauthorized'
     | '/admin/ai'
     | '/admin/analytics'
     | '/admin/appointments'
@@ -770,6 +782,7 @@ export interface RootRouteChildren {
   PatientRouteRoute: typeof PatientRouteRouteWithChildren
   ReceptionistRouteRoute: typeof ReceptionistRouteRouteWithChildren
   ForbiddenRoute: typeof ForbiddenRoute
+  UnauthorizedRoute: typeof UnauthorizedRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -828,6 +841,13 @@ declare module '@tanstack/react-router' {
       path: '/receptionist'
       fullPath: '/receptionist'
       preLoaderRoute: typeof ReceptionistRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/unauthorized': {
+      id: '/unauthorized'
+      path: '/unauthorized'
+      fullPath: '/unauthorized'
+      preLoaderRoute: typeof UnauthorizedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin/': {
@@ -1387,6 +1407,7 @@ const rootRouteChildren: RootRouteChildren = {
   PatientRouteRoute: PatientRouteRouteWithChildren,
   ReceptionistRouteRoute: ReceptionistRouteRouteWithChildren,
   ForbiddenRoute: ForbiddenRoute,
+  UnauthorizedRoute: UnauthorizedRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

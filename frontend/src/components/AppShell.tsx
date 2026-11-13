@@ -1,12 +1,15 @@
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { HeartPulse, LogOut, Menu, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TopBarActions } from "@/components/TopBarActions";
+import { useAuth } from "@/lib/auth";
 import type { RoleNavigation } from "@/lib/navigation";
 
 function Nav({ nav, onNavigate }: { nav: RoleNavigation; onNavigate?: () => void }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
+  const { logout } = useAuth();
   return (
     <div className="flex h-full flex-col px-5 py-6">
       <Link to={nav.home} className="flex items-center gap-2 px-1" onClick={onNavigate}>
@@ -61,12 +64,15 @@ function Nav({ nav, onNavigate }: { nav: RoleNavigation; onNavigate?: () => void
           </div>
         ))}
       </nav>
-      <Link
-        to="/auth/login"
-        className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+      <button
+        onClick={async () => {
+          await logout();
+          navigate({ to: "/auth/login", replace: true });
+        }}
+        className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
       >
         <LogOut className="h-[18px] w-[18px]" /> Log out
-      </Link>
+      </button>
     </div>
   );
 }

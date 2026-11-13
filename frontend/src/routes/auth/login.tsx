@@ -1,16 +1,9 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { AuthField, AuthPanel } from "@/components/AuthPanel";
-import { roleHome, type Role } from "@/lib/navigation";
-
-const demoRoles: { value: Role; label: string }[] = [
-  { value: "admin", label: "Admin" },
-  { value: "doctor", label: "Doctor" },
-  { value: "receptionist", label: "Reception" },
-  { value: "cashier", label: "Cashier" },
-  { value: "patient", label: "Patient" },
-];
+import { useAuth } from "@/lib/auth";
+import { errorMessage } from "@/lib/api/client";
 
 export const Route = createFileRoute("/auth/login")({
   head: () => ({ meta: [{ title: "Sign in — MediFlow" }] }),
@@ -19,17 +12,41 @@ export const Route = createFileRoute("/auth/login")({
 
 function LoginPage() {
   const navigate = useNavigate();
-  const [role, setRole] = useState<Role>("admin");
+  const { user, login } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (!user) return;
+    navigate({
+      to: user.role === "ADMIN" ? "/admin" : "/unauthorized",
+      replace: true,
+    });
+  }, [navigate, user]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    navigate({ to: roleHome[role] });
+    setError(null);
+    setSubmitting(true);
+    try {
+      const loggedIn = await login(email.trim(), password);
+      navigate({
+        to: loggedIn.role === "ADMIN" ? "/admin" : "/unauthorized",
+        replace: true,
+      });
+    } catch (submitError) {
+      setError(errorMessage(submitError));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
     <AuthPanel
       title="Sign in"
-      description="Access your MediFlow workspace."
+      description="Access the MediFlow workspace."
       footer={
         <p>
           New patient?{" "}
@@ -40,12 +57,22 @@ function LoginPage() {
       }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        <AuthField label="Email" type="email" placeholder="you@mediflow.co.ke" required />
+        <AuthField
+          label="Email"
+          type="email"
+          autoComplete="email"
+          placeholder="you@mediflow.co.ke"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          required
+        />
         <AuthField
           label="Password"
           type="password"
           placeholder="Enter your password"
           autoComplete="current-password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
           required
         />
         <div className="flex items-center justify-between text-sm">
@@ -57,40 +84,19 @@ function LoginPage() {
             Forgot password?
           </Link>
         </div>
-        <label className="block text-sm">
-          <span className="mb-1.5 block text-muted-foreground">Demo role</span>
-          <select
-            value={role}
-            onChange={(event) => setRole(event.target.value as Role)}
-            className="h-10 w-full rounded-xl border border-input bg-secondary px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-          >
-            {demoRoles.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Button type="submit" className="w-full">
-          Sign in
+        {error && (
+          <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <Button type="submit" className="w-full" disabled={submitting}>
+          {submitting ? "Signing in…" : "Sign in"}
         </Button>
       </form>
-      <div className="mt-6 border-t border-border pt-4">
-        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Preview a role workspace
-        </p>
-        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {demoRoles.map((option) => (
-            <Link
-              key={option.value}
-              to={roleHome[option.value]}
-              className="rounded-lg bg-secondary px-3 py-2 text-center text-xs font-semibold text-foreground transition-colors hover:bg-accent"
-            >
-              {option.label}
-            </Link>
-          ))}
-        </div>
-      </div>
+      <p className="mt-4 text-xs text-muted-foreground">
+        Admin access is required for the operations workspace. Staff accounts are created by an
+        administrator.
+      </p>
     </AuthPanel>
   );
 }
