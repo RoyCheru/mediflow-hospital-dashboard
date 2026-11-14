@@ -109,32 +109,32 @@ Yes
 All rules are enforced in the API. Hiding a button in the UI never counts as access control.
 6. Key User Journeys
 6.1 Walk-in patient paying with SHA
-1. Receptionist searches for the patient; if new, registers them and records the SHA number.
-2. Receptionist adds the patient to the same-day queue for the chosen department or doctor.
-3. Patient is called in; the doctor opens the record, records the consultation and issues prescriptions.
-4. At billing, the system generates the invoice and the receptionist selects Pay via SHA.
-5. The system verifies the member's SHA status and coverage limit.
-6. If active, a Claim is created (status: submitted). If SHA covers only part of the cost, the invoice is split between SHA and a patient co-pay.
-7. The claim moves through under review, approved or rejected, then paid. The claims tracker flags claims that age past thresholds so an admin can follow up.
-8. If SHA is not active, the system prompts the receptionist to switch to M-Pesa or cash.
+1.  Receptionist searches for the patient; if new, registers them and records the SHA number.
+2.  Receptionist creates a same-day walk-in appointment for the chosen department or doctor; it starts as checked-in and joins the queue.
+3.  Patient is called in; the doctor opens the record, records the consultation and issues prescriptions.
+4.  At billing, the system generates the invoice and the receptionist selects Pay via SHA.
+5.  The system verifies the member's SHA status and coverage limit.
+6.  If active, a Claim is created (status: submitted). If SHA covers only part of the cost, the invoice is split between SHA and a patient co-pay.
+7.  The claim moves through under review, approved or rejected, then paid. The claims tracker flags claims that age past thresholds so an admin can follow up.
+8.  If SHA is not active, the system prompts the receptionist to switch to M-Pesa or cash.
 6.2 Patient paying by M-Pesa
-1. Receptionist selects M-Pesa and enters the patient's phone number, which triggers an STK push.
-2. The Daraja callback is matched to the invoice using the checkout request ID.
-3. On success the transaction is recorded, the invoice is marked paid, and a PDF receipt is sent by email and WhatsApp.
-4. If the callback fails or times out, the transaction is marked Unconfirmed and appears in a reconciliation queue for manual resolution.
-5. Patients who pay directly to the hospital Paybill or Till are captured through payment confirmation notifications and matched by account reference (P1).
+1.  Receptionist selects M-Pesa and enters the patient's phone number, which triggers an STK push.
+2.  The Daraja callback is matched to the invoice using the checkout request ID.
+3.  On success the transaction is recorded, the invoice is marked paid, and a PDF receipt is sent by email and WhatsApp.
+4.  If the callback fails or times out, the transaction is marked Unconfirmed and appears in a reconciliation queue for manual resolution.
+5.  Patients who pay directly to the hospital Paybill or Till are captured through payment confirmation notifications and matched by account reference (P1).
 6.3 Patient paying cash
-1. Receptionist or cashier selects Cash and enters the amount tendered.
-2. The system generates the invoice and receipt immediately, calculates change, and records who took the payment and when.
-3. Cash totals feed the daily reconciliation view.
+1.  Receptionist or cashier selects Cash and enters the amount tendered.
+2.  The system generates the invoice and receipt immediately, calculates change, and records who took the payment and when.
+3.  Cash totals feed the daily reconciliation view.
 6.4 Patient self-service booking with AI triage
-1. Patient describes symptoms to the triage assistant.
-2. The assistant suggests a department, an urgency level and available doctors. It never gives a diagnosis, and any red-flag symptoms trigger an emergency-care message.
-3. Patient picks a slot and confirms. Booking confirmation and reminders go out by WhatsApp and email.
+1.  Patient describes symptoms to the triage assistant.
+2.  The assistant suggests a department, an urgency level and available doctors. It never gives a diagnosis, and any red-flag symptoms trigger an emergency-care message.
+3.  Patient picks a slot and confirms. Booking confirmation and reminders go out by WhatsApp and email.
 6.5 Rejected claim follow-up
-1. A claim returns rejected with a reason.
-2. Admin opens the claim, corrects the data or attaches missing documents, and resubmits.
-3. Every status change is recorded in the claim history and the audit log.
+1.  A claim returns rejected with a reason.
+2.  Admin opens the claim, corrects the data or attaches missing documents, and resubmits.
+3.  Every status change is recorded in the claim history and the audit log.
 7. Functional Requirements
 Priorities: P0 = required for v1 launch, P1 = important and planned for v1, P2 = stretch or later.
 7.1 Authentication and Access (AUTH)
@@ -198,13 +198,13 @@ APT-4
 Reschedule and cancel with configurable cut-off rules
 P0
 APT-5
-Walk-in registration that joins the same-day queue
+Receptionist creates a same-day walk-in appointment, registering the patient first if new, with status checked-in
 P0
 APT-6
 Status lifecycle: scheduled, checked-in, in-consultation, completed, no-show, cancelled
 P0
 APT-7
-Live queue per doctor with an urgent-priority flag
+Live queue per doctor, ordered by slot time for booked patients and by arrival time for walk-ins, with an urgent-priority flag that overrides both
 P1
 7.4 Consultation and Records (EMR)
 ID
@@ -223,7 +223,7 @@ EMR-4
 Chronological patient timeline of visits, prescriptions and uploads
 P0
 EMR-5
-Follow-up scheduling from within a visit
+Follow-up scheduling from within a visit, creating an appointment with source follow-up
 P1
 EMR-6
 Referral letter generation as PDF
@@ -385,7 +385,7 @@ Dark-theme operations dashboard with gradient stat cards (patients, appointments
 • DoctorProfile (user, department, specialty, license number, consultation fee)
 • Department, Service (name, price, department)
 • AvailabilityRule and AvailabilityException
-• Appointment (patient, doctor, service, slot, status, source: online, reception or walk-in, no-show score)
+• Appointment (patient, doctor, service, slot (empty for walk-ins), arrived_at, status, source: online, reception, walk-in or follow-up, no-show score)
 • Visit (appointment, vitals, notes, diagnosis, plan, AI summary, summary approved flag)
 • Prescription and PrescriptionItem
 • Attachment (visit, type, storage key, uploader)
@@ -475,3 +475,76 @@ Portfolio
 • Deployed demo with realistic seeded data and demo accounts for each role.
 • README that explains the architecture, AI design decisions, billing logic and hardening work.
 • Passing CI and tests on the critical paths above.
+15. Release Plan
+Milestone
+Scope
+Target
+M0 Foundation
+Repo, schema, auth, RBAC, CI, environment config
+Weeks 1–2
+M1 Core flow
+Patient registration, availability, booking, reception queue and check-in
+Weeks 3–4
+M2 Consultations
+Visit records, prescriptions, uploads, patient timeline
+Weeks 5–6
+M3 AI
+Triage assistant, visit summaries, no-show scoring
+Weeks 7–8
+M4 Billing and Claims
+Unified invoice model, cash, M-Pesa, SHA claims, aging tracker, void workflow
+Weeks 9–10
+M5 Notifications
+Central notification service, WhatsApp and email
+Week 11
+M6 Analytics
+Admin and doctor dashboards, exports
+Week 12
+M7 Hardening
+Audit log completion, rate limiting, encryption, access review, compliance notes
+Week 13
+M8 Launch
+Deployment, seed data, README, demo walkthrough
+Week 14
+Each milestone ends with a deployed, demoable build.
+16. Risks and Mitigations
+Risk
+Impact
+Mitigation
+SHA API access requires accreditation
+Cannot test real eligibility and claims
+Adapter interface with a realistic simulator; clearly label the demo as simulated
+M-Pesa production approval takes time
+Delays live payments
+Build and demo on the Daraja sandbox; keep reconciliation flows complete
+WhatsApp template approval delays
+Notifications launch late
+Email as fallback channel; submit templates early
+AI gives unsafe or misleading output
+Patient harm, trust loss
+Assistive-only design, red-flag handling, doctor review, evaluation set
+Patient data exposed to the AI provider
+Privacy breach
+Minimization and masking, backend-only calls, logging
+Scope creep
+Project stalls
+Strict P0 first; P1 and P2 only after each milestone is shippable
+Single developer
+Slow delivery and no code review
+Small milestones, automated tests, written decisions in a changelog
+17. Open Questions
+• Will SHA stay simulated for v1, or is a real hospital partner available for sandbox access?
+• Are card payments (Stripe or Paystack) in scope alongside M-Pesa, or deferred?
+• Must invoices integrate with KRA eTIMS for the target hospital? Confirm with the hospital's accountant.
+• Is multi-branch support needed after v1?
+• Should the patient interface support Swahili as well as English?
+• Which lab or radiology file types and sizes are most common in practice?
+18. Glossary
+• SHA: Social Health Authority, Kenya's national health insurance scheme.
+• EMR/EHR: Electronic medical or health record.
+• STK push: M-Pesa prompt sent to a customer's phone to approve a payment.
+• Daraja: Safaricom's M-Pesa API platform.
+• RBAC: Role-based access control.
+• PHI: Protected health information.
+• FHIR and HL7: Healthcare data exchange standards.
+• Co-pay: The portion of a bill the patient pays when insurance covers only part of it.
