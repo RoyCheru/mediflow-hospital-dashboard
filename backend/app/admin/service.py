@@ -1,7 +1,7 @@
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 
 from app.audit.models import AuditLog
 from app.audit.service import serialize_audit
@@ -10,6 +10,7 @@ from app.claims.models import Claim
 from app.claims.service import serialize_claim
 from app.common.base import as_utc, utcnow
 from app.common.enums import (
+    AppointmentSource,
     ClaimStatus,
     RefundStatus,
     TransactionStatus,
@@ -167,13 +168,24 @@ def _stat_cards(today):
 
     today_start, today_end = _day_bounds(today)
     yesterday_start, yesterday_end = _day_bounds(today - timedelta(days=1))
-    appointments_today = Appointment.query.filter(
-        Appointment.scheduled_start >= today_start,
-        Appointment.scheduled_start < today_end,
-    ).count()
+
+    def on_day(start, end):
+        return or_(
+            and_(
+                Appointment.source != AppointmentSource.WALK_IN,
+                Appointment.scheduled_start >= start,
+                Appointment.scheduled_start < end,
+            ),
+            and_(
+                Appointment.source == AppointmentSource.WALK_IN,
+                Appointment.arrived_at >= start,
+                Appointment.arrived_at < end,
+            ),
+        )
+
+    appointments_today = Appointment.query.filter(on_day(today_start, today_end)).count()
     appointments_yesterday = Appointment.query.filter(
-        Appointment.scheduled_start >= yesterday_start,
-        Appointment.scheduled_start < yesterday_end,
+        on_day(yesterday_start, yesterday_end)
     ).count()
 
     revenue_month = _sum_successful_transactions(month_start, next_month_start)
@@ -208,12 +220,27 @@ def _stat_cards(today):
 
 def _today_schedule(today, limit=8):
     start, end = _day_bounds(today)
+    effective_time = func.coalesce(
+        Appointment.scheduled_start,
+        Appointment.arrived_at,
+        Appointment.created_at,
+    )
     appointments = (
         Appointment.query.filter(
-            Appointment.scheduled_start >= start,
-            Appointment.scheduled_start < end,
+            or_(
+                and_(
+                    Appointment.source != AppointmentSource.WALK_IN,
+                    Appointment.scheduled_start >= start,
+                    Appointment.scheduled_start < end,
+                ),
+                and_(
+                    Appointment.source == AppointmentSource.WALK_IN,
+                    Appointment.arrived_at >= start,
+                    Appointment.arrived_at < end,
+                ),
+            )
         )
-        .order_by(Appointment.scheduled_start.asc())
+        .order_by(effective_time.asc())
         .limit(limit)
         .all()
     )

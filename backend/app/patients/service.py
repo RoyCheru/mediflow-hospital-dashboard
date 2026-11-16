@@ -135,7 +135,7 @@ def create_patient_profile(user, data, actor=None, create_consents=True):
     return profile
 
 
-def register_patient(data, actor=None, source="RECEPTION"):
+def register_patient(data, actor=None, source="RECEPTION", commit=True):
     if data.get("email"):
         existing = PatientProfile.query.filter_by(email=data["email"].lower()).first()
         if existing:
@@ -157,7 +157,10 @@ def register_patient(data, actor=None, source="RECEPTION"):
         actor=actor,
         after={"patient_number": profile.patient_number},
     )
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return profile, duplicates
 
 

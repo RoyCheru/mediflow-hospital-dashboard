@@ -1,6 +1,7 @@
 from datetime import date
 
 from flask import Blueprint, request
+from sqlalchemy import String, and_, cast, func, or_
 
 from app.common.base import utcnow
 from app.common.decorators import auth_required, current_user
@@ -227,23 +228,14 @@ def create_appointment():
 @bp.post("/appointments/walk-in")
 @auth_required(Role.RECEPTIONIST, Role.ADMIN)
 def create_walk_in():
-    from datetime import timedelta
+    from app.patients.service import serialize_patient_brief
 
     data = WalkInSchema().load(request.get_json(silent=True) or {})
-    payload = {
-        "doctor_id": data["doctor_id"],
-        "service_id": data.get("service_id"),
-        "scheduled_start": utcnow() + timedelta(minutes=1),
-        "urgency": data.get("urgency"),
-        "notes": data.get("notes"),
-    }
-    appointment = service.create_appointment(
-        payload,
-        current_user(),
-        data["patient_id"],
-        source=AppointmentSource.WALK_IN,
-    )
-    return created(service.serialize_appointment(appointment))
+    appointment, position, duplicates = service.create_walk_in_appointment(data, current_user())
+    payload = service.serialize_appointment(appointment)
+    payload["queue_position"] = position
+    payload["potential_duplicates"] = [serialize_patient_brief(item) for item in duplicates]
+    return created(payload)
 
 
 @bp.get("/appointments")
@@ -275,12 +267,22 @@ def list_appointments():
         from datetime import datetime, time, timezone
 
         start = datetime.combine(target, time.min, tzinfo=timezone.utc)
-        query = query.filter(Appointment.scheduled_start >= start).filter(
-            Appointment.scheduled_start < start.replace(hour=23, minute=59, second=59)
+        end = start.replace(hour=23, minute=59, second=59)
+        query = query.filter(
+            or_(
+                and_(
+                    Appointment.source != AppointmentSource.WALK_IN,
+                    Appointment.scheduled_start >= start,
+                    Appointment.scheduled_start <= end,
+                ),
+                and_(
+                    Appointment.source == AppointmentSource.WALK_IN,
+                    Appointment.arrived_at >= start,
+                    Appointment.arrived_at <= end,
+                ),
+            )
         )
     if request.args.get("q"):
-        from sqlalchemy import String, cast, or_
-
         from app.patients.models import PatientProfile
 
         like = f"%{request.args['q'].strip()}%"
@@ -301,12 +303,22 @@ def list_appointments():
     sort = request.args.get("sort") or "-scheduled_start"
     descending = sort.startswith("-")
     sort_field = sort.lstrip("-")
+    effective_time = func.coalesce(
+        Appointment.scheduled_start,
+        Appointment.arrived_at,
+        Appointment.created_at,
+    )
     sort_map = {
-        "scheduled_start": Appointment.scheduled_start,
+        "scheduled_start": effective_time,
+        "arrived_at": func.coalesce(
+            Appointment.arrived_at,
+            Appointment.scheduled_start,
+            Appointment.created_at,
+        ),
         "created_at": Appointment.created_at,
         "status": Appointment.status,
     }
-    column = sort_map.get(sort_field, Appointment.scheduled_start)
+    column = sort_map.get(sort_field, effective_time)
     query = query.order_by(column.desc() if descending else column.asc())
     return ok(paginated(query, service.serialize_appointment))
 

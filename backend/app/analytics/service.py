@@ -132,9 +132,14 @@ def claims_report(start_date=None, end_date=None):
 
 def doctor_workload(start_date, end_date, doctor_id=None):
     start, end = _range(start_date, end_date)
+    effective_time = db.func.coalesce(
+        Appointment.scheduled_start,
+        Appointment.arrived_at,
+        Appointment.created_at,
+    )
     appointments = Appointment.query.filter(
-        Appointment.scheduled_start >= start,
-        Appointment.scheduled_start < end,
+        effective_time >= start,
+        effective_time < end,
     )
     if doctor_id:
         from uuid import UUID
@@ -208,10 +213,18 @@ def doctor_stats(doctor_id, start_date, end_date):
 
 
 def no_show_report(start_date, end_date):
+    from app.common.enums import AppointmentSource
+
     start, end = _range(start_date, end_date)
+    effective_time = db.func.coalesce(
+        Appointment.scheduled_start,
+        Appointment.arrived_at,
+        Appointment.created_at,
+    )
     appointments = Appointment.query.filter(
-        Appointment.scheduled_start >= start,
-        Appointment.scheduled_start < end,
+        Appointment.source != AppointmentSource.WALK_IN,
+        effective_time >= start,
+        effective_time < end,
     ).all()
     total = len(appointments)
     no_shows = sum(1 for item in appointments if item.status.value == "NO_SHOW")

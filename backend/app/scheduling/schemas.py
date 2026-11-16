@@ -5,6 +5,7 @@ from app.common.enums import (
     AvailabilityExceptionKind,
     Urgency,
 )
+from app.patients.schemas import PatientCreateSchema
 
 
 class DepartmentSchema(Schema):
@@ -107,7 +108,8 @@ class WalkInSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    patient_id = fields.UUID(required=True)
+    patient_id = fields.UUID(required=False, allow_none=True)
+    patient = fields.Nested(PatientCreateSchema, required=False, allow_none=True)
     doctor_id = fields.UUID(required=True)
     service_id = fields.UUID(required=False, allow_none=True)
     urgency = fields.Enum(Urgency, by_value=True, load_default=Urgency.ROUTINE)

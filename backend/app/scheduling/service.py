@@ -1,8 +1,8 @@
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from flask import current_app
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from app.common.audit import record_audit
 from app.common.base import utcnow
@@ -124,6 +124,7 @@ def serialize_appointment(appointment):
         "department_name": getattr(department, "name", None),
         "scheduled_start": _iso(_aware(appointment.scheduled_start)),
         "scheduled_end": _iso(_aware(appointment.scheduled_end)),
+        "arrived_at": _iso(_aware(appointment.arrived_at)),
         "status": appointment.status.value,
         "source": appointment.source.value,
         "urgency": appointment.urgency.value,
@@ -138,6 +139,9 @@ def serialize_appointment(appointment):
         "notes": appointment.notes,
         "rescheduled_from_id": str(appointment.rescheduled_from_id)
         if appointment.rescheduled_from_id
+        else None,
+        "follow_up_of_visit_id": str(appointment.follow_up_of_visit_id)
+        if appointment.follow_up_of_visit_id
         else None,
         "created_at": _iso(_aware(appointment.created_at)),
     }
@@ -398,6 +402,8 @@ def _assert_slot_free(doctor_id, start, end, exclude_id=None):
     query = Appointment.query.filter(
         Appointment.doctor_id == doctor_id,
         Appointment.status.in_(ACTIVE_STATUSES),
+        Appointment.scheduled_start.isnot(None),
+        Appointment.scheduled_end.isnot(None),
         Appointment.scheduled_start < end,
         Appointment.scheduled_end > start,
     )
@@ -412,6 +418,7 @@ def create_appointment(
     patient_id,
     source=AppointmentSource.RECEPTION,
     slot_minutes=30,
+    commit=True,
 ):
     doctor = get_doctor_or_404(data["doctor_id"])
     if not doctor.is_accepting_appointments:
@@ -422,23 +429,36 @@ def create_appointment(
     if patient is None:
         raise not_found("Patient not found")
 
-    start = _aware(data["scheduled_start"])
-    end = start + timedelta(minutes=slot_minutes)
-    if start < utcnow() - timedelta(minutes=5):
-        raise bad_request("Cannot book an appointment in the past")
-
-    # Serialize bookings per doctor to protect against concurrent double booking.
-    db.session.execute(
-        db.select(DoctorProfile).where(DoctorProfile.id == doctor.id).with_for_update()
-    )
-    if not _assert_slot_free(doctor.id, start, end):
-        raise conflict("That appointment slot is already booked")
-
     service = None
     if data.get("service_id"):
         service = Service.query.get(data["service_id"])
         if service is None:
             raise not_found("Service not found")
+
+    now = utcnow()
+    if source == AppointmentSource.WALK_IN:
+        start = None
+        end = None
+        status = AppointmentStatus.CHECKED_IN
+        arrived_at = now
+        checked_in_at = now
+    else:
+        if not data.get("scheduled_start"):
+            raise bad_request("A booked appointment requires a slot")
+        start = _aware(data["scheduled_start"])
+        end = start + timedelta(minutes=slot_minutes)
+        if start < now - timedelta(minutes=5):
+            raise bad_request("Cannot book an appointment in the past")
+
+        # Serialize bookings per doctor to protect against concurrent double booking.
+        db.session.execute(
+            db.select(DoctorProfile).where(DoctorProfile.id == doctor.id).with_for_update()
+        )
+        if not _assert_slot_free(doctor.id, start, end):
+            raise conflict("That appointment slot is already booked")
+        status = AppointmentStatus.SCHEDULED
+        arrived_at = None
+        checked_in_at = None
 
     appointment = Appointment(
         patient_id=patient.id,
@@ -447,41 +467,104 @@ def create_appointment(
         department_id=doctor.department_id,
         scheduled_start=start,
         scheduled_end=end,
-        status=AppointmentStatus.SCHEDULED
-        if source != AppointmentSource.WALK_IN
-        else AppointmentStatus.CHECKED_IN,
+        arrived_at=arrived_at,
+        status=status,
         source=source,
         urgency=data.get("urgency", Urgency.ROUTINE),
         booked_by_id=actor.id if actor else None,
-        checked_in_at=utcnow() if source == AppointmentSource.WALK_IN else None,
+        checked_in_at=checked_in_at,
+        follow_up_of_visit_id=data.get("follow_up_of_visit_id"),
         notes=data.get("notes"),
     )
     db.session.add(appointment)
     db.session.flush()
-    enqueue_event(
-        "appointment.created",
-        "appointment",
-        appointment.id,
-        {
-            "appointment_id": str(appointment.id),
-            "patient_id": str(patient.id),
-            "doctor_id": str(doctor.id),
-        },
-    )
+
+    if source == AppointmentSource.WALK_IN:
+        audit_action = "appointment.walk_in"
+    elif source == AppointmentSource.FOLLOW_UP:
+        audit_action = "appointment.follow_up"
+    else:
+        audit_action = "appointment.create"
+
+    if source != AppointmentSource.WALK_IN:
+        enqueue_event(
+            "appointment.created",
+            "appointment",
+            appointment.id,
+            {
+                "appointment_id": str(appointment.id),
+                "patient_id": str(patient.id),
+                "doctor_id": str(doctor.id),
+            },
+        )
     record_audit(
-        "appointment.create",
+        audit_action,
         "appointment",
         appointment.id,
         actor=actor,
-        after={"status": appointment.status.value, "source": source.value},
+        after={
+            "status": appointment.status.value,
+            "source": source.value,
+            "arrived_at": _iso(arrived_at),
+        },
     )
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return appointment
+
+
+def create_walk_in_appointment(data, actor):
+    """Create a walk-in appointment and its patient in a single transaction."""
+    from app.patients import service as patients_service
+    from app.patients.models import PatientProfile
+
+    patient_payload = data.get("patient")
+    patient_id = data.get("patient_id")
+    if patient_id and patient_payload:
+        raise bad_request("Provide patient_id or a new patient payload, not both")
+    if not patient_id and not patient_payload:
+        raise bad_request("patient_id or a new patient payload is required")
+
+    try:
+        duplicates = []
+        if patient_id:
+            patient = PatientProfile.query.get(patient_id)
+            if patient is None:
+                raise not_found("Patient not found")
+        else:
+            patient, duplicates = patients_service.register_patient(
+                patient_payload, actor=actor, commit=False
+            )
+
+        appointment = create_appointment(
+            data,
+            actor,
+            patient.id,
+            source=AppointmentSource.WALK_IN,
+            commit=False,
+        )
+        queue_items = queue(
+            doctor_id=appointment.doctor_id,
+            target_date=utcnow().date(),
+        )
+        position = next(
+            (index + 1 for index, item in enumerate(queue_items) if item.id == appointment.id),
+            None,
+        )
+        db.session.commit()
+        return appointment, position, duplicates
+    except Exception:
+        db.session.rollback()
+        raise
 
 
 def transition(appointment, new_status, actor, reason=None):
     if new_status == appointment.status:
         return appointment
+    if new_status == AppointmentStatus.NO_SHOW and appointment.source == AppointmentSource.WALK_IN:
+        raise conflict("Walk-in appointments cannot be marked as no-show")
     allowed = TRANSITIONS.get(appointment.status, set())
     if new_status not in allowed:
         raise conflict(
@@ -491,6 +574,7 @@ def transition(appointment, new_status, actor, reason=None):
     appointment.status = new_status
     if new_status == AppointmentStatus.CHECKED_IN:
         appointment.checked_in_at = now
+        appointment.arrived_at = appointment.arrived_at or now
     elif new_status == AppointmentStatus.IN_CONSULTATION:
         appointment.started_at = now
     elif new_status == AppointmentStatus.COMPLETED:
@@ -503,7 +587,11 @@ def transition(appointment, new_status, actor, reason=None):
         "appointment",
         appointment.id,
         actor=actor,
-        after={"status": new_status.value, "reason": reason},
+        after={
+            "status": new_status.value,
+            "source": appointment.source.value,
+            "reason": reason,
+        },
     )
     enqueue_event(
         "appointment.status_changed",
@@ -522,7 +610,7 @@ def cancel(appointment, actor, reason, actor_role):
         AppointmentStatus.NO_SHOW,
     }:
         raise conflict("Appointment cannot be cancelled in its current state")
-    if actor_role == Role.PATIENT:
+    if actor_role == Role.PATIENT and appointment.scheduled_start is not None:
         cutoff = current_app.config["APPOINTMENT_CANCELLATION_CUTOFF_HOURS"]
         if _aware(appointment.scheduled_start) - utcnow() < timedelta(hours=cutoff):
             raise forbidden(f"Appointments must be cancelled at least {cutoff} hours in advance")
@@ -572,19 +660,38 @@ def reschedule(appointment, new_start, actor, reason=None):
     return replacement
 
 
+def _effective_time(appointment):
+    if appointment.source == AppointmentSource.WALK_IN:
+        return _aware(appointment.arrived_at) or _aware(appointment.created_at)
+    return (
+        _aware(appointment.scheduled_start)
+        or _aware(appointment.arrived_at)
+        or _aware(appointment.created_at)
+    )
+
+
 def queue(doctor_id=None, target_date=None):
-    target_date = target_date or date.today()
+    target_date = target_date or utcnow().date()
     start = datetime.combine(target_date, time.min, tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     query = Appointment.query.filter(
-        Appointment.scheduled_start >= start,
-        Appointment.scheduled_start < end,
         Appointment.status.in_(
             {
-                AppointmentStatus.SCHEDULED,
                 AppointmentStatus.CHECKED_IN,
                 AppointmentStatus.IN_CONSULTATION,
             }
+        ),
+        or_(
+            and_(
+                Appointment.source != AppointmentSource.WALK_IN,
+                Appointment.scheduled_start >= start,
+                Appointment.scheduled_start < end,
+            ),
+            and_(
+                Appointment.source == AppointmentSource.WALK_IN,
+                Appointment.arrived_at >= start,
+                Appointment.arrived_at < end,
+            ),
         ),
     )
     if doctor_id is not None:
@@ -602,7 +709,9 @@ def queue(doctor_id=None, target_date=None):
     items.sort(
         key=lambda item: (
             urgency_order.get(item.urgency, 3),
-            _aware(item.scheduled_start),
+            _effective_time(item),
+            _aware(item.arrived_at) or _aware(item.created_at),
+            str(item.id),
         )
     )
     return items

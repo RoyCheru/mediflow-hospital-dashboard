@@ -165,6 +165,19 @@ class Appointment(BaseModel, TimestampMixin):
         db.Index("ix_appointments_doctor_slot", "doctor_id", "scheduled_start"),
         db.Index("ix_appointments_patient_date", "patient_id", "scheduled_start"),
         db.Index("ix_appointments_queue", "doctor_id", "status", "scheduled_start"),
+        db.Index("ix_appointments_doctor_arrived", "doctor_id", "status", "arrived_at"),
+        db.CheckConstraint(
+            "source <> 'WALK_IN' OR (arrived_at IS NOT NULL AND status <> 'SCHEDULED')",
+            name="ck_appointments_walk_in_arrived",
+        ),
+        db.CheckConstraint(
+            "source = 'WALK_IN' OR (scheduled_start IS NOT NULL AND scheduled_end IS NOT NULL)",
+            name="ck_appointments_booked_slot",
+        ),
+        db.CheckConstraint(
+            "source IN ('ONLINE', 'RECEPTION', 'WALK_IN', 'FOLLOW_UP')",
+            name="ck_appointments_source_values",
+        ),
     )
 
     patient_id = db.Column(
@@ -181,8 +194,9 @@ class Appointment(BaseModel, TimestampMixin):
     )
     service_id = db.Column(db.Uuid(as_uuid=True), db.ForeignKey("services.id"), nullable=True)
     department_id = db.Column(db.Uuid(as_uuid=True), db.ForeignKey("departments.id"), nullable=True)
-    scheduled_start = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
-    scheduled_end = db.Column(db.DateTime(timezone=True), nullable=False)
+    scheduled_start = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    scheduled_end = db.Column(db.DateTime(timezone=True), nullable=True)
+    arrived_at = db.Column(db.DateTime(timezone=True), nullable=True)
     status = db.Column(
         db.Enum(AppointmentStatus, native_enum=False, length=32),
         nullable=False,
@@ -204,6 +218,9 @@ class Appointment(BaseModel, TimestampMixin):
     rescheduled_from_id = db.Column(
         db.Uuid(as_uuid=True), db.ForeignKey("appointments.id"), nullable=True
     )
+    # Kept as a UUID reference rather than a DB foreign key: visits.appointment_id
+    # and this column would otherwise create an unresolvable DDL cycle on SQLite.
+    follow_up_of_visit_id = db.Column(db.Uuid(as_uuid=True), nullable=True, index=True)
     checked_in_at = db.Column(db.DateTime(timezone=True), nullable=True)
     started_at = db.Column(db.DateTime(timezone=True), nullable=True)
     completed_at = db.Column(db.DateTime(timezone=True), nullable=True)

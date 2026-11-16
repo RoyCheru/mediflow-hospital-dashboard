@@ -54,6 +54,7 @@ class AppointmentSource(str, Enum):
     ONLINE = "ONLINE"
     RECEPTION = "RECEPTION"
     WALK_IN = "WALK_IN"
+    FOLLOW_UP = "FOLLOW_UP"
 
 
 class Urgency(str, Enum):
