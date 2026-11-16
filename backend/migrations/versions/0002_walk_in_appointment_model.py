@@ -75,6 +75,18 @@ def upgrade():
             "AND status IN ('CHECKED_IN', 'IN_CONSULTATION', 'COMPLETED')"
         )
     )
+    # A legacy walk-in may have been cancelled after the patient arrived. Its
+    # checked_in_at is a real arrival timestamp, so use it rather than inventing
+    # one or leaving the row unable to satisfy the walk-in constraint.
+    op.execute(
+        sa.text(
+            "UPDATE appointments "
+            "SET arrived_at = checked_in_at "
+            "WHERE arrived_at IS NULL "
+            "AND source = 'WALK_IN' "
+            "AND checked_in_at IS NOT NULL"
+        )
+    )
 
     walk_in_violations = bind.execute(
         sa.text(

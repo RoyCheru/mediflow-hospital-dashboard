@@ -141,6 +141,21 @@ Frontend:
 - Playwright: **5 passed** including the walk-in arrival/null-slot rendering test.
 - Seed now produces all four sources, walk-in rows with empty slots and `arrived_at`, and urgent walk-ins in the queue.
 
+### Legacy data remediation encountered
+
+The development PostgreSQL database contained legacy walk-in rows that blocked
+the new constraints. On review:
+
+- A cancelled walk-in with `checked_in_at` was backfilled using that existing
+  timestamp (`arrived_at = checked_in_at`); no arrival time was invented.
+- A no-show walk-in had no `checked_in_at`. Under the new model a walk-in cannot
+  no-show, so its `source` was reclassified to `RECEPTION` while preserving the
+  status, synthetic slot and notes. The change was written to the audit log as
+  `appointment.legacy_source_fix`.
+
+The migration still refuses any other unfixable walk-in row and lists its ID.
+Apply with `flask db upgrade`.
+
 ### Assumptions and known gaps
 
 - `scheduled_start`/`scheduled_end` are treated as the PRD's "slot" columns; no new `slot` column was introduced.
