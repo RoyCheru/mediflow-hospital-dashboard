@@ -294,44 +294,81 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
     service_codes = ["CONS-GEN", "CONS-PED", "CONS-CAR", "LAB-CBC", "XRAY-CHEST"]
     today = utcnow().date()
 
+    source_plan = [
+        AppointmentSource.RECEPTION,
+        AppointmentSource.ONLINE,
+        AppointmentSource.WALK_IN,
+        AppointmentSource.FOLLOW_UP,
+        AppointmentSource.RECEPTION,
+        AppointmentSource.WALK_IN,
+        AppointmentSource.ONLINE,
+        AppointmentSource.FOLLOW_UP,
+        AppointmentSource.RECEPTION,
+    ]
+    status_plan = [
+        AppointmentStatus.COMPLETED,
+        AppointmentStatus.IN_CONSULTATION,
+        AppointmentStatus.CHECKED_IN,
+        AppointmentStatus.SCHEDULED,
+        AppointmentStatus.SCHEDULED,
+        AppointmentStatus.CHECKED_IN,
+        AppointmentStatus.NO_SHOW,
+        AppointmentStatus.SCHEDULED,
+        AppointmentStatus.CHECKED_IN,
+    ]
     for index, patient in enumerate(patients):
         department = departments[dept_codes[index % len(dept_codes)]]
         service = services[service_codes[index % len(service_codes)]]
+        source = source_plan[index % len(source_plan)]
+        status = status_plan[index % len(status_plan)]
         start = datetime.combine(today, time(8 + index, 30), tzinfo=timezone.utc)
-        status = [
-            AppointmentStatus.COMPLETED,
-            AppointmentStatus.IN_CONSULTATION,
-            AppointmentStatus.CHECKED_IN,
-            AppointmentStatus.SCHEDULED,
-            AppointmentStatus.SCHEDULED,
-            AppointmentStatus.NO_SHOW,
-        ][index % 6]
+        end = start + timedelta(minutes=30)
+
+        if source == AppointmentSource.WALK_IN:
+            scheduled_start = None
+            scheduled_end = None
+            arrived_at = datetime.combine(today, time(9, 10 + index), tzinfo=timezone.utc)
+        else:
+            scheduled_start = start
+            scheduled_end = end
+            arrived_at = (
+                start + timedelta(minutes=5)
+                if status
+                in {
+                    AppointmentStatus.COMPLETED,
+                    AppointmentStatus.IN_CONSULTATION,
+                    AppointmentStatus.CHECKED_IN,
+                }
+                else None
+            )
+
+        urgency = Urgency.ROUTINE
+        if index == 2:
+            urgency = Urgency.EMERGENCY
+        elif index == 5:
+            urgency = Urgency.URGENT
+
         appointment = Appointment(
             patient_id=patient.id,
             doctor_id=doctor.id,
             service_id=service.id,
             department_id=department.id,
-            scheduled_start=start,
-            scheduled_end=start + timedelta(minutes=30),
+            scheduled_start=scheduled_start,
+            scheduled_end=scheduled_end,
+            arrived_at=arrived_at,
             status=status,
-            source=[
-                AppointmentSource.RECEPTION,
-                AppointmentSource.ONLINE,
-                AppointmentSource.WALK_IN,
-            ][index % 3],
-            urgency=[Urgency.ROUTINE, Urgency.URGENT, Urgency.EMERGENCY][0 if index % 4 else 1],
-            no_show_score=0.05 * (index % 7),
+            source=source,
+            urgency=urgency,
+            no_show_score=None if source == AppointmentSource.WALK_IN else 0.05 * (index % 7),
             booked_by_id=reception.id if reception else admin.id,
         )
+        if arrived_at is not None:
+            appointment.checked_in_at = arrived_at
         if status == AppointmentStatus.COMPLETED:
-            appointment.checked_in_at = start
-            appointment.started_at = start
-            appointment.completed_at = start + timedelta(minutes=30)
+            appointment.started_at = (arrived_at or start) + timedelta(minutes=10)
+            appointment.completed_at = (arrived_at or start) + timedelta(minutes=40)
         elif status == AppointmentStatus.IN_CONSULTATION:
-            appointment.checked_in_at = start
-            appointment.started_at = start
-        elif status == AppointmentStatus.CHECKED_IN:
-            appointment.checked_in_at = start
+            appointment.started_at = (arrived_at or start) + timedelta(minutes=5)
         db.session.add(appointment)
 
         when = _month_date(index % 6, day=min(20, 5 + index))
