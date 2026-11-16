@@ -206,6 +206,15 @@ P0
 APT-7
 Live queue per doctor, ordered by slot time for booked patients and by arrival time for walk-ins, with an urgent-priority flag that overrides both
 P1
+APT-8
+Admin Appointments list across all dates (past, today, future) with filters for date range, status, source, doctor, department and patient search, plus sorting and pagination
+P0
+APT-9
+Admin Live Queue tab on the Appointments page: today's queue only, read-only, grouped by doctor, showing position, patient, source, urgent flag, status, arrival time and waiting time, refreshing automatically while the tab is visible. It is a derived view of today's checked-in and in-consultation appointments, not a list of all appointments
+P0
+APT-10
+Availability view per doctor on the Doctors and Staff page: weekly pattern, time off, today's status and next available slot. Admin can edit availability on a staff member's behalf, and each edit is audit-logged
+P0
 7.4 Consultation and Records (EMR)
 ID
 Requirement
@@ -367,6 +376,9 @@ P1
 ADM-4
 Edit notification templates
 P1
+ADM-5
+Working hours and time off for non-doctor staff (receptionists, cashiers), visible to admin on the Doctors and Staff page
+P1
 8. Role Dashboards
 Patient
 Upcoming appointments, book or reschedule, AI triage chat, medical history and prescriptions, uploaded results, invoices and payment, notification preferences.
@@ -378,13 +390,13 @@ Admin
 Dark-theme operations dashboard with gradient stat cards (patients, appointments, revenue, pending SHA claims), revenue trend and payment-method breakdown, staff and patient management table, today's schedule, claims and audit previews. Dedicated full pages:
 • Billing and Claims: All Invoices, SHA Claims Tracker, Reconciliation.
 • Audit Log: filterable, searchable, exportable.
-• Plus Appointments, Patients, Doctors and Staff, Departments, Analytics and Settings.
+• Appointments, with two tabs: All Appointments (every date, with filters) and Live Queue (today only, all doctors, read-only monitoring). Plus Patients, Doctors and Staff (with an availability view per person), Departments, Analytics and Settings.
 9. Data Model (Key Entities)
 • User (id, email, password hash, role, status, last login)
 • PatientProfile (patient number, demographics, allergies, conditions, SHA number, next of kin, consent flags)
 • DoctorProfile (user, department, specialty, license number, consultation fee)
 • Department, Service (name, price, department)
-• AvailabilityRule and AvailabilityException
+• AvailabilityRule and AvailabilityException (for doctors; the same structure holds working hours and time off for other staff)
 • Appointment (patient, doctor, service, slot (empty for walk-ins), arrived_at, status, source: online, reception, walk-in or follow-up, no-show score)
 • Visit (appointment, vitals, notes, diagnosis, plan, AI summary, summary approved flag)
 • Prescription and PrescriptionItem
