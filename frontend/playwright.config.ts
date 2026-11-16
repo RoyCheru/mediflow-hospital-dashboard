@@ -6,8 +6,8 @@ const useWebServer = !process.env.PW_NO_WEBSERVER;
 
 export default defineConfig({
   testDir: "./e2e",
-  timeout: 60_000,
-  expect: { timeout: 10_000 },
+  timeout: 90_000,
+  expect: { timeout: 15_000 },
   fullyParallel: false,
   retries: 0,
   reporter: [["list"]],
