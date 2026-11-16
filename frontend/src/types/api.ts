@@ -346,7 +346,7 @@ export type Doctor = {
 
 export type AppointmentStatus =
   "SCHEDULED" | "CHECKED_IN" | "IN_CONSULTATION" | "COMPLETED" | "NO_SHOW" | "CANCELLED";
-export type AppointmentSource = "ONLINE" | "RECEPTION" | "WALK_IN";
+export type AppointmentSource = "ONLINE" | "RECEPTION" | "WALK_IN" | "FOLLOW_UP";
 export type Urgency = "ROUTINE" | "URGENT" | "EMERGENCY";
 
 export type Appointment = {
@@ -360,8 +360,9 @@ export type Appointment = {
   service_name: string | null;
   department_id: string | null;
   department_name: string | null;
-  scheduled_start: string;
-  scheduled_end: string;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  arrived_at: string | null;
   status: AppointmentStatus;
   source: AppointmentSource;
   urgency: Urgency;
@@ -373,7 +374,9 @@ export type Appointment = {
   cancellation_reason: string | null;
   notes: string | null;
   rescheduled_from_id: string | null;
+  follow_up_of_visit_id: string | null;
   created_at: string;
+  queue_position?: number | null;
 };
 
 export type Visit = {

@@ -32,10 +32,11 @@ import {
   managementKeys,
   updateAppointment,
 } from "@/lib/api/management";
-import { formatDateTime, titleize } from "@/lib/format";
+import { appointmentTimeLabel, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Appointment, AppointmentStatus, Urgency } from "@/types/api";
+import type { WalkInResult } from "@/lib/api/management";
 
 export const Route = createFileRoute("/admin/appointments")({
   head: () => ({
@@ -59,12 +60,20 @@ const statuses = [
   "NO_SHOW",
   "CANCELLED",
 ];
-const sources = ["ONLINE", "RECEPTION", "WALK_IN"];
+const sources = ["ONLINE", "RECEPTION", "WALK_IN", "FOLLOW_UP"];
 const urgencies: Urgency[] = ["ROUTINE", "URGENT", "EMERGENCY"];
 
 const blankBooking = {
   kind: "scheduled" as "scheduled" | "walk-in",
+  patient_mode: "existing" as "existing" | "new",
   patient_id: "",
+  first_name: "",
+  last_name: "",
+  date_of_birth: "",
+  sex: "UNKNOWN",
+  phone: "",
+  email: "",
+  allergies: "",
   doctor_id: "",
   service_id: "",
   scheduled_start: "",
@@ -126,27 +135,74 @@ function Page() {
 
   const bookingMutation = useMutation({
     mutationFn: () => {
-      if (!booking.patient_id || !booking.doctor_id) {
-        throw new Error("Patient and doctor are required");
+      if (!booking.doctor_id) {
+        throw new Error("Doctor is required");
       }
-      if (booking.kind === "scheduled" && !booking.scheduled_start) {
+      if (booking.kind === "walk-in") {
+        const common = {
+          doctor_id: booking.doctor_id,
+          service_id: booking.service_id || undefined,
+          urgency: booking.urgency,
+          notes: booking.notes || undefined,
+        };
+        if (booking.patient_mode === "new") {
+          if (
+            !booking.first_name ||
+            !booking.last_name ||
+            !booking.date_of_birth ||
+            !booking.phone
+          ) {
+            throw new Error(
+              "First name, last name, date of birth and phone are required for a new patient",
+            );
+          }
+          return createWalkIn({
+            ...common,
+            patient: {
+              first_name: booking.first_name,
+              last_name: booking.last_name,
+              date_of_birth: booking.date_of_birth,
+              sex: booking.sex,
+              phone: booking.phone,
+              email: booking.email || undefined,
+              allergies: booking.allergies || undefined,
+            },
+          });
+        }
+        if (!booking.patient_id) {
+          throw new Error("Select an existing patient or register a new one");
+        }
+        return createWalkIn({ ...common, patient_id: booking.patient_id });
+      }
+
+      if (!booking.patient_id) {
+        throw new Error("Patient is required");
+      }
+      if (!booking.scheduled_start) {
         throw new Error("Appointment date and time are required");
       }
-      const payload = {
+      return createAppointment({
         patient_id: booking.patient_id,
         doctor_id: booking.doctor_id,
         service_id: booking.service_id || undefined,
         urgency: booking.urgency,
         notes: booking.notes || undefined,
-      };
-      if (booking.kind === "walk-in") return createWalkIn(payload);
-      return createAppointment({
-        ...payload,
         scheduled_start: new Date(booking.scheduled_start).toISOString(),
       });
     },
-    onSuccess: () => {
-      toast.success(booking.kind === "walk-in" ? "Walk-in added to queue" : "Appointment booked");
+    onSuccess: (result) => {
+      if (booking.kind === "walk-in") {
+        const walkIn = result as WalkInResult;
+        const position = walkIn.queue_position ? ` · queue position ${walkIn.queue_position}` : "";
+        toast.success(`Walk-in added to queue${position}`);
+        if (walkIn.potential_duplicates.length > 0) {
+          toast.warning(
+            `${walkIn.potential_duplicates.length} possible duplicate patient record(s) found`,
+          );
+        }
+      } else {
+        toast.success("Appointment booked");
+      }
       setBookingOpen(false);
       setBooking(blankBooking);
       invalidate();
@@ -303,7 +359,7 @@ function Page() {
               ) : (
                 rows.map((appointment) => (
                   <tr key={appointment.id} className={tbodyRow}>
-                    <td className={td}>{formatDateTime(appointment.scheduled_start)}</td>
+                    <td className={td}>{appointmentTimeLabel(appointment)}</td>
                     <td className={cn(td, "font-medium")}>
                       {appointment.patient_name ?? "—"}
                       <p className="text-xs text-muted-foreground">
@@ -333,7 +389,19 @@ function Page() {
                         {titleize(appointment.urgency)}
                       </Badge>
                     </td>
-                    <td className={td}>{titleize(appointment.source)}</td>
+                    <td className={td}>
+                      <Badge
+                        tone={
+                          appointment.source === "WALK_IN"
+                            ? "warning"
+                            : appointment.source === "FOLLOW_UP"
+                              ? "info"
+                              : "muted"
+                        }
+                      >
+                        {titleize(appointment.source)}
+                      </Badge>
+                    </td>
                     <td className={cn(td, "space-x-2")}>
                       {appointment.status === "SCHEDULED" && (
                         <Button
@@ -425,20 +493,124 @@ function Page() {
               <option value="walk-in">Walk-in</option>
             </select>
           </Field>
-          <Field label="Patient">
-            <select
-              className={inputCls}
-              value={booking.patient_id}
-              onChange={(event) => setBooking({ ...booking, patient_id: event.target.value })}
-            >
-              <option value="">Select patient</option>
-              {(patientsQuery.data?.items ?? []).map((patient) => (
-                <option key={patient.id} value={patient.id}>
-                  {patient.first_name} {patient.last_name} · {patient.patient_number}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {booking.kind === "walk-in" ? (
+            <>
+              <Field label="Patient source">
+                <select
+                  className={inputCls}
+                  value={booking.patient_mode}
+                  onChange={(event) =>
+                    setBooking({
+                      ...booking,
+                      patient_mode: event.target.value as "existing" | "new",
+                    })
+                  }
+                >
+                  <option value="existing">Existing patient</option>
+                  <option value="new">New patient</option>
+                </select>
+              </Field>
+              {booking.patient_mode === "existing" ? (
+                <Field label="Patient">
+                  <select
+                    className={inputCls}
+                    value={booking.patient_id}
+                    onChange={(event) => setBooking({ ...booking, patient_id: event.target.value })}
+                  >
+                    <option value="">Select patient</option>
+                    {(patientsQuery.data?.items ?? []).map((patient) => (
+                      <option key={patient.id} value={patient.id}>
+                        {patient.first_name} {patient.last_name} · {patient.patient_number}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              ) : (
+                <>
+                  <Field label="First name">
+                    <input
+                      className={inputCls}
+                      value={booking.first_name}
+                      onChange={(event) =>
+                        setBooking({ ...booking, first_name: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="Last name">
+                    <input
+                      className={inputCls}
+                      value={booking.last_name}
+                      onChange={(event) =>
+                        setBooking({ ...booking, last_name: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="Date of birth">
+                    <input
+                      type="date"
+                      className={inputCls}
+                      value={booking.date_of_birth}
+                      onChange={(event) =>
+                        setBooking({ ...booking, date_of_birth: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="Sex">
+                    <select
+                      className={inputCls}
+                      value={booking.sex}
+                      onChange={(event) => setBooking({ ...booking, sex: event.target.value })}
+                    >
+                      {["UNKNOWN", "FEMALE", "MALE", "OTHER"].map((value) => (
+                        <option key={value} value={value}>
+                          {titleize(value)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Phone">
+                    <input
+                      className={inputCls}
+                      value={booking.phone}
+                      onChange={(event) => setBooking({ ...booking, phone: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Email">
+                    <input
+                      type="email"
+                      className={inputCls}
+                      value={booking.email}
+                      onChange={(event) => setBooking({ ...booking, email: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Allergies">
+                    <input
+                      className={inputCls}
+                      value={booking.allergies}
+                      onChange={(event) =>
+                        setBooking({ ...booking, allergies: event.target.value })
+                      }
+                    />
+                  </Field>
+                </>
+              )}
+            </>
+          ) : (
+            <Field label="Patient">
+              <select
+                className={inputCls}
+                value={booking.patient_id}
+                onChange={(event) => setBooking({ ...booking, patient_id: event.target.value })}
+              >
+                <option value="">Select patient</option>
+                {(patientsQuery.data?.items ?? []).map((patient) => (
+                  <option key={patient.id} value={patient.id}>
+                    {patient.first_name} {patient.last_name} · {patient.patient_number}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
           <Field label="Doctor">
             <select
               className={inputCls}
@@ -532,11 +704,13 @@ function Page() {
                 })
               }
             >
-              {statuses.map((value) => (
-                <option key={value} value={value}>
-                  {titleize(value)}
-                </option>
-              ))}
+              {statuses
+                .filter((value) => !(target?.source === "WALK_IN" && value === "NO_SHOW"))
+                .map((value) => (
+                  <option key={value} value={value}>
+                    {titleize(value)}
+                  </option>
+                ))}
             </select>
           </Field>
           <Field label="Urgency">

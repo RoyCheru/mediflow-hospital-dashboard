@@ -70,3 +70,29 @@ export function paymentMethodLabel(method: string | null | undefined): string {
   if (method === "SELF_PAY") return "Self pay";
   return titleize(method);
 }
+
+export function appointmentTimeLabel(item: {
+  source: string;
+  scheduled_start?: string | null;
+  arrived_at?: string | null;
+}): string {
+  if (item.scheduled_start) return formatDateTime(item.scheduled_start);
+  if (item.source === "WALK_IN") {
+    return item.arrived_at
+      ? `Walk-in · arrived ${formatTime(item.arrived_at)}`
+      : "Walk-in · arrival time pending";
+  }
+  return "—";
+}
+
+export function appointmentTimeShort(item: {
+  source: string;
+  scheduled_start?: string | null;
+  arrived_at?: string | null;
+}): string {
+  if (item.scheduled_start) return formatTime(item.scheduled_start);
+  if (item.source === "WALK_IN" && item.arrived_at) {
+    return `Arrived ${formatTime(item.arrived_at)}`;
+  }
+  return "—";
+}

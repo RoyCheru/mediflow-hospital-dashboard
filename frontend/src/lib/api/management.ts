@@ -102,8 +102,13 @@ export function createAppointment(body: Record<string, unknown>) {
   return api.post<Appointment>("/appointments", body);
 }
 
+export type WalkInResult = Appointment & {
+  queue_position: number | null;
+  potential_duplicates: PatientBrief[];
+};
+
 export function createWalkIn(body: Record<string, unknown>) {
-  return api.post<Appointment>("/appointments/walk-in", body);
+  return api.post<WalkInResult>("/appointments/walk-in", body);
 }
 
 export function checkInAppointment(id: string) {

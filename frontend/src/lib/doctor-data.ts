@@ -1,6 +1,6 @@
 export type QueueStatus = "IN_CONSULTATION" | "CHECKED_IN" | "WAITING" | "SCHEDULED" | "COMPLETED";
 export type Urgency = "ROUTINE" | "URGENT" | "EMERGENCY";
-export type AppointmentSource = "WALK_IN" | "RECEPTION" | "ONLINE";
+export type AppointmentSource = "WALK_IN" | "RECEPTION" | "ONLINE" | "FOLLOW_UP";
 
 export type DoctorHistoryEvent = {
   at: string;

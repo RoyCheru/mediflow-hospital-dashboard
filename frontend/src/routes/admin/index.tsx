@@ -41,7 +41,7 @@ import { EmptyBlock, ErrorBlock, LoadingCards, LoadingRows } from "@/components/
 import { Button } from "@/components/ui/button";
 import { dashboardKeys, getDashboardSummary } from "@/lib/api/dashboard";
 import { managementKeys, listPatients, listUsers } from "@/lib/api/management";
-import { formatDateTime, formatKshMinor, formatTime, titleize } from "@/lib/format";
+import { appointmentTimeShort, formatDateTime, formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { DashboardRevenueMonth, Paginated, PatientBrief, StaffUser } from "@/types/api";
 
@@ -602,7 +602,9 @@ function ScheduleCard({
 }: {
   schedule: {
     id: string;
-    scheduled_start: string;
+    scheduled_start: string | null;
+    arrived_at: string | null;
+    source: string;
     patient_name: string | null;
     doctor_name: string | null;
     department_name: string | null;
@@ -632,8 +634,10 @@ function ScheduleCard({
           {schedule.slice(0, 6).map((item) => (
             <li key={item.id} className="flex gap-3 rounded-xl bg-secondary/60 p-3">
               <div className="w-14 shrink-0 text-center">
-                <p className="text-xs font-semibold">{formatTime(item.scheduled_start)}</p>
-                <Badge tone="muted">{titleize(item.status)}</Badge>
+                <p className="text-xs font-semibold">{appointmentTimeShort(item)}</p>
+                <Badge tone={item.source === "WALK_IN" ? "warning" : "muted"}>
+                  {item.source === "WALK_IN" ? "Walk-in" : titleize(item.status)}
+                </Badge>
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-semibold">{item.patient_name ?? "Patient"}</p>
