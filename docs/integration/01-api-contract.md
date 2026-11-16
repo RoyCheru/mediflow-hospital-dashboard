@@ -15,7 +15,7 @@ All requests and responses are JSON unless explicitly noted.
   ```
 - Timestamps: ISO 8601 UTC with offset.
 - Money: integer minor units (`*_minor`). KES is implied unless `currency` is present.
-- Enums are uppercase and shared verbatim with TypeScript unions: `ADMIN`, `DOCTOR`, `RECEPTIONIST`, `CASHIER`, `PATIENT`; `ACTIVE`, `INACTIVE`, `SUSPENDED`, `PENDING_VERIFICATION`; `DRAFT`, `ISSUED`, `PARTIALLY_PAID`, `PAID`, `VOIDED`, `REFUNDED`; `SHA`, `MPESA`, `CASH`, `CARD`, `BANK`, `SELF_PAY`; `SUBMITTED`, `UNDER_REVIEW`, `APPROVED`, `REJECTED`, `PAID`, `CANCELLED`; `PENDING`, `APPROVED`, `REJECTED`, `COMPLETED`; `SCHEDULED`, `CHECKED_IN`, `IN_CONSULTATION`, `COMPLETED`, `NO_SHOW`, `CANCELLED`; `ONLINE`, `RECEPTION`, `WALK_IN`; `ROUTINE`, `URGENT`, `EMERGENCY`.
+- Enums are uppercase and shared verbatim with TypeScript unions: `ADMIN`, `DOCTOR`, `RECEPTIONIST`, `CASHIER`, `PATIENT`; `ACTIVE`, `INACTIVE`, `SUSPENDED`, `PENDING_VERIFICATION`; `DRAFT`, `ISSUED`, `PARTIALLY_PAID`, `PAID`, `VOIDED`, `REFUNDED`; `SHA`, `MPESA`, `CASH`, `CARD`, `BANK`, `SELF_PAY`; `SUBMITTED`, `UNDER_REVIEW`, `APPROVED`, `REJECTED`, `PAID`, `CANCELLED`; `PENDING`, `APPROVED`, `REJECTED`, `COMPLETED`; `SCHEDULED`, `CHECKED_IN`, `IN_CONSULTATION`, `COMPLETED`, `NO_SHOW`, `CANCELLED`; `ONLINE`, `RECEPTION`, `WALK_IN`, `FOLLOW_UP`; `ROUTINE`, `URGENT`, `EMERGENCY`.
 
 ## Authentication
 
@@ -239,12 +239,52 @@ Admin only.
 ### GET `/appointments`
 
 Roles: patient (own), doctor (own), receptionist, admin.
-Filters: `status`, `date`, `source`, `doctor_id`, `department_id`, `q`, `sort` (`scheduled_start`, `created_at`, `status`), pagination.
-Item includes patient/doctor/service/department names plus status, source, urgency and timestamps.
+Filters: `status`, `date`, `source` (`ONLINE`, `RECEPTION`, `WALK_IN`, `FOLLOW_UP`), `doctor_id`, `department_id`, `q`, `sort` (`scheduled_start`, `arrived_at`, `created_at`, `status`), pagination.
+`date` matches the booked slot for non-walk-ins and `arrived_at` for walk-ins.
 
-### POST `/appointments`, POST `/appointments/walk-in`, PATCH `/appointments/<id>`
+Item:
+```json
+{"id": "...", "patient_id": "...", "patient_name": "Brian Otieno", "patient_number": "MF-2026-004022", "doctor_id": "...", "doctor_name": "Dr. Otieno Odhiambo", "service_id": "...", "service_name": "General consultation", "department_id": "...", "department_name": "General Medicine", "scheduled_start": "2026-11-14T09:00:00+00:00", "scheduled_end": "2026-11-14T09:30:00+00:00", "arrived_at": "2026-11-14T08:55:00+00:00", "status": "CHECKED_IN", "source": "RECEPTION", "urgency": "ROUTINE", "no_show_score": 0.12, "checked_in_at": "2026-11-14T08:55:00+00:00", "started_at": null, "completed_at": null, "cancelled_at": null, "cancellation_reason": null, "notes": null, "rescheduled_from_id": null, "follow_up_of_visit_id": null, "created_at": "..."}
+```
+`scheduled_start`/`scheduled_end` are the slot columns and are `null` for `WALK_IN` rows. `arrived_at` is set for walk-ins and for any booked appointment once checked in.
 
-See the scheduling module; admin can update status/urgency/notes.
+### POST `/appointments`
+
+Roles: patient, receptionist, admin. Patient bookings use `source=ONLINE`; staff bookings use `source=RECEPTION`. Requires a slot (`scheduled_start`).
+
+### POST `/appointments/walk-in`
+
+Receptionist/admin only. The appointment is created as `source=WALK_IN`, `status=CHECKED_IN`, `scheduled_start=null`, `scheduled_end=null`, `arrived_at=now`. Patient and appointment are one transaction.
+
+Request with an existing patient:
+```json
+{"patient_id": "...", "doctor_id": "...", "service_id": "...", "urgency": "ROUTINE", "notes": "Walk-in"}
+```
+Request with a new patient:
+```json
+{"patient": {"first_name": "Amina", "last_name": "Yusuf", "date_of_birth": "1994-04-12", "sex": "FEMALE", "phone": "0712345678", "email": "a@example.com", "allergies": "Penicillin", "whatsapp_consent": true, "email_consent": true}, "doctor_id": "...", "service_id": "...", "urgency": "URGENT", "notes": "Walk-in"}
+```
+Response is the appointment plus `queue_position` and `potential_duplicates`:
+```json
+{"data": {"id": "...", "source": "WALK_IN", "status": "CHECKED_IN", "scheduled_start": null, "scheduled_end": null, "arrived_at": "...", "queue_position": 2, "potential_duplicates": []}}
+```
+Provide exactly one of `patient_id` or `patient`; otherwise `400`. Invalid nested patient fields return `422`. Wrong roles return `403`.
+
+### PATCH `/appointments/<id>`
+
+Admin only; updates status/urgency/notes. Walk-ins cannot transition to `NO_SHOW`.
+
+### POST `/appointments/<id>/check-in`, `no-show`, `cancel`, `reschedule`
+
+Check-in sets `arrived_at` and `checked_in_at`. Only booked (`ONLINE`, `RECEPTION`, `FOLLOW_UP`), scheduled appointments can be checked in. Walk-ins already start checked-in and cannot no-show.
+
+### POST `/visits/<id>/follow-up`
+
+Doctor/admin only. Requires a slot. Creates `source=FOLLOW_UP`, `status=SCHEDULED`, `follow_up_of_visit_id=<visit id>`.
+
+### GET `/queue`
+
+Roles: doctor (own), receptionist, admin. Returns today's checked-in/in-consultation appointments. Order is server-owned: urgent first, then effective time (slot for booked, `arrived_at` for walk-ins), ties by arrival then id.
 
 ### GET `/admin/visits`
 
