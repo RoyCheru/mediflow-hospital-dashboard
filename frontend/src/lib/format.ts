@@ -125,3 +125,24 @@ export function adminAppointmentTimeLabel(item: {
   }
   return "—";
 }
+
+/**
+ * Convert an ISO timestamp into a `datetime-local` input value in the hospital
+ * timezone (YYYY-MM-DDTHH:mm). The backend treats naive datetimes as hospital
+ * time, so the value round-trips without depending on the browser timezone.
+ */
+export function toHospitalDateTimeInput(value: string | null | undefined): string {
+  if (!value) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: HOSPITAL_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(value));
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "00";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}

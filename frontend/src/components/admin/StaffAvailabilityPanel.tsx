@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarPlus, Clock, Plus, Trash2, UserRound } from "lucide-react";
+import { CalendarPlus, Clock, Pencil, Plus, Trash2, UserRound } from "lucide-react";
 import { Badge, DetailRow, Field, Modal, inputCls, textareaCls } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
@@ -11,13 +11,28 @@ import {
   deleteAvailabilityException,
   deleteAvailabilityRule,
   getStaffAvailability,
+  updateAvailabilityException,
+  updateAvailabilityRule,
 } from "@/lib/api/adminViews";
-import { formatDate, formatDateTime, formatKshMinor, titleize } from "@/lib/format";
+import {
+  formatDate,
+  formatDateTime,
+  formatKshMinor,
+  titleize,
+  toHospitalDateTimeInput,
+} from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { AdminStaff, StaffTodayStatus } from "@/types/api";
+import type {
+  AdminStaff,
+  AvailabilityException,
+  AvailabilityRule,
+  StaffTodayStatus,
+} from "@/types/api";
 
 const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const blankRuleForm = { weekday: "1", start: "08:00", end: "17:00", slot_minutes: "30" };
+const blankExceptionForm = { start: "", end: "", kind: "LEAVE", reason: "" };
 
 function statusTone(status: StaffTodayStatus): "success" | "info" | "warning" | "muted" {
   if (status === "available") return "success";
@@ -42,18 +57,37 @@ export function StaffAvailabilityPanel({
 }) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<"profile" | "availability">("availability");
-  const [ruleForm, setRuleForm] = useState({
-    weekday: "1",
-    start: "08:00",
-    end: "17:00",
-    slot_minutes: "30",
-  });
-  const [exceptionForm, setExceptionForm] = useState({
-    start: "",
-    end: "",
-    kind: "LEAVE",
-    reason: "",
-  });
+  const [ruleForm, setRuleForm] = useState(blankRuleForm);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [exceptionForm, setExceptionForm] = useState(blankExceptionForm);
+  const [editingExceptionId, setEditingExceptionId] = useState<string | null>(null);
+
+  const startRuleEdit = (rule: AvailabilityRule) => {
+    setEditingRuleId(rule.id);
+    setRuleForm({
+      weekday: String(rule.weekday),
+      start: rule.start_time.slice(0, 5),
+      end: rule.end_time.slice(0, 5),
+      slot_minutes: String(rule.slot_minutes),
+    });
+  };
+  const resetRuleForm = () => {
+    setEditingRuleId(null);
+    setRuleForm(blankRuleForm);
+  };
+  const startExceptionEdit = (item: AvailabilityException) => {
+    setEditingExceptionId(item.id);
+    setExceptionForm({
+      start: toHospitalDateTimeInput(item.start_at),
+      end: toHospitalDateTimeInput(item.end_at),
+      kind: item.kind,
+      reason: item.reason ?? "",
+    });
+  };
+  const resetExceptionForm = () => {
+    setEditingExceptionId(null);
+    setExceptionForm(blankExceptionForm);
+  };
 
   const availability = useQuery({
     queryKey: adminViewKeys.staffAvailability(staff.user_id),
@@ -71,32 +105,50 @@ export function StaffAvailabilityPanel({
   };
 
   const ruleMutation = useMutation({
-    mutationFn: () =>
-      createAvailabilityRule(staff.user_id, {
+    mutationFn: () => {
+      if (!ruleForm.start || !ruleForm.end) throw new Error("Start and end times are required");
+      if (ruleForm.end <= ruleForm.start) throw new Error("End time must be after start time");
+      const body = {
         weekday: Number(ruleForm.weekday),
         start_time: ruleForm.start,
         end_time: ruleForm.end,
         slot_minutes: Number(ruleForm.slot_minutes) || 30,
-        timezone: availability.data?.timezone ?? "Africa/Nairobi",
-      }),
+      };
+      return editingRuleId
+        ? updateAvailabilityRule(staff.user_id, editingRuleId, body)
+        : createAvailabilityRule(staff.user_id, body);
+    },
     onSuccess: () => {
-      toast.success("Working hours added");
+      toast.success(editingRuleId ? "Working hours updated" : "Working hours added");
+      resetRuleForm();
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
   });
 
   const exceptionMutation = useMutation({
-    mutationFn: () =>
-      createAvailabilityException(staff.user_id, {
+    mutationFn: () => {
+      if (!exceptionForm.start || !exceptionForm.end) {
+        throw new Error("Start and end are required");
+      }
+      if (exceptionForm.end <= exceptionForm.start) {
+        throw new Error("End must be after start");
+      }
+      // datetime-local values are sent without an offset; the API reads them
+      // as hospital time.
+      const body = {
         start_at: exceptionForm.start,
         end_at: exceptionForm.end,
         kind: exceptionForm.kind,
-        reason: exceptionForm.reason || undefined,
-      }),
+        reason: exceptionForm.reason || null,
+      };
+      return editingExceptionId
+        ? updateAvailabilityException(staff.user_id, editingExceptionId, body)
+        : createAvailabilityException(staff.user_id, body);
+    },
     onSuccess: () => {
-      toast.success("Time off added");
-      setExceptionForm({ start: "", end: "", kind: "LEAVE", reason: "" });
+      toast.success(editingExceptionId ? "Time off updated" : "Time off added");
+      resetExceptionForm();
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -216,13 +268,25 @@ export function StaffAvailabilityPanel({
                           {rule.slot_minutes} min · {rule.timezone}
                         </p>
                       </div>
-                      <button
-                        aria-label="Delete working hours"
-                        onClick={() => deleteRuleMutation.mutate(rule.id)}
-                        className="rounded-lg p-2 text-destructive hover:bg-destructive/15"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="flex shrink-0 gap-1">
+                        <button
+                          aria-label="Edit working hours"
+                          onClick={() => startRuleEdit(rule)}
+                          className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button
+                          aria-label="Delete working hours"
+                          onClick={() => {
+                            if (editingRuleId === rule.id) resetRuleForm();
+                            deleteRuleMutation.mutate(rule.id);
+                          }}
+                          className="rounded-lg p-2 text-destructive hover:bg-destructive/15"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {availability.data.weekly_pattern.length === 0 && (
@@ -235,7 +299,7 @@ export function StaffAvailabilityPanel({
               <div>
                 <h3 className="mb-2 text-sm font-semibold">Upcoming time off</h3>
                 <div className="space-y-2">
-                  {availability.data.exceptions.map((item) => (
+                  {availability.data.upcoming_exceptions.map((item) => (
                     <div
                       key={item.id}
                       className="flex items-center justify-between gap-2 rounded-xl bg-secondary/50 p-3"
@@ -249,16 +313,28 @@ export function StaffAvailabilityPanel({
                           {item.reason ? ` · ${item.reason}` : ""}
                         </p>
                       </div>
-                      <button
-                        aria-label="Delete time off"
-                        onClick={() => deleteExceptionMutation.mutate(item.id)}
-                        className="rounded-lg p-2 text-destructive hover:bg-destructive/15"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="flex shrink-0 gap-1">
+                        <button
+                          aria-label="Edit time off"
+                          onClick={() => startExceptionEdit(item)}
+                          className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button
+                          aria-label="Delete time off"
+                          onClick={() => {
+                            if (editingExceptionId === item.id) resetExceptionForm();
+                            deleteExceptionMutation.mutate(item.id);
+                          }}
+                          className="rounded-lg p-2 text-destructive hover:bg-destructive/15"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
-                  {availability.data.exceptions.length === 0 && (
+                  {availability.data.upcoming_exceptions.length === 0 && (
                     <p className="rounded-xl bg-secondary/50 p-4 text-center text-sm text-muted-foreground">
                       No upcoming time off.
                     </p>
@@ -267,10 +343,16 @@ export function StaffAvailabilityPanel({
               </div>
             </div>
 
+            <h3 className="text-sm font-semibold">Edit availability</h3>
             <div className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-xl border border-border p-4">
                 <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
-                  <Plus className="h-4 w-4 text-primary" /> Add working hours
+                  {editingRuleId ? (
+                    <Pencil className="h-4 w-4 text-primary" />
+                  ) : (
+                    <Plus className="h-4 w-4 text-primary" />
+                  )}
+                  {editingRuleId ? "Edit working hours" : "New working hours"}
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label="Weekday">
@@ -317,18 +399,31 @@ export function StaffAvailabilityPanel({
                     />
                   </Field>
                 </div>
-                <Button
-                  className="mt-3 w-full"
-                  onClick={() => ruleMutation.mutate()}
-                  disabled={ruleMutation.isPending}
-                >
-                  <CalendarPlus /> {ruleMutation.isPending ? "Saving…" : "Add working hours"}
-                </Button>
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    className="flex-1"
+                    onClick={() => ruleMutation.mutate()}
+                    disabled={ruleMutation.isPending}
+                  >
+                    <CalendarPlus />{" "}
+                    {ruleMutation.isPending
+                      ? "Saving…"
+                      : editingRuleId
+                        ? "Save working hours"
+                        : "Add working hours"}
+                  </Button>
+                  {editingRuleId && (
+                    <Button variant="outline" onClick={resetRuleForm}>
+                      Cancel edit
+                    </Button>
+                  )}
+                </div>
               </div>
 
               <div className="rounded-xl border border-border p-4">
                 <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
-                  <Clock className="h-4 w-4 text-primary" /> Add time off
+                  <Clock className="h-4 w-4 text-primary" />{" "}
+                  {editingExceptionId ? "Edit time off" : "New time off"}
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label="Start (hospital time)">
@@ -374,13 +469,25 @@ export function StaffAvailabilityPanel({
                     />
                   </Field>
                 </div>
-                <Button
-                  className="mt-3 w-full"
-                  onClick={() => exceptionMutation.mutate()}
-                  disabled={exceptionMutation.isPending}
-                >
-                  <Clock /> {exceptionMutation.isPending ? "Saving…" : "Add time off"}
-                </Button>
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    className="flex-1"
+                    onClick={() => exceptionMutation.mutate()}
+                    disabled={exceptionMutation.isPending}
+                  >
+                    <Clock />{" "}
+                    {exceptionMutation.isPending
+                      ? "Saving…"
+                      : editingExceptionId
+                        ? "Save time off"
+                        : "Add time off"}
+                  </Button>
+                  {editingExceptionId && (
+                    <Button variant="outline" onClick={resetExceptionForm}>
+                      Cancel edit
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
 
