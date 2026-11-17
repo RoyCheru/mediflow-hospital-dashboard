@@ -151,8 +151,20 @@ def create_allocation(invoice_id):
 def record_payment(invoice_id):
     invoice = service.get_invoice_or_404(invoice_id)
     data = CashPaymentSchema().load(request.get_json(silent=True) or {})
+    # Same Idempotency-Key contract as payment intents: a retried or
+    # double-submitted payment returns the original transaction.
+    key = request.headers.get("Idempotency-Key")
+    record = None
+    if key:
+        record, cached = begin(f"payment.record:{invoice.id}", key, data)
+        if cached is not None:
+            return ok(cached["body"], cached["code"])
     transaction = service.record_payment(invoice, data, current_user())
-    return created(service.serialize_transaction(transaction))
+    payload = service.serialize_transaction(transaction)
+    if record is not None:
+        complete(record, 201, payload)
+        db.session.commit()
+    return created(payload)
 
 
 @bp.post("/invoices/<uuid:invoice_id>/payment-intents")
@@ -165,7 +177,7 @@ def create_payment_intent(invoice_id):
     if key:
         record, cached = begin("mpesa.payment_intent", key, data)
         if cached is not None:
-            return cached["body"], cached["code"]
+            return ok(cached["body"], cached["code"])
     intent = service.create_payment_intent(invoice, data, current_user(), key)
     payload = service.serialize_intent(intent)
     if record is not None:

@@ -1,6 +1,6 @@
 """Money-integrity guards: row locking, callback checks, void rules, idempotency."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy.dialects import postgresql
 
@@ -291,3 +291,44 @@ def test_resubmitted_claim_is_capped_at_balance(client, tokens, ids):
         headers=auth(tokens["admin"]),
     )
     assert ok.status_code == 201, ok.get_json()
+
+
+def test_cash_payment_with_idempotency_key_is_recorded_once(client, tokens, ids):
+    from app.billing.models import Transaction
+
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    headers = {**auth(tokens["cashier"]), "Idempotency-Key": "cash-dbl-click"}
+    body = {"method": "CASH", "amount_minor": 100_000, "tendered_minor": 100_000}
+    first = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions", json=body, headers=headers
+    )
+    replay = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions", json=body, headers=headers
+    )
+    assert first.status_code == 201, first.get_json()
+    assert replay.status_code == 201
+    assert replay.get_json() == first.get_json()
+    assert Transaction.query.filter_by(invoice_id=UUID(invoice["id"])).count() == 1
+    assert _invoice(client, tokens, invoice["id"])["amount_paid_minor"] == 100_000
+
+    changed = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions",
+        json={**body, "amount_minor": 50_000},
+        headers=headers,
+    )
+    assert changed.status_code == 409
+
+
+def test_payment_intent_replay_keeps_response_envelope(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    headers = {**auth(tokens["reception"]), "Idempotency-Key": "stk-replay"}
+    body = {"amount_minor": 100_000, "phone": "0700000005"}
+    first = client.post(
+        f"/api/v1/invoices/{invoice['id']}/payment-intents", json=body, headers=headers
+    )
+    replay = client.post(
+        f"/api/v1/invoices/{invoice['id']}/payment-intents", json=body, headers=headers
+    )
+    assert first.status_code == replay.status_code == 201
+    assert replay.get_json() == first.get_json()
+    assert "data" in replay.get_json()
