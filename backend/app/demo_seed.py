@@ -403,33 +403,7 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
         method = [PaymentMethod.SHA, PaymentMethod.MPESA, PaymentMethod.CASH, PaymentMethod.CARD][
             index % 4
         ]
-        invoice_status = (
-            InvoiceStatus.PAID
-            if index % 5 != 4
-            else InvoiceStatus.PARTIALLY_PAID
-            if index % 2
-            else InvoiceStatus.ISSUED
-        )
-        invoice = _invoice(
-            patient,
-            department,
-            service.name,
-            amount,
-            method,
-            when,
-            status=invoice_status,
-        )
-        if invoice_status == InvoiceStatus.PAID:
-            _transaction(invoice, method, amount, when + timedelta(hours=1), cashier or admin)
-        elif invoice_status == InvoiceStatus.PARTIALLY_PAID:
-            _transaction(
-                invoice,
-                method,
-                amount // 2,
-                when + timedelta(hours=1),
-                cashier or admin,
-            )
-
+        claim_status = None
         if method == PaymentMethod.SHA and index < 7:
             claim_status = [
                 ClaimStatus.SUBMITTED,
@@ -440,6 +414,42 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
                 ClaimStatus.SUBMITTED,
                 ClaimStatus.UNDER_REVIEW,
             ][index]
+        if claim_status is not None:
+            # SHA invoices are settled by their claim, not a desk payment.
+            invoice_status = (
+                InvoiceStatus.PAID if claim_status == ClaimStatus.PAID else InvoiceStatus.ISSUED
+            )
+        else:
+            invoice_status = (
+                InvoiceStatus.PAID
+                if index % 5 != 4
+                else InvoiceStatus.PARTIALLY_PAID
+                if index % 2
+                else InvoiceStatus.ISSUED
+            )
+        invoice = _invoice(
+            patient,
+            department,
+            service.name,
+            amount,
+            method,
+            when,
+            status=invoice_status,
+        )
+        if claim_status is not None:
+            pass
+        elif invoice_status == InvoiceStatus.PAID:
+            _transaction(invoice, method, amount, when + timedelta(hours=1), cashier or admin)
+        elif invoice_status == InvoiceStatus.PARTIALLY_PAID:
+            _transaction(
+                invoice,
+                method,
+                amount // 2,
+                when + timedelta(hours=1),
+                cashier or admin,
+            )
+
+        if claim_status is not None:
             days = [10, 20, 35, 5, 45, 70, 16][index]
             _claim(invoice, patient, amount, claim_status, days, reception or admin)
             if claim_status == ClaimStatus.PAID:
@@ -559,6 +569,15 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
                 booked_by_id=reception.id if reception else admin.id,
             )
         )
+
+    # Stored invoice totals must always agree with the recorded transactions;
+    # derive them the same way the billing service does.
+    from app.billing.service import recompute_invoice
+
+    db.session.flush()
+    for seeded_invoice in Invoice.query.all():
+        recompute_invoice(seeded_invoice)
+    db.session.flush()
 
     # Pending approvals and cash reconciliation.
     # A void needs an invoice with no money collected (paid invoices must be
