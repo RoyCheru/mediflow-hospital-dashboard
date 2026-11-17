@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, time, timedelta, timezone
+from datetime import timezone
 
 from sqlalchemy import func
 
@@ -29,6 +29,7 @@ from app.common.enums import (
 from app.common.errors import bad_request, conflict, not_found
 from app.common.outbox import enqueue_event
 from app.common.sequences import next_sequence_value
+from app.common.time import hospital_day_bounds
 from app.extensions import db
 from app.integrations.mpesa import get_mpesa_gateway, normalize_phone
 
@@ -842,8 +843,7 @@ def resolve_transaction(transaction, data, actor):
 
 
 def cash_expected_for(business_date):
-    start = datetime.combine(business_date, time.min, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
+    start, end = hospital_day_bounds(business_date)
     total = (
         db.session.query(func.coalesce(func.sum(Transaction.amount_minor), 0))
         .filter(
@@ -911,8 +911,7 @@ def _alert_admins(template_key, payload):
 
 
 def cash_summary(business_date):
-    start = datetime.combine(business_date, time.min, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
+    start, end = hospital_day_bounds(business_date)
     rows = (
         db.session.query(
             Transaction.method,

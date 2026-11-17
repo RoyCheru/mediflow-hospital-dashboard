@@ -24,6 +24,7 @@ from app.common.idempotency import begin, complete
 from app.common.pagination import paginated
 from app.common.permissions import patient_profile_for_user
 from app.common.responses import created, ok
+from app.common.time import hospital_today
 from app.extensions import db
 from app.integrations.documents import get_document_renderer
 from app.integrations.mpesa import get_mpesa_gateway
@@ -257,7 +258,9 @@ def resolve_transaction(transaction_id):
 @bp.get("/billing/cash-summary")
 @auth_required(*BILLING)
 def cash_summary():
-    target = date.fromisoformat(request.args["date"]) if request.args.get("date") else date.today()
+    target = (
+        date.fromisoformat(request.args["date"]) if request.args.get("date") else hospital_today()
+    )
     return ok(service.cash_summary(target))
 
 

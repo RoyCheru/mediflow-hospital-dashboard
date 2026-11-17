@@ -332,3 +332,43 @@ def test_payment_intent_replay_keeps_response_envelope(client, tokens, ids):
     assert first.status_code == replay.status_code == 201
     assert replay.get_json() == first.get_json()
     assert "data" in replay.get_json()
+
+
+def test_cash_totals_use_the_hospital_business_day(client, tokens, ids):
+    from datetime import date, datetime, timezone
+
+    from app.billing.models import Transaction
+    from app.extensions import db
+
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    # 22:30 UTC on 2030-03-04 is 01:30 on 2030-03-05 in Africa/Nairobi.
+    db.session.add(
+        Transaction(
+            invoice_id=UUID(invoice["id"]),
+            method="CASH",
+            amount_minor=70_000,
+            status="SUCCESS",
+            reference="CASH-NIGHT-SHIFT",
+            paid_at=datetime(2030, 3, 4, 22, 30, tzinfo=timezone.utc),
+        )
+    )
+    db.session.commit()
+
+    def expected(day):
+        response = client.get(
+            f"/api/v1/billing/cash-summary?date={day.isoformat()}",
+            headers=auth(tokens["cashier"]),
+        )
+        assert response.status_code == 200, response.get_json()
+        return response.get_json()["data"]["cash_expected_minor"]
+
+    assert expected(date(2030, 3, 4)) == 0
+    assert expected(date(2030, 3, 5)) == 70_000
+
+    logged = client.post(
+        "/api/v1/billing/cash-reconciliations",
+        json={"business_date": "2030-03-05", "counted_cash_minor": 70_000},
+        headers=auth(tokens["cashier"]),
+    )
+    assert logged.status_code == 201, logged.get_json()
+    assert logged.get_json()["data"]["status"] == "BALANCED"
