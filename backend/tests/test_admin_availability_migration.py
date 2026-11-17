@@ -208,7 +208,7 @@ def test_0003_upgrade_repairs_first_draft_schema(tmp_path):
     assert upgrade.exit_code == 0, upgrade.output
     inspector = _inspect(path)
     for table in ("availability_rules", "availability_exceptions"):
-        assert any(
-            fk["referred_table"] == "users" for fk in inspector.get_foreign_keys(table)
-        ), table
+        assert any(fk["referred_table"] == "users" for fk in inspector.get_foreign_keys(table)), (
+            table
+        )
         assert f"ix_{table}_user_id" in {index["name"] for index in inspector.get_indexes(table)}
