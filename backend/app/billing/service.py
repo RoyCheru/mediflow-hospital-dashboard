@@ -198,6 +198,28 @@ def serialize_cash_reconciliation(item):
     }
 
 
+def invoice_lock_query(invoice_id):
+    """Query that re-reads an invoice with a row lock (``SELECT ... FOR UPDATE``).
+
+    Every balance check followed by a money write must run under this lock so
+    concurrent payments, callbacks, settlements and voids serialize per
+    invoice. SQLite ignores ``FOR UPDATE``; Postgres honours it.
+    """
+    return (
+        Invoice.query.filter(Invoice.id == invoice_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def lock_invoice(invoice_or_id):
+    invoice_id = getattr(invoice_or_id, "id", invoice_or_id)
+    invoice = invoice_lock_query(invoice_id).first()
+    if invoice is None:
+        raise not_found("Invoice not found")
+    return invoice
+
+
 def get_invoice_or_404(invoice_id):
     invoice = Invoice.query.get(invoice_id)
     if invoice is None:
@@ -325,6 +347,7 @@ def create_invoice(visit, data, actor):
 
 
 def add_allocation(invoice, data, actor):
+    invoice = lock_invoice(invoice)
     if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
         raise conflict("Cannot allocate a voided or refunded invoice")
     allocated = sum(
@@ -357,6 +380,7 @@ def record_payment(invoice, data, actor):
         raise bad_request("Use the SHA claims workflow for SHA payments")
     if method == PaymentMethod.MPESA:
         raise bad_request("Use the M-Pesa payment-intent workflow")
+    invoice = lock_invoice(invoice)
     if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
         raise conflict("Invoice cannot receive payment in its current state")
     if invoice.balance_minor <= 0:
@@ -448,6 +472,7 @@ def recompute_invoice(invoice):
 
 
 def create_payment_intent(invoice, data, actor, idempotency_key=None):
+    invoice = lock_invoice(invoice)
     if invoice.balance_minor <= 0:
         raise conflict("Invoice is already settled")
     amount = int(data["amount_minor"])
@@ -623,7 +648,7 @@ def decide_void(request_id, data, actor):
     item.decided_at = utcnow()
     if data["approve"]:
         if item.invoice_id:
-            invoice = get_invoice_or_404(item.invoice_id)
+            invoice = lock_invoice(item.invoice_id)
             invoice.status = InvoiceStatus.VOIDED
             invoice.void_reason = item.reason
             for allocation in invoice.allocations:
@@ -631,8 +656,9 @@ def decide_void(request_id, data, actor):
         elif item.transaction_id:
             transaction = Transaction.query.get(item.transaction_id)
             if transaction is not None:
+                invoice = lock_invoice(transaction.invoice_id)
                 transaction.status = TransactionStatus.REVERSED
-                recompute_invoice(get_invoice_or_404(transaction.invoice_id))
+                recompute_invoice(invoice)
     record_audit(
         "void.decision",
         "void_request",
@@ -692,7 +718,7 @@ def decide_refund(refund_id, data, actor):
     refund.approved_by_id = actor.id
     refund.decided_at = utcnow()
     if data["approve"]:
-        invoice = get_invoice_or_404(refund.invoice_id)
+        invoice = lock_invoice(refund.invoice_id)
         db.session.flush()
         recompute_invoice(invoice)
     record_audit(
@@ -717,11 +743,12 @@ def reconciliation_queue():
 
 
 def resolve_transaction(transaction, data, actor):
+    invoice = lock_invoice(transaction.invoice_id)
     if data["resolution"] == "SUCCESS":
         transaction.status = TransactionStatus.SUCCESS
     else:
         transaction.status = TransactionStatus.FAILED
-    recompute_invoice(get_invoice_or_404(transaction.invoice_id))
+    recompute_invoice(invoice)
     record_audit(
         "payment.reconcile",
         "transaction",

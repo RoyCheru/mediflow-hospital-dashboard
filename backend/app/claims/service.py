@@ -1,5 +1,5 @@
 from app.billing.models import Invoice, InvoiceAllocation, Transaction
-from app.billing.service import recompute_invoice
+from app.billing.service import lock_invoice, recompute_invoice
 from app.claims.models import Claim, ClaimStatusHistory, EligibilityCheck
 from app.common.audit import record_audit
 from app.common.base import as_utc, utcnow
@@ -259,6 +259,7 @@ def create_claim(invoice, data, actor):
 
 
 def _settle_claim(claim, actor, external_reference=None):
+    invoice = lock_invoice(claim.invoice_id)
     existing = Transaction.query.filter_by(
         reference=claim.external_reference or f"CLAIM-{claim.id}"
     ).first()
@@ -280,10 +281,8 @@ def _settle_claim(claim, actor, external_reference=None):
         allocation = InvoiceAllocation.query.get(claim.allocation_id)
         if allocation is not None:
             allocation.status = AllocationStatus.PAID
-    invoice = Invoice.query.get(claim.invoice_id)
-    if invoice is not None:
-        db.session.flush()
-        recompute_invoice(invoice)
+    db.session.flush()
+    recompute_invoice(invoice)
 
 
 def transition_claim(claim, data, actor):
