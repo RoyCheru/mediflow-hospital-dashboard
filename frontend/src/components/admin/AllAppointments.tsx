@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarCheck, CalendarPlus, CheckCircle2, Eye, Search, UserX } from "lucide-react";
 import {
   Badge,
@@ -11,6 +11,7 @@ import {
   Panel,
   StatCard,
   inputCls,
+  textareaCls,
   td,
   th,
   tableWrap,
@@ -20,10 +21,11 @@ import {
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
 import { adminViewKeys, listAdminAppointments, listAdminStaff } from "@/lib/api/adminViews";
-import { listDepartments } from "@/lib/api/management";
+import { checkInAppointment, listDepartments, updateAppointment } from "@/lib/api/management";
 import { adminAppointmentTimeLabel, formatDate, formatDateTime, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { AdminAppointment } from "@/types/api";
+import { toast } from "sonner";
+import type { AdminAppointment, AppointmentStatus, Urgency } from "@/types/api";
 
 const statuses = [
   "SCHEDULED",
@@ -34,6 +36,7 @@ const statuses = [
   "CANCELLED",
 ];
 const sources = ["ONLINE", "RECEPTION", "WALK_IN", "FOLLOW_UP"];
+const urgencies: Urgency[] = ["ROUTINE", "URGENT", "EMERGENCY"];
 const sortOptions = [
   { value: "-slot", label: "Slot (newest first)" },
   { value: "slot", label: "Slot (oldest first)" },
@@ -61,6 +64,13 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
   const [sort, setSort] = useState("-slot");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<AdminAppointment | null>(null);
+  const [target, setTarget] = useState<AdminAppointment | null>(null);
+  const [updateForm, setUpdateForm] = useState({
+    status: "SCHEDULED" as AppointmentStatus,
+    urgency: "ROUTINE" as Urgency,
+    notes: "",
+  });
+  const queryClient = useQueryClient();
 
   const params = {
     page,
@@ -90,6 +100,38 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
     staleTime: 300_000,
   });
 
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["admin", "admin-appointments"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "admin-queue"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+  };
+
+  const checkInMutation = useMutation({
+    mutationFn: (id: string) => checkInAppointment(id),
+    onSuccess: () => {
+      toast.success("Patient checked in");
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: () => {
+      if (!target) throw new Error("No appointment selected");
+      return updateAppointment(target.id, {
+        status: updateForm.status,
+        urgency: updateForm.urgency,
+        notes: updateForm.notes || undefined,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Appointment updated");
+      setTarget(null);
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   const resetPage = (fn: () => void) => {
     fn();
     setPage(1);
@@ -100,7 +142,6 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
   const active = rows.filter((item) =>
     ["CHECKED_IN", "IN_CONSULTATION"].includes(item.status),
   ).length;
-  const completed = rows.filter((item) => item.status === "COMPLETED").length;
 
   return (
     <div className="space-y-6">
@@ -239,7 +280,7 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
                 <th className={th}>Source</th>
                 <th className={th}>Status</th>
                 <th className={th}>Urgency</th>
-                <th className={th}>Details</th>
+                <th className={th}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -294,7 +335,30 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
                         {titleize(appointment.urgency)}
                       </Badge>
                     </td>
-                    <td className={td}>
+                    <td className={cn(td, "space-x-2 whitespace-nowrap")}>
+                      {appointment.status === "SCHEDULED" && (
+                        <Button
+                          size="sm"
+                          onClick={() => checkInMutation.mutate(appointment.id)}
+                          disabled={checkInMutation.isPending}
+                        >
+                          Check in
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setTarget(appointment);
+                          setUpdateForm({
+                            status: appointment.status,
+                            urgency: appointment.urgency,
+                            notes: appointment.notes ?? "",
+                          });
+                        }}
+                      >
+                        Update
+                      </Button>
                       <Button size="sm" variant="outline" onClick={() => setSelected(appointment)}>
                         <Eye /> View
                       </Button>
@@ -361,8 +425,68 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
               value={selected.arrived_at ? formatDateTime(selected.arrived_at) : "—"}
             />
             <DetailRow label="Created" value={formatDate(selected.created_at)} />
+            {selected.notes && <DetailRow label="Notes" value={selected.notes} />}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={Boolean(target)}
+        onClose={() => setTarget(null)}
+        title="Update appointment"
+        subtitle={target ? (target.patient.name ?? target.id.slice(0, 8)) : undefined}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? "Saving…" : "Save changes"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Field label="Status">
+            <select
+              className={inputCls}
+              value={updateForm.status}
+              onChange={(event) =>
+                setUpdateForm({ ...updateForm, status: event.target.value as AppointmentStatus })
+              }
+            >
+              {statuses
+                .filter((value) => !(target?.source === "WALK_IN" && value === "NO_SHOW"))
+                .map((value) => (
+                  <option key={value} value={value}>
+                    {titleize(value)}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <Field label="Urgency">
+            <select
+              className={inputCls}
+              value={updateForm.urgency}
+              onChange={(event) =>
+                setUpdateForm({ ...updateForm, urgency: event.target.value as Urgency })
+              }
+            >
+              {urgencies.map((value) => (
+                <option key={value} value={value}>
+                  {titleize(value)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Notes">
+            <textarea
+              className={textareaCls}
+              value={updateForm.notes}
+              onChange={(event) => setUpdateForm({ ...updateForm, notes: event.target.value })}
+            />
+          </Field>
+        </div>
       </Modal>
     </div>
   );

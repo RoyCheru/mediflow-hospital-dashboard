@@ -492,6 +492,7 @@ export type AdminAppointment = {
   source: AppointmentSource;
   status: AppointmentStatus;
   urgency: Urgency;
+  notes: string | null;
   slot: string | null;
   scheduled_end: string | null;
   arrived_at: string | null;
@@ -617,6 +618,7 @@ export type AdminStaffAvailability = {
   next_available_slot: string | null;
   weekly_pattern: AvailabilityRule[];
   exceptions: AvailabilityException[];
+  upcoming_exceptions: AvailabilityException[];
   days: AdminAvailabilityDay[];
 };
 
