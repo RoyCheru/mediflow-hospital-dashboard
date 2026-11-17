@@ -165,7 +165,6 @@ function Page() {
 
   const members = staffQuery.data?.data ?? [];
   const active = members.filter((member) => member.status === "ACTIVE").length;
-  const doctorCount = members.filter((member) => member.role === "DOCTOR").length;
   const workingToday = workingTodayQuery.data?.items ?? [];
 
   return (
