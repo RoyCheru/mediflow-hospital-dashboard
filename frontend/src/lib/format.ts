@@ -1,3 +1,8 @@
+const HOSPITAL_TIMEZONE =
+  (import.meta.env["VITE_HOSPITAL_TIMEZONE"] as string | undefined) ?? "Africa/Nairobi";
+
+export const HOSPITAL_TZ = HOSPITAL_TIMEZONE;
+
 export function formatKshMinor(minor: number | null | undefined): string {
   const value = (minor ?? 0) / 100;
   return new Intl.NumberFormat("en-KE", {
@@ -13,10 +18,18 @@ export function formatMoneyMinor(minor: number | null | undefined): string {
 
 export function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, day ?? 1)).toLocaleDateString(
+      "en-GB",
+      { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" },
+    );
+  }
   return new Date(value).toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: HOSPITAL_TIMEZONE,
   });
 }
 
@@ -28,6 +41,7 @@ export function formatDateTime(value: string | null | undefined): string {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: HOSPITAL_TIMEZONE,
   });
 }
 
@@ -36,6 +50,7 @@ export function formatTime(value: string | null | undefined): string {
   return new Date(value).toLocaleTimeString("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: HOSPITAL_TIMEZONE,
   });
 }
 
@@ -93,6 +108,20 @@ export function appointmentTimeShort(item: {
   if (item.scheduled_start) return formatTime(item.scheduled_start);
   if (item.source === "WALK_IN" && item.arrived_at) {
     return `Arrived ${formatTime(item.arrived_at)}`;
+  }
+  return "—";
+}
+
+export function adminAppointmentTimeLabel(item: {
+  source: string;
+  slot?: string | null;
+  arrived_at?: string | null;
+}): string {
+  if (item.slot) return formatDateTime(item.slot);
+  if (item.source === "WALK_IN") {
+    return item.arrived_at
+      ? `Walk-in, arrived ${formatTime(item.arrived_at)}`
+      : "Walk-in, arrival pending";
   }
   return "—";
 }

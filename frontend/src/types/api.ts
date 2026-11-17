@@ -470,3 +470,165 @@ export type RevenueReport = {
   total_minor: number;
   groups: { key: string; amount_minor: number; transaction_count: number }[];
 };
+
+export type AdminListMeta = {
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+};
+
+export type AdminList<T> = {
+  data: T[];
+  meta: AdminListMeta;
+};
+
+export type AdminAppointment = {
+  id: string;
+  patient: { id: string; name: string | null; number: string | null; phone: string | null };
+  doctor: { id: string; name: string | null };
+  department: { id: string | null; name: string | null };
+  service: { id: string | null; name: string | null };
+  source: AppointmentSource;
+  status: AppointmentStatus;
+  urgency: Urgency;
+  slot: string | null;
+  scheduled_end: string | null;
+  arrived_at: string | null;
+  checked_in_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+};
+
+export type AdminQueueEntry = {
+  position: number;
+  appointment_id: string;
+  patient: { id: string; name: string | null; number: string | null };
+  source: AppointmentSource;
+  urgent: boolean;
+  status: AppointmentStatus;
+  arrived_at: string | null;
+  waiting_minutes: number;
+  slot: string | null;
+};
+
+export type AdminQueueDoctor = {
+  doctor: { id: string; name: string | null };
+  department: { id: string | null; name: string | null };
+  counts: { waiting: number; in_consultation: number; completed_today: number };
+  entries: AdminQueueEntry[];
+};
+
+export type AdminQueue = {
+  date: string;
+  timezone: string;
+  generated_at: string;
+  waiting_threshold_minutes: number;
+  total_waiting: number;
+  doctors: AdminQueueDoctor[];
+};
+
+export type StaffTodayStatus = "available" | "in_consultation" | "on_leave" | "off_today";
+
+export type WorkingHours = { start: string; end: string };
+
+export type AdminStaff = {
+  id: string;
+  user_id: string;
+  full_name: string;
+  email: string | null;
+  phone: string | null;
+  role: Role;
+  status: UserStatus;
+  doctor_id: string | null;
+  department: { id: string | null; name: string | null };
+  specialty: string | null;
+  license_number: string | null;
+  consultation_fee_minor: number | null;
+  is_accepting_appointments: boolean | null;
+  today_status: StaffTodayStatus;
+  today_working_hours: WorkingHours[];
+  next_available_slot: string | null;
+};
+
+export type AvailabilityRule = {
+  id: string;
+  doctor_id: string | null;
+  user_id: string | null;
+  owner_type: "doctor" | "staff";
+  weekday: number;
+  start_time: string;
+  end_time: string;
+  slot_minutes: number;
+  timezone: string;
+  effective_from: string | null;
+  effective_to: string | null;
+  is_active: boolean;
+};
+
+export type AvailabilityException = {
+  id: string;
+  doctor_id: string | null;
+  user_id: string | null;
+  owner_type: "doctor" | "staff";
+  start_at: string;
+  end_at: string;
+  kind: "LEAVE" | "BLOCKED" | "EXTRA";
+  reason: string | null;
+};
+
+export type AdminAvailabilitySlot = {
+  start: string;
+  end: string;
+  available: boolean;
+  blocked: boolean;
+  appointment: {
+    id: string;
+    patient_name: string | null;
+    status: AppointmentStatus;
+    source: AppointmentSource;
+  } | null;
+};
+
+export type AdminAvailabilityDay = {
+  date: string;
+  weekday: number;
+  working_hours: WorkingHours[];
+  on_leave: boolean;
+  exceptions: AvailabilityException[];
+  slots: AdminAvailabilitySlot[];
+};
+
+export type AdminStaffAvailability = {
+  staff: {
+    id: string;
+    user_id: string;
+    full_name: string;
+    role: Role;
+    doctor_id: string | null;
+  };
+  is_doctor: boolean;
+  timezone: string;
+  from: string;
+  to: string;
+  today_status: StaffTodayStatus;
+  today_working_hours: WorkingHours[];
+  next_available_slot: string | null;
+  weekly_pattern: AvailabilityRule[];
+  exceptions: AvailabilityException[];
+  days: AdminAvailabilityDay[];
+};
+
+export type WorkingToday = {
+  date: string;
+  timezone: string;
+  items: {
+    user_id: string;
+    full_name: string;
+    role: Role;
+    is_doctor: boolean;
+    department: { id: string | null; name: string | null };
+    working_hours: WorkingHours[];
+  }[];
+};

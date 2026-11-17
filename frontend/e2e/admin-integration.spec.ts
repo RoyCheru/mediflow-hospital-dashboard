@@ -31,18 +31,9 @@ async function loginViaApi(
   await expect(page).toHaveURL(/\/admin$/);
 }
 
-async function login(page: Page, email: string, password: string) {
-  await page.goto("/auth/login");
-  await page.waitForLoadState("networkidle");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL(/\/(admin|unauthorized)\/?$/);
-}
-
-test("admin logs in and sees live dashboard data", async ({ page }) => {
+test("admin session loads live dashboard data", async ({ page, request }) => {
   test.setTimeout(180_000);
-  await login(page, "admin@mediflow.test", "Admin12345!");
+  await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
   await expect(page).toHaveURL(/\/admin$/);
   await expect(page.getByText("Total Patients")).toBeVisible();
   await expect(page.getByText("Pending SHA Claims")).toBeVisible();
@@ -97,8 +88,109 @@ test("void approval appears in the audit log", async ({ page, request }) => {
 test("walk-in appointments render with arrival time and no slot", async ({ page, request }) => {
   await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
   await page.getByRole("link", { name: "Appointments" }).click();
-  await expect(page).toHaveURL(/\/admin\/appointments$/);
+  await expect(page).toHaveURL(/\/admin\/appointments(\?tab=all)?$/);
   await expect(page.getByRole("heading", { name: "Appointments" })).toBeVisible();
-  await expect(page.getByText(/Walk-in · arrived/i).first()).toBeVisible();
+  await expect(page.getByText(/Walk-in, arrived/i).first()).toBeVisible();
   await expect(page.getByText("Invalid date")).toHaveCount(0);
+});
+
+function hospitalDate(offsetDays = 0): string {
+  const date = new Date(Date.now() + offsetDays * 86_400_000);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Nairobi",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+test("all appointments spans dates while live queue is today only", async ({ page, request }) => {
+  await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
+  await page.goto("/admin/appointments");
+  await expect(page.getByRole("heading", { name: "All Appointments" })).toBeVisible();
+
+  await page.getByLabel("From", { exact: true }).fill(hospitalDate(-7));
+  await page.getByLabel("To", { exact: true }).fill(hospitalDate(-7));
+  await page.getByPlaceholder("Search patient name, number or phone").fill("Kevin Mwangi");
+  await expect(page.getByText("Kevin Mwangi").first()).toBeVisible();
+
+  await page.getByRole("link", { name: "Live Queue" }).click();
+  await expect(page).toHaveURL(/tab=queue/);
+  await expect(page.getByText("Kevin Mwangi")).toHaveCount(0);
+
+  await page.reload();
+  await expect(page).toHaveURL(/tab=queue/);
+  await expect(page.getByRole("heading", { name: "Live Queue" })).toBeVisible();
+});
+
+test("checked-in walk-in appears on all appointments and live queue", async ({ page, request }) => {
+  await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
+  await page.goto("/admin/appointments");
+  await page.getByPlaceholder("Search patient name, number or phone").fill("Halima Said");
+  await expect(page.getByText("Halima Said").first()).toBeVisible();
+  await page.getByLabel("Source").selectOption("WALK_IN");
+  await expect(page.getByText("Halima Said").first()).toBeVisible();
+
+  await page.getByRole("link", { name: "Live Queue" }).click();
+  await expect(page.getByText("Halima Said").first()).toBeVisible();
+  await expect(page.getByText("Walk In").first()).toBeVisible();
+});
+
+test("doctor on leave appears as on leave on the staff page", async ({ page, request }) => {
+  await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
+  await page.goto("/admin/staff");
+  await page.getByPlaceholder("Search name, email or phone").fill("Lilian");
+  await expect(page.getByText("Lilian Mutua").first()).toBeVisible();
+  await expect(page.getByText("On Leave").first()).toBeVisible();
+});
+
+test("admin availability edit appears in the audit log", async ({ page, request }) => {
+  await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
+  await page.goto("/admin/staff");
+  await page.getByPlaceholder("Search name, email or phone").fill("Joy Wairimu");
+  await page.getByRole("button", { name: "View" }).first().click();
+  await expect(page.getByRole("heading", { name: "Joy Wairimu" })).toBeVisible();
+  await page.getByRole("button", { name: "Add working hours" }).click();
+  await expect(page.getByText("Working hours added")).toBeVisible();
+  await page.getByRole("button", { name: "Close dialog" }).click();
+
+  await page.getByRole("link", { name: "Audit Log" }).click();
+  await expect(page).toHaveURL(/\/admin\/audit-log$/);
+  await page
+    .getByPlaceholder("Search actor, action, entity or request ID")
+    .fill("availability.rule_create");
+  await expect(
+    page
+      .locator("tbody")
+      .getByText(/Availability\.Rule Create/i)
+      .first(),
+  ).toBeVisible();
+});
+
+test("non-admin tokens get 403 on all new admin endpoints", async ({ request }) => {
+  const login = await request.post(`${API_URL}/auth/login`, {
+    data: { email: "doctor@mediflow.test", password: "Doctor12345!" },
+  });
+  expect(login.ok()).toBeTruthy();
+  const session = (await login.json()).data;
+  const headers = { Authorization: `Bearer ${session.access_token}` };
+  const userId = session.user.id;
+
+  const paths = [
+    "/admin/appointments",
+    "/admin/queue",
+    "/admin/staff",
+    "/admin/availability",
+    `/admin/staff/${userId}/availability`,
+  ];
+  for (const path of paths) {
+    const response = await request.get(`${API_URL}${path}`, { headers });
+    expect(response.status(), path).toBe(403);
+  }
+
+  const create = await request.post(`${API_URL}/admin/staff/${userId}/availability/rules`, {
+    headers,
+    data: { weekday: 1, start_time: "08:00", end_time: "09:00", slot_minutes: 30 },
+  });
+  expect(create.status()).toBe(403);
 });

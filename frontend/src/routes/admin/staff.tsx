@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Plus, Search, UserX, Users } from "lucide-react";
+import { CalendarClock, CheckCircle2, Plus, Search, UserX, Users } from "lucide-react";
 import {
   Badge,
   EmptyState,
@@ -20,29 +20,29 @@ import {
 } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
+import { StaffAvailabilityPanel } from "@/components/admin/StaffAvailabilityPanel";
+import { adminViewKeys, getWorkingToday, listAdminStaff } from "@/lib/api/adminViews";
 import {
   createUser,
   listDepartments,
-  listDoctors,
-  listUsers,
   managementKeys,
   updateDoctor,
   updateUser,
 } from "@/lib/api/management";
-import { formatKshMinor, titleize } from "@/lib/format";
+import { formatDateTime, formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Role, UserStatus } from "@/types/api";
+import type { AdminStaff, Role, StaffTodayStatus, UserStatus } from "@/types/api";
 
 export const Route = createFileRoute("/admin/staff")({
   head: () => ({
     meta: [
       { title: "Doctors & Staff — MediFlow" },
-      { name: "description", content: "Staff accounts, roles, doctors and clinical profiles." },
+      { name: "description", content: "Staff accounts, working hours, time off and availability." },
       { property: "og:title", content: "Doctors & Staff — MediFlow" },
       {
         property: "og:description",
-        content: "Staff accounts, roles, doctors and clinical profiles.",
+        content: "Staff accounts, working hours, time off and availability.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -67,6 +67,13 @@ const blankStaff = {
   fee: "",
 };
 
+function todayTone(status: StaffTodayStatus): "success" | "info" | "warning" | "muted" {
+  if (status === "available") return "success";
+  if (status === "in_consultation") return "info";
+  if (status === "on_leave") return "warning";
+  return "muted";
+}
+
 function Page() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState("");
@@ -74,34 +81,31 @@ function Page() {
   const [status, setStatus] = useState("All");
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
+  const [selectedStaff, setSelectedStaff] = useState<AdminStaff | null>(null);
   const [form, setForm] = useState(blankStaff);
 
   const params = {
     page,
     page_size: 15,
-    search: q || undefined,
+    q: q || undefined,
     role: role === "All" ? undefined : role,
     status: status === "All" ? undefined : status,
   };
-  const usersQuery = useQuery({
-    queryKey: managementKeys.users(params),
-    queryFn: () => listUsers(params),
+  const staffQuery = useQuery({
+    queryKey: adminViewKeys.staff(params),
+    queryFn: () => listAdminStaff(params),
     staleTime: 30_000,
   });
-  const doctorsQuery = useQuery({
-    queryKey: managementKeys.doctors({}),
-    queryFn: () => listDoctors({}),
-    staleTime: 60_000,
+  const workingTodayQuery = useQuery({
+    queryKey: adminViewKeys.workingToday(),
+    queryFn: () => getWorkingToday(),
+    staleTime: 30_000,
   });
   const departmentsQuery = useQuery({
     queryKey: managementKeys.departments,
     queryFn: listDepartments,
     staleTime: 300_000,
   });
-
-  const doctorByUser = new Map(
-    (doctorsQuery.data?.items ?? []).map((doctor) => [doctor.user_id, doctor]),
-  );
 
   const createMutation = useMutation({
     mutationFn: () => {
@@ -125,7 +129,8 @@ function Page() {
       toast.success("Staff account created");
       setCreateOpen(false);
       setForm(blankStaff);
-      void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "admin-staff"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "working-today"] });
       void queryClient.invalidateQueries({ queryKey: ["admin", "doctors"] });
     },
     onError: (error: Error) => toast.error(error.message),
@@ -136,7 +141,8 @@ function Page() {
       updateUser(payload.id, { status: payload.status }),
     onSuccess: () => {
       toast.success("Staff status updated");
-      void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "admin-staff"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "working-today"] });
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -146,6 +152,7 @@ function Page() {
       updateDoctor(payload.id, { is_accepting_appointments: payload.accepting }),
     onSuccess: () => {
       toast.success("Doctor availability updated");
+      void queryClient.invalidateQueries({ queryKey: ["admin", "admin-staff"] });
       void queryClient.invalidateQueries({ queryKey: ["admin", "doctors"] });
     },
     onError: (error: Error) => toast.error(error.message),
@@ -156,15 +163,16 @@ function Page() {
     setPage(1);
   };
 
-  const members = usersQuery.data?.items ?? [];
+  const members = staffQuery.data?.data ?? [];
   const active = members.filter((member) => member.status === "ACTIVE").length;
   const doctorCount = members.filter((member) => member.role === "DOCTOR").length;
+  const workingToday = workingTodayQuery.data?.items ?? [];
 
   return (
     <div>
       <PageHeader
         title="Doctors & Staff"
-        subtitle="Live staff directory, roles and doctor profiles."
+        subtitle="Live staff directory, working hours, time off and availability."
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus /> Add staff
@@ -189,19 +197,53 @@ function Page() {
         />
         <StatCard
           tone="pink"
-          icon={Users}
-          label="Doctors on page"
-          value={String(doctorCount)}
+          icon={CalendarClock}
+          label="Working today"
+          value={String(workingToday.length)}
           change={null}
         />
         <StatCard
           tone="purple"
           icon={UserX}
           label="Total staff"
-          value={String(usersQuery.data?.meta.total ?? 0)}
+          value={String(staffQuery.data?.meta.total ?? 0)}
           change={null}
         />
       </div>
+
+      <Panel title="Working today" className="mb-6">
+        {workingTodayQuery.isLoading ? (
+          <LoadingRows rows={2} />
+        ) : workingTodayQuery.error ? (
+          <ErrorBlock
+            error={workingTodayQuery.error}
+            onRetry={() => void workingTodayQuery.refetch()}
+          />
+        ) : workingToday.length === 0 ? (
+          <p className="rounded-xl bg-secondary/50 p-4 text-sm text-muted-foreground">
+            No staff are working today.
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {workingTodayQuery.data
+                ? `${workingTodayQuery.data.date} · ${workingTodayQuery.data.timezone}`
+                : ""}
+            </span>
+            {workingToday.map((item) => (
+              <span
+                key={item.user_id}
+                className="inline-flex items-center gap-2 rounded-full bg-secondary px-3 py-1 text-xs"
+              >
+                <span className="font-semibold">{item.full_name}</span>
+                <span className="text-muted-foreground">
+                  {item.working_hours.map((hours) => `${hours.start}–${hours.end}`).join(", ")}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
+      </Panel>
 
       <Panel>
         <div className="flex flex-col gap-3 xl:flex-row">
@@ -235,101 +277,109 @@ function Page() {
             <thead>
               <tr className={theadRow}>
                 <th className={th}>Name</th>
-                <th className={th}>Contact</th>
                 <th className={th}>Role</th>
-                <th className={th}>Status</th>
-                <th className={th}>Clinical profile</th>
+                <th className={th}>Today</th>
+                <th className={th}>Working hours</th>
+                <th className={th}>Next slot</th>
+                <th className={th}>Account</th>
                 <th className={th}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {usersQuery.isLoading ? (
+              {staffQuery.isLoading ? (
                 <tr>
-                  <td colSpan={6} className="p-0">
+                  <td colSpan={7} className="p-0">
                     <LoadingRows rows={5} className="p-3" />
                   </td>
                 </tr>
-              ) : usersQuery.error ? (
+              ) : staffQuery.error ? (
                 <tr>
-                  <td colSpan={6} className="p-3">
+                  <td colSpan={7} className="p-3">
                     <ErrorBlock
-                      error={usersQuery.error}
-                      onRetry={() => void usersQuery.refetch()}
+                      error={staffQuery.error}
+                      onRetry={() => void staffQuery.refetch()}
                     />
                   </td>
                 </tr>
               ) : members.length === 0 ? (
-                <EmptyState cols={6} message="No staff match these filters." />
+                <EmptyState cols={7} message="No staff match these filters." />
               ) : (
-                members.map((member) => {
-                  const doctor = doctorByUser.get(member.id);
-                  return (
-                    <tr key={member.id} className={tbodyRow}>
-                      <td className={cn(td, "font-medium")}>{member.full_name}</td>
-                      <td className={td}>
-                        <p>{member.email ?? "—"}</p>
-                        <p className="text-xs text-muted-foreground">{member.phone ?? "—"}</p>
-                      </td>
-                      <td className={td}>
-                        <Badge tone="muted">{titleize(member.role)}</Badge>
-                      </td>
-                      <td className={td}>
-                        <Badge>{titleize(member.status)}</Badge>
-                      </td>
-                      <td className={td}>
-                        {doctor ? (
-                          <div>
-                            <p className="text-sm">{doctor.specialty ?? "Doctor"}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {formatKshMinor(doctor.consultation_fee_minor)} ·{" "}
-                              {doctor.is_accepting_appointments ? "Accepting" : "Not accepting"}
-                            </p>
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className={cn(td, "space-x-2")}>
-                        {member.status === "ACTIVE" ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              statusMutation.mutate({ id: member.id, status: "INACTIVE" })
-                            }
-                          >
-                            Deactivate
-                          </Button>
-                        ) : (
-                          <Button
-                            size="sm"
-                            onClick={() =>
-                              statusMutation.mutate({ id: member.id, status: "ACTIVE" })
-                            }
-                          >
-                            Activate
-                          </Button>
-                        )}
-                        {doctor && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              doctorMutation.mutate({
-                                id: doctor.id,
-                                accepting: !doctor.is_accepting_appointments,
-                              })
-                            }
-                          >
-                            {doctor.is_accepting_appointments
-                              ? "Pause bookings"
-                              : "Accept bookings"}
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
+                members.map((member) => (
+                  <tr key={member.id} className={tbodyRow}>
+                    <td className={cn(td, "font-medium")}>
+                      {member.full_name}
+                      <p className="text-xs text-muted-foreground">{member.email ?? "—"}</p>
+                    </td>
+                    <td className={td}>
+                      <Badge tone="muted">{titleize(member.role)}</Badge>
+                      {member.role === "DOCTOR" && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {member.specialty ?? "Doctor"} ·{" "}
+                          {member.consultation_fee_minor === null
+                            ? "—"
+                            : formatKshMinor(member.consultation_fee_minor)}
+                        </p>
+                      )}
+                    </td>
+                    <td className={td}>
+                      <Badge tone={todayTone(member.today_status)}>
+                        {titleize(member.today_status)}
+                      </Badge>
+                    </td>
+                    <td className={td}>
+                      {member.today_working_hours.length === 0
+                        ? "—"
+                        : member.today_working_hours
+                            .map((hours) => `${hours.start}–${hours.end}`)
+                            .join(", ")}
+                    </td>
+                    <td className={td}>
+                      {member.next_available_slot
+                        ? formatDateTime(member.next_available_slot)
+                        : "—"}
+                    </td>
+                    <td className={td}>
+                      <Badge>{titleize(member.status)}</Badge>
+                    </td>
+                    <td className={cn(td, "space-x-2")}>
+                      <Button size="sm" variant="outline" onClick={() => setSelectedStaff(member)}>
+                        View
+                      </Button>
+                      {member.status === "ACTIVE" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            statusMutation.mutate({ id: member.id, status: "INACTIVE" })
+                          }
+                        >
+                          Deactivate
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          onClick={() => statusMutation.mutate({ id: member.id, status: "ACTIVE" })}
+                        >
+                          Activate
+                        </Button>
+                      )}
+                      {member.doctor_id && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            doctorMutation.mutate({
+                              id: member.doctor_id as string,
+                              accepting: !member.is_accepting_appointments,
+                            })
+                          }
+                        >
+                          {member.is_accepting_appointments ? "Pause bookings" : "Accept bookings"}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
@@ -337,8 +387,8 @@ function Page() {
 
         <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
           <span>
-            Page {page} of {Math.max(usersQuery.data?.meta.pages ?? 1, 1)} ·{" "}
-            {usersQuery.data?.meta.total ?? 0} staff
+            Page {page} of {Math.max(staffQuery.data?.meta.pages ?? 1, 1)} ·{" "}
+            {staffQuery.data?.meta.total ?? 0} staff
           </span>
           <div className="flex gap-2">
             <Button
@@ -353,7 +403,7 @@ function Page() {
               size="sm"
               variant="outline"
               onClick={() => setPage((value) => value + 1)}
-              disabled={page >= (usersQuery.data?.meta.pages ?? 1)}
+              disabled={page >= (staffQuery.data?.meta.pages ?? 1)}
             >
               Next
             </Button>
@@ -473,6 +523,18 @@ function Page() {
           )}
         </div>
       </Modal>
+
+      {selectedStaff && (
+        <StaffAvailabilityPanel
+          key={selectedStaff.user_id}
+          staff={selectedStaff}
+          onClose={() => {
+            setSelectedStaff(null);
+            void queryClient.invalidateQueries({ queryKey: ["admin", "admin-staff"] });
+            void queryClient.invalidateQueries({ queryKey: ["admin", "working-today"] });
+          }}
+        />
+      )}
     </div>
   );
 }

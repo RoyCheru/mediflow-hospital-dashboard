@@ -618,6 +618,7 @@ function ScheduleCard({
       action={
         <Link
           to="/admin/appointments"
+          search={{ tab: "queue" }}
           className="text-sm font-semibold text-primary hover:underline"
         >
           View

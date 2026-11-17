@@ -59,7 +59,11 @@ function extractData<T>(payload: unknown): T {
   return payload as T;
 }
 
-async function requestOnce<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function requestOnce<T>(
+  path: string,
+  options: RequestOptions = {},
+  unwrap = true,
+): Promise<T> {
   const { body, token, headers, ...rest } = options;
   let response: Response;
   const init: RequestInit = {
@@ -82,7 +86,7 @@ async function requestOnce<T>(path: string, options: RequestOptions = {}): Promi
   if (!response.ok) {
     throw new ApiError(response.status, payload as ApiErrorBody | null, response.statusText);
   }
-  return extractData<T>(payload);
+  return unwrap ? extractData<T>(payload) : (payload as T);
 }
 
 async function refreshTokens(): Promise<boolean> {
@@ -120,6 +124,25 @@ export async function apiRequest<T>(
   }
 }
 
+export async function apiEnvelope<T>(
+  path: string,
+  options: RequestOptions = {},
+  allowRefresh = true,
+): Promise<T> {
+  const token = options.token ?? getAccessToken();
+  try {
+    return await requestOnce<T>(path, { ...options, token }, false);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401 && allowRefresh) {
+      const refreshed = await refreshTokens();
+      if (refreshed) {
+        return apiEnvelope<T>(path, options, false);
+      }
+    }
+    throw error;
+  }
+}
+
 export function buildQuery(params: ListParams = {}): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -133,6 +156,8 @@ export function buildQuery(params: ListParams = {}): string {
 export const api = {
   get: <T>(path: string, params?: ListParams) =>
     apiRequest<T>(`${path}${params ? buildQuery(params) : ""}`),
+  getEnvelope: <T>(path: string, params?: ListParams) =>
+    apiEnvelope<T>(`${path}${params ? buildQuery(params) : ""}`),
   post: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "POST", body }),
   patch: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "PATCH", body }),
   delete: <T>(path: string) => apiRequest<T>(path, { method: "DELETE" }),

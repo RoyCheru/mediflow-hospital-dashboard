@@ -1,67 +1,43 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarCheck, CalendarPlus, CheckCircle2, Search } from "lucide-react";
-import {
-  Badge,
-  EmptyState,
-  Field,
-  FilterSelect,
-  Modal,
-  PageHeader,
-  Panel,
-  StatCard,
-  inputCls,
-  textareaCls,
-  td,
-  th,
-  tableWrap,
-  tbodyRow,
-  theadRow,
-} from "@/components/kit";
-import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { CalendarPlus } from "lucide-react";
+import { Field, Modal, PageHeader, inputCls, textareaCls } from "@/components/kit";
 import { Button } from "@/components/ui/button";
+import { AllAppointments } from "@/components/admin/AllAppointments";
+import { LiveQueuePanel, QUEUE_POLL_INTERVAL_MS } from "@/components/admin/LiveQueuePanel";
+import { adminViewKeys, getAdminQueue } from "@/lib/api/adminViews";
 import {
-  checkInAppointment,
   createAppointment,
   createWalkIn,
-  listAppointments,
   listDoctors,
   listPatients,
   listServices,
   managementKeys,
-  updateAppointment,
 } from "@/lib/api/management";
-import { appointmentTimeLabel, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Appointment, AppointmentStatus, Urgency } from "@/types/api";
+import type { Urgency } from "@/types/api";
 import type { WalkInResult } from "@/lib/api/management";
 
+type AppointmentsTab = "all" | "queue";
+
 export const Route = createFileRoute("/admin/appointments")({
+  validateSearch: (search: Record<string, unknown>): { tab: AppointmentsTab } => ({
+    tab: search["tab"] === "queue" ? "queue" : "all",
+  }),
   head: () => ({
     meta: [
       { title: "Appointments — MediFlow" },
-      { name: "description", content: "Live appointment schedule, queue and bookings." },
+      { name: "description", content: "All appointments and today's live queue." },
       { property: "og:title", content: "Appointments — MediFlow" },
-      { property: "og:description", content: "Live appointment schedule, queue and bookings." },
+      { property: "og:description", content: "All appointments and today's live queue." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
   }),
   component: Page,
 });
-
-const statuses = [
-  "SCHEDULED",
-  "CHECKED_IN",
-  "IN_CONSULTATION",
-  "COMPLETED",
-  "NO_SHOW",
-  "CANCELLED",
-];
-const sources = ["ONLINE", "RECEPTION", "WALK_IN", "FOLLOW_UP"];
-const urgencies: Urgency[] = ["ROUTINE", "URGENT", "EMERGENCY"];
 
 const blankBooking = {
   kind: "scheduled" as "scheduled" | "walk-in",
@@ -82,35 +58,19 @@ const blankBooking = {
 };
 
 function Page() {
+  const { tab } = Route.useSearch();
   const queryClient = useQueryClient();
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState("All");
-  const [source, setSource] = useState("All");
-  const [date, setDate] = useState("");
-  const [page, setPage] = useState(1);
   const [bookingOpen, setBookingOpen] = useState(false);
   const [booking, setBooking] = useState(blankBooking);
-  const [target, setTarget] = useState<Appointment | null>(null);
-  const [updateForm, setUpdateForm] = useState({
-    status: "SCHEDULED" as AppointmentStatus,
-    urgency: "ROUTINE" as Urgency,
-    notes: "",
+
+  const queueSummary = useQuery({
+    queryKey: adminViewKeys.queue({}),
+    queryFn: () => getAdminQueue(),
+    refetchInterval: tab === "queue" ? QUEUE_POLL_INTERVAL_MS : false,
+    refetchIntervalInBackground: false,
+    staleTime: 10_000,
   });
 
-  const params = {
-    page,
-    page_size: 15,
-    q: q || undefined,
-    status: status === "All" ? undefined : status,
-    source: source === "All" ? undefined : source,
-    date: date || undefined,
-    sort: "-scheduled_start",
-  };
-  const appointmentsQuery = useQuery({
-    queryKey: managementKeys.appointments(params),
-    queryFn: () => listAppointments(params),
-    staleTime: 20_000,
-  });
   const doctorsQuery = useQuery({
     queryKey: managementKeys.doctors({}),
     queryFn: () => listDoctors({}),
@@ -129,7 +89,8 @@ function Page() {
   });
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ["admin", "appointments"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "admin-appointments"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "admin-queue"] });
     void queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
   };
 
@@ -210,49 +171,13 @@ function Page() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const updateMutation = useMutation({
-    mutationFn: () => {
-      if (!target) throw new Error("No appointment selected");
-      return updateAppointment(target.id, {
-        status: updateForm.status,
-        urgency: updateForm.urgency,
-        notes: updateForm.notes || undefined,
-      });
-    },
-    onSuccess: () => {
-      toast.success("Appointment updated");
-      setTarget(null);
-      invalidate();
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const checkInMutation = useMutation({
-    mutationFn: (id: string) => checkInAppointment(id),
-    onSuccess: () => {
-      toast.success("Patient checked in");
-      invalidate();
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const resetPage = (fn: () => void) => {
-    fn();
-    setPage(1);
-  };
-
-  const rows = appointmentsQuery.data?.items ?? [];
-  const scheduled = rows.filter((item) => item.status === "SCHEDULED").length;
-  const active = rows.filter((item) =>
-    ["CHECKED_IN", "IN_CONSULTATION"].includes(item.status),
-  ).length;
-  const completed = rows.filter((item) => item.status === "COMPLETED").length;
+  const waiting = queueSummary.data?.total_waiting ?? 0;
 
   return (
     <div>
       <PageHeader
         title="Appointments"
-        subtitle="Live schedule, check-in and queue from the MediFlow API."
+        subtitle="All appointments across every date, plus today's live queue."
         actions={
           <Button onClick={() => setBookingOpen(true)}>
             <CalendarPlus /> Book / walk-in
@@ -260,205 +185,34 @@ function Page() {
         }
       />
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          tone="teal"
-          icon={CalendarCheck}
-          label="Appointments (page)"
-          value={String(rows.length)}
-          change={null}
-        />
-        <StatCard
-          tone="yellow"
-          icon={CalendarPlus}
-          label="Scheduled (page)"
-          value={String(scheduled)}
-          change={null}
-        />
-        <StatCard
-          tone="pink"
-          icon={CheckCircle2}
-          label="Active (page)"
-          value={String(active)}
-          change={null}
-        />
-        <StatCard
-          tone="purple"
-          icon={CheckCircle2}
-          label="Completed (page)"
-          value={String(completed)}
-          change={null}
-        />
+      <div className="mb-6 flex flex-wrap gap-2">
+        {(
+          [
+            ["all", "All Appointments"],
+            ["queue", `Live Queue${waiting ? ` (${waiting})` : ""}`],
+          ] as const
+        ).map(([id, label]) => (
+          <Link
+            key={id}
+            to="/admin/appointments"
+            search={{ tab: id }}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-colors",
+              tab === id
+                ? "bg-primary text-primary-foreground shadow-glow"
+                : "bg-secondary text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {label}
+          </Link>
+        ))}
       </div>
 
-      <Panel>
-        <div className="flex flex-col gap-3 xl:flex-row">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={q}
-              onChange={(event) => resetPage(() => setQ(event.target.value))}
-              placeholder="Search patient, notes or appointment ID"
-              className={cn(inputCls, "pl-10")}
-            />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <FilterSelect
-              label="Status"
-              value={status}
-              onChange={(value) => resetPage(() => setStatus(value))}
-              options={statuses}
-            />
-            <FilterSelect
-              label="Source"
-              value={source}
-              onChange={(value) => resetPage(() => setSource(value))}
-              options={sources}
-            />
-            <input
-              type="date"
-              value={date}
-              onChange={(event) => resetPage(() => setDate(event.target.value))}
-              className={inputCls}
-            />
-          </div>
-        </div>
-
-        <div className={cn(tableWrap, "mt-4")}>
-          <table className="w-full">
-            <thead>
-              <tr className={theadRow}>
-                <th className={th}>Time</th>
-                <th className={th}>Patient</th>
-                <th className={th}>Doctor</th>
-                <th className={th}>Service</th>
-                <th className={th}>Status</th>
-                <th className={th}>Urgency</th>
-                <th className={th}>Source</th>
-                <th className={th}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {appointmentsQuery.isLoading ? (
-                <tr>
-                  <td colSpan={8} className="p-0">
-                    <LoadingRows rows={5} className="p-3" />
-                  </td>
-                </tr>
-              ) : appointmentsQuery.error ? (
-                <tr>
-                  <td colSpan={8} className="p-3">
-                    <ErrorBlock
-                      error={appointmentsQuery.error}
-                      onRetry={() => void appointmentsQuery.refetch()}
-                    />
-                  </td>
-                </tr>
-              ) : rows.length === 0 ? (
-                <EmptyState cols={8} message="No appointments match these filters." />
-              ) : (
-                rows.map((appointment) => (
-                  <tr key={appointment.id} className={tbodyRow}>
-                    <td className={td}>{appointmentTimeLabel(appointment)}</td>
-                    <td className={cn(td, "font-medium")}>
-                      {appointment.patient_name ?? "—"}
-                      <p className="text-xs text-muted-foreground">
-                        {appointment.patient_number ?? ""}
-                      </p>
-                    </td>
-                    <td className={td}>{appointment.doctor_name ?? "—"}</td>
-                    <td className={td}>
-                      {appointment.service_name ?? "Consultation"}
-                      <p className="text-xs text-muted-foreground">
-                        {appointment.department_name ?? "—"}
-                      </p>
-                    </td>
-                    <td className={td}>
-                      <Badge>{titleize(appointment.status)}</Badge>
-                    </td>
-                    <td className={td}>
-                      <Badge
-                        tone={
-                          appointment.urgency === "EMERGENCY"
-                            ? "danger"
-                            : appointment.urgency === "URGENT"
-                              ? "warning"
-                              : "muted"
-                        }
-                      >
-                        {titleize(appointment.urgency)}
-                      </Badge>
-                    </td>
-                    <td className={td}>
-                      <Badge
-                        tone={
-                          appointment.source === "WALK_IN"
-                            ? "warning"
-                            : appointment.source === "FOLLOW_UP"
-                              ? "info"
-                              : "muted"
-                        }
-                      >
-                        {titleize(appointment.source)}
-                      </Badge>
-                    </td>
-                    <td className={cn(td, "space-x-2")}>
-                      {appointment.status === "SCHEDULED" && (
-                        <Button
-                          size="sm"
-                          onClick={() => checkInMutation.mutate(appointment.id)}
-                          disabled={checkInMutation.isPending}
-                        >
-                          Check in
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setTarget(appointment);
-                          setUpdateForm({
-                            status: appointment.status,
-                            urgency: appointment.urgency,
-                            notes: appointment.notes ?? "",
-                          });
-                        }}
-                      >
-                        Update
-                      </Button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
-          <span>
-            Page {page} of {Math.max(appointmentsQuery.data?.meta.pages ?? 1, 1)} ·{" "}
-            {appointmentsQuery.data?.meta.total ?? 0} appointments
-          </span>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setPage((value) => Math.max(1, value - 1))}
-              disabled={page <= 1}
-            >
-              Previous
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setPage((value) => value + 1)}
-              disabled={page >= (appointmentsQuery.data?.meta.pages ?? 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      </Panel>
+      {tab === "queue" ? (
+        <LiveQueuePanel />
+      ) : (
+        <AllAppointments onBook={() => setBookingOpen(true)} />
+      )}
 
       <Modal
         open={bookingOpen}
@@ -563,7 +317,7 @@ function Page() {
                     >
                       {["UNKNOWN", "FEMALE", "MALE", "OTHER"].map((value) => (
                         <option key={value} value={value}>
-                          {titleize(value)}
+                          {value.charAt(0) + value.slice(1).toLowerCase()}
                         </option>
                       ))}
                     </select>
@@ -659,9 +413,9 @@ function Page() {
                 setBooking({ ...booking, urgency: event.target.value as Urgency })
               }
             >
-              {urgencies.map((value) => (
+              {(["ROUTINE", "URGENT", "EMERGENCY"] as const).map((value) => (
                 <option key={value} value={value}>
-                  {titleize(value)}
+                  {value.charAt(0) + value.slice(1).toLowerCase()}
                 </option>
               ))}
             </select>
@@ -671,68 +425,6 @@ function Page() {
               className={textareaCls}
               value={booking.notes}
               onChange={(event) => setBooking({ ...booking, notes: event.target.value })}
-            />
-          </Field>
-        </div>
-      </Modal>
-
-      <Modal
-        open={Boolean(target)}
-        onClose={() => setTarget(null)}
-        title="Update appointment"
-        subtitle={target ? (target.patient_name ?? target.id.slice(0, 8)) : undefined}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setTarget(null)}>
-              Cancel
-            </Button>
-            <Button onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
-              {updateMutation.isPending ? "Saving…" : "Save changes"}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Field label="Status">
-            <select
-              className={inputCls}
-              value={updateForm.status}
-              onChange={(event) =>
-                setUpdateForm({
-                  ...updateForm,
-                  status: event.target.value as AppointmentStatus,
-                })
-              }
-            >
-              {statuses
-                .filter((value) => !(target?.source === "WALK_IN" && value === "NO_SHOW"))
-                .map((value) => (
-                  <option key={value} value={value}>
-                    {titleize(value)}
-                  </option>
-                ))}
-            </select>
-          </Field>
-          <Field label="Urgency">
-            <select
-              className={inputCls}
-              value={updateForm.urgency}
-              onChange={(event) =>
-                setUpdateForm({ ...updateForm, urgency: event.target.value as Urgency })
-              }
-            >
-              {urgencies.map((value) => (
-                <option key={value} value={value}>
-                  {titleize(value)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Notes">
-            <textarea
-              className={textareaCls}
-              value={updateForm.notes}
-              onChange={(event) => setUpdateForm({ ...updateForm, notes: event.target.value })}
             />
           </Field>
         </div>
