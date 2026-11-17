@@ -423,7 +423,7 @@ def aging_report():
     ).all()
     buckets = {"current": [], "14_days": [], "30_days": [], "60_days": []}
     for claim in open_claims:
-        age = (now - claim.submitted_at).days if claim.submitted_at else 0
+        age = (now - as_utc(claim.submitted_at)).days if claim.submitted_at else 0
         if age >= 60:
             buckets["60_days"].append((claim, age))
         elif age >= 30:

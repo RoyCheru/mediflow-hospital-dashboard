@@ -401,3 +401,14 @@ def test_invoice_list_date_filter_uses_hospital_day(client, tokens, ids):
     assert invoice["id"] in listed("2030-03-05")
     bad = client.get("/api/v1/invoices?date_from=nope", headers=auth(tokens["cashier"]))
     assert bad.status_code == 400
+
+
+def test_claims_aging_handles_stored_submission_times(client, tokens, ids):
+    """SQLite returns naive datetimes; aging must not 500 on them."""
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    assert _claim(client, tokens, invoice["id"], 100_000).status_code == 201
+    from app.extensions import db
+
+    db.session.expire_all()  # force submitted_at to be re-read from the database
+    response = client.get("/api/v1/claims/aging", headers=auth(tokens["admin"]))
+    assert response.status_code == 200, response.get_json()
