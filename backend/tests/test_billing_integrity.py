@@ -159,3 +159,79 @@ def test_parked_callback_is_idempotent(client, tokens, ids):
     _stk_callback(client, intent, 90_000, "QKREPLAY")
     _stk_callback(client, intent, 90_000, "QKREPLAY")
     assert Transaction.query.filter_by(reference="QKREPLAY").count() == 1
+
+
+def test_void_refused_while_payments_remain_until_refunded(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    payment = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions",
+        json={"method": "CASH", "amount_minor": 100_000},
+        headers=auth(tokens["cashier"]),
+    )
+    assert payment.status_code == 201, payment.get_json()
+
+    refused = client.post(
+        f"/api/v1/invoices/{invoice['id']}/void-requests",
+        json={"reason": "Wrong patient"},
+        headers=auth(tokens["reception"]),
+    )
+    assert refused.status_code == 409
+    assert refused.get_json()["error"]["details"]["net_paid_minor"] == 100_000
+
+    refund = client.post(
+        f"/api/v1/transactions/{payment.get_json()['data']['id']}/refund-requests",
+        json={"amount_minor": 100_000, "reason": "Wrong patient"},
+        headers=auth(tokens["cashier"]),
+    )
+    assert refund.status_code == 201, refund.get_json()
+    decided = client.post(
+        f"/api/v1/refunds/{refund.get_json()['data']['id']}/decision",
+        json={"approve": True},
+        headers=auth(tokens["admin"]),
+    )
+    assert decided.status_code == 200, decided.get_json()
+
+    assert _void_invoice(client, tokens, invoice["id"]).status_code == 200
+    assert _invoice(client, tokens, invoice["id"])["status"] == "VOIDED"
+
+
+def test_void_approval_rechecks_money_received_after_request(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    request = client.post(
+        f"/api/v1/invoices/{invoice['id']}/void-requests",
+        json={"reason": "Duplicate"},
+        headers=auth(tokens["reception"]),
+    )
+    assert request.status_code == 201
+    paid = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions",
+        json={"method": "CASH", "amount_minor": 50_000},
+        headers=auth(tokens["cashier"]),
+    )
+    assert paid.status_code == 201
+    decision = client.post(
+        f"/api/v1/void-requests/{request.get_json()['data']['id']}/decision",
+        json={"approve": True, "reason": "ok"},
+        headers=auth(tokens["admin"]),
+    )
+    assert decision.status_code == 409
+    assert _invoice(client, tokens, invoice["id"])["status"] == "PARTIALLY_PAID"
+
+
+def test_void_refused_while_sha_claim_is_open(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    claim = client.post(
+        f"/api/v1/invoices/{invoice['id']}/claims",
+        json={"member_reference": "SHA-DEMO-ACTIVE", "amount_minor": 100_000},
+        headers=auth(tokens["reception"]),
+    )
+    assert claim.status_code == 201, claim.get_json()
+    refused = client.post(
+        f"/api/v1/invoices/{invoice['id']}/void-requests",
+        json={"reason": "Duplicate"},
+        headers=auth(tokens["reception"]),
+    )
+    assert refused.status_code == 409
+    assert refused.get_json()["error"]["details"]["open_claim_ids"] == [
+        claim.get_json()["data"]["id"]
+    ]

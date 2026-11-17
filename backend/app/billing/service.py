@@ -18,6 +18,7 @@ from app.common.base import utcnow
 from app.common.enums import (
     AllocationStatus,
     CashReconciliationStatus,
+    ClaimStatus,
     InvoiceStatus,
     PaymentIntentStatus,
     PaymentMethod,
@@ -642,6 +643,36 @@ def handle_mpesa_callback(payload):
     return {"ResultCode": 0, "ResultDesc": "Accepted"}
 
 
+OPEN_CLAIM_STATUSES = (
+    ClaimStatus.DRAFT,
+    ClaimStatus.SUBMITTED,
+    ClaimStatus.UNDER_REVIEW,
+    ClaimStatus.APPROVED,
+)
+
+
+def ensure_invoice_voidable(invoice):
+    """An invoice may only be voided once no money or payer claim is attached.
+
+    Collected money must be refunded (or the transaction reversed) and open SHA
+    claims cancelled first, otherwise the money or claim would be stranded on a
+    dead invoice.
+    """
+    from app.claims.models import Claim  # local: claims imports billing
+
+    open_claims = Claim.query.filter(
+        Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+    ).all()
+    if invoice.amount_paid_minor > 0 or open_claims:
+        raise conflict(
+            "Refund collected payments and cancel open claims before voiding this invoice",
+            {
+                "net_paid_minor": invoice.amount_paid_minor,
+                "open_claim_ids": [str(claim.id) for claim in open_claims],
+            },
+        )
+
+
 def create_void_request(data, actor):
     if not data.get("invoice_id") and not data.get("transaction_id"):
         raise bad_request("invoice_id or transaction_id is required")
@@ -651,6 +682,7 @@ def create_void_request(data, actor):
         invoice = get_invoice_or_404(data["invoice_id"])
         if invoice.status == InvoiceStatus.VOIDED:
             raise conflict("Invoice is already voided")
+        ensure_invoice_voidable(invoice)
     if data.get("transaction_id"):
         transaction = Transaction.query.get(data["transaction_id"])
         if transaction is None:
@@ -684,13 +716,17 @@ def decide_void(request_id, data, actor):
         raise conflict("Void request has already been decided")
     if item.requested_by_id == actor.id:
         raise conflict("The requester cannot approve their own void request")
+    invoice = None
+    if data["approve"] and item.invoice_id:
+        # Re-check under the lock: money may have arrived since the request.
+        invoice = lock_invoice(item.invoice_id)
+        ensure_invoice_voidable(invoice)
     item.status = VoidRequestStatus.APPROVED if data["approve"] else VoidRequestStatus.REJECTED
     item.reviewed_by_id = actor.id
     item.decision_reason = data.get("reason")
     item.decided_at = utcnow()
     if data["approve"]:
-        if item.invoice_id:
-            invoice = lock_invoice(item.invoice_id)
+        if invoice is not None:
             invoice.status = InvoiceStatus.VOIDED
             invoice.void_reason = item.reason
             for allocation in invoice.allocations:
