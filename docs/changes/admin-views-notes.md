@@ -205,3 +205,140 @@ was lost, then fixed forward.
 4. Add edit of existing rules and exceptions in the availability panel.
 5. Verify seed on the dev DB, then run the full verification (pytest, lint, tsc, build,
    vitest, Playwright) and the leftovers search. Finish the notes and the PR.
+
+---
+
+# Resume outcome (2026-11-17)
+
+## What was lost or broken, and why
+
+The earlier session stopped before committing anything, so all of its work
+existed only in the working tree. It was recovered intact as `wip:` commits.
+The items below were wrong in that work and were fixed forward. Nothing was reverted.
+
+| Problem | Cause | Fix commit |
+| --- | --- | --- |
+| Migration 0003 lacked `user_id → users.id` FK and `ix_availability_*_user_id` | First draft only added the column | `68e8225` (revision repaired in place; dev DB re-applied via `stamp 0002` + `upgrade`) |
+| One doctor on leave hid every doctor from "Working today" | `None == None` owner match | `12cf1ae` |
+| Rule effective dates ignored by "Working today" | Filtered on weekday only | `12cf1ae` |
+| `in_consultation` counted any past day | No date bound | `12cf1ae` |
+| Staff detail `today_status` wrong when range excluded today | Used range exceptions | `12cf1ae` |
+| `/admin/queue?doctor_id=bad` → 500 | Unvalidated UUID | `12cf1ae` |
+| Check in / Update actions missing on admin appointments | Tab rewrite dropped them | `8eb05da` |
+| No way to edit an existing rule or time off | Only add/delete UI | `c723f3b` |
+| "Upcoming time off" limited to 7-day window | Used range exceptions | `12cf1ae`, `c723f3b` |
+| Vacuous `or True` assertion in slot test | Test bug | `9b2224c` |
+
+## Files changed on this branch (since `c993f10`)
+
+Backend: `app/config.py`, `.env.example`, `app/common/time.py` (new),
+`app/api/v1.py`, `app/admin/staff_routes.py` (new), `app/admin/staff_service.py`
+(new), `app/scheduling/{models,routes,schemas,service}.py`, `app/demo_seed.py`,
+`migrations/versions/0003_admin_staff_availability.py` (new),
+`tests/test_admin_views.py` (new), `tests/test_admin_availability_migration.py`
+(new), `tests/test_walk_in_migration.py` (pins upgrades to 0002).
+
+Frontend: `src/routes/admin/{appointments,staff,index}.tsx`,
+`src/components/admin/{AllAppointments,LiveQueuePanel,StaffAvailabilityPanel}.tsx`
+(new), `src/lib/api/{adminViews.ts (new),client.ts}`, `src/lib/format.ts`,
+`src/lib/format.test.ts` (new), `src/lib/queuePolling.ts` (new),
+`src/types/api.ts`, `e2e/admin-integration.spec.ts`, `playwright.config.ts`,
+`.env.example`.
+
+## Endpoint → page map
+
+| Endpoint (all under `/api/v1`, admin only) | Used by |
+| --- | --- |
+| `GET /admin/appointments` | Appointments → All Appointments (`AllAppointments`) |
+| `GET /admin/queue` | Appointments → Live Queue (`LiveQueuePanel`) and the tab label count |
+| `GET /admin/staff` | Doctors & Staff list, doctor filter dropdowns on both appointment tabs |
+| `GET /admin/availability?date=` | Doctors & Staff → "Working today" summary |
+| `GET /admin/staff/:user_id/availability?from=&to=` | Staff panel → Availability tab |
+| `POST/PATCH/DELETE /admin/staff/:user_id/availability/rules[/:id]` | Staff panel → working hours form/list |
+| `POST/PATCH/DELETE /admin/staff/:user_id/availability/exceptions[/:id]` | Staff panel → time off form/list |
+| existing `POST /appointments/:id/check-in`, `PATCH /appointments/:id` | All Appointments row actions |
+
+Doctor self-service (`/doctors/me/availability`, `/doctors/me/exceptions`) is
+unchanged apart from now writing audit entries too.
+
+## Requirement coverage
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| APT-8 | done and verified | `test_admin_appointments_filters_pagination_and_nullable_slot`, `..._uses_hospital_timezone_day_boundaries`; E2E "all appointments spans dates…", "walk-in appointments render…" |
+| APT-9 | done and verified | `test_admin_queue_orders_today_only_and_groups_by_doctor`; E2E "checked-in walk-in appears on…", "live queue API only returns today's rows…", tab URL survives reload, dashboard link |
+| APT-10 | done and verified | `test_admin_availability_*`, `test_working_today_leave_hides_only_that_doctor`, audit before/after asserted; E2E "doctor on leave…", "admin edits existing working hours…" |
+| ADM-5 | done and verified | `test_admin_staff_metrics_and_working_today`, `test_staff_availability_today_status_and_upcoming_time_off`; seed gives receptionist Joy Wairimu Mon–Fri 08:00–17:00 |
+| RBAC | done and verified | `test_admin_views_require_admin` (401 + 403 for reception/doctor/patient); E2E 403 check |
+| Migration up/down | done and verified | `test_admin_availability_migration.py` (SQLite); manual Postgres round trip in an isolated schema |
+
+## Final verification (2026-11-17)
+
+| Check | Baseline | Final |
+| --- | --- | --- |
+| pytest | 66 passed | 74 passed |
+| ruff check / format | clean | clean |
+| eslint | 0 errors, 9 warnings | 0 errors, same 9 pre-existing warnings |
+| tsc | clean | clean |
+| vite build | OK | OK |
+| vitest | 14 passed | 19 passed (also passes with `TZ=America/Los_Angeles`) |
+| Playwright | not run | 13 passed |
+
+## Decisions
+
+- **Timezone:** `HOSPITAL_TIMEZONE` (default `Africa/Nairobi`) in backend config.
+  Every "today" (queue, staff status, working today, date filters) is computed
+  on the server with `app/common/time.py`. The frontend only formats
+  timestamps, using `VITE_HOSPITAL_TIMEZONE` (same default). API responses also
+  carry `timezone`.
+- **Polling:** 25 s (`src/lib/queuePolling.ts`). It runs only while the Live Queue tab is
+  mounted and the browser tab is focused and visible, and it refetches when focus returns.
+- **Waiting threshold:** `QUEUE_WAITING_THRESHOLD_MINUTES` (default 30), returned
+  as `waiting_threshold_minutes`. Waiting time is highlighted when it is over the threshold.
+- **Staff working-hours model:** reuse `AvailabilityRule`/`AvailabilityException`
+  with a nullable `user_id` owner and a check constraint that requires exactly one owner.
+  Doctors stay keyed by `doctor_id`, so doctor booking logic is untouched.
+- **Migration repair:** 0003 was never merged, so it was repaired in place
+  instead of stacking a 0004. It is idempotent. Downgrade **refuses** (exit 1,
+  nothing changed) while non-doctor working hours exist, rather than deleting them.
+  Flask-Migrate writes the reason only to the app logger.
+- **Queue order:** comes only from `scheduling.service.queue()`. The admin
+  endpoint numbers positions in the order it receives, and the frontend renders it as is.
+- **Status codes:** malformed query parameters → 400 (matches the existing admin
+  list endpoints and their tests); invalid JSON bodies → 422 (marshmallow);
+  missing auth → 401; wrong role → 403; unknown staff or rule → 404.
+- **Live Queue actions:** read-only. Check-in and status updates stay on All Appointments.
+
+## Additional PRD/prompt vs code discrepancies
+
+6. **Frontend framework:** the task prompt says Next.js App Router, while the PRD
+   §13 says Next.js. The repository is TanStack Start/Router on Vite (Lovable).
+   Followed the code. Tab state uses TanStack `validateSearch` (`?tab=queue`).
+7. **Validation status:** the task lists 422. Query-string validation keeps 400 to stay
+   consistent with existing endpoints. Body validation is 422.
+
+## Out-of-scope issues noticed (not fixed)
+
+- `GET /claims/aging` raises `TypeError: can't subtract offset-naive and
+  offset-aware datetimes` on SQLite (`app/claims/service.py:403`). It appears in
+  the Playwright server log. Claims is out of scope.
+- The sidebar has static badge numbers (Appointments 6, Billing 5, Claims 4,
+  Notifications 3) in `src/lib/navigation.ts`, left over from the original UI scaffold.
+- `flask seed` only runs on an empty database. The existing dev DB was seeded before
+  this branch, so it does not contain the new past/future appointments,
+  receptionist hours or today's doctor leave. To see them, reseed a fresh database. This
+  was not done here because it would wipe dev data.
+- The demo seed has two urgent walk-ins today (one EMERGENCY, one URGENT), which
+  comes from the walk-in branch's seed.
+
+## Assumptions and known gaps
+
+- "Staff" means every non-patient user. `next_available_slot` is computed for doctors
+  only, searching 14 days ahead. On `/admin/staff` it costs a few queries per doctor
+  row (bounded by page size).
+- Staff detail range is capped at 31 days. The calendar shows up to 3 booked slots per
+  day, with counts.
+- An isolated Postgres schema `migcheck` was created in the dev database for the
+  seeded migration check. Remove it with `DROP SCHEMA migcheck CASCADE;` when no longer needed.
+- `frontend/check-admin.mjs` (ad-hoc debug script with demo credentials) from
+  the earlier session was not committed.
