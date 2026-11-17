@@ -84,6 +84,7 @@ def serialize_admin_appointment(appointment):
         "source": appointment.source.value,
         "status": appointment.status.value,
         "urgency": appointment.urgency.value,
+        "notes": appointment.notes,
         "slot": _iso(_aware(appointment.scheduled_start)),
         "scheduled_end": _iso(_aware(appointment.scheduled_end)),
         "arrived_at": _iso(_aware(appointment.arrived_at)),
