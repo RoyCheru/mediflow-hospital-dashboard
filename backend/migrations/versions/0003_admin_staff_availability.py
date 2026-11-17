@@ -6,6 +6,12 @@ Create Date: 2026-11-16
 
 The initial revision builds from current metadata, so a fresh database already
 has these columns/constraints. This migration is idempotent for older databases.
+
+Repaired on 2026-11-17 (before merge): the first draft added ``user_id``
+without its foreign key to ``users`` and without the single-column
+``ix_availability_*_user_id`` indexes declared on the model. Every step checks
+the live schema first, so re-running the upgrade on a database that applied the
+first draft only adds what is missing.
 """
 
 import sqlalchemy as sa
@@ -32,6 +38,18 @@ def _checks(bind, table):
 
 def _indexes(bind, table):
     return {index["name"] for index in sa.inspect(bind).get_indexes(table)}
+
+
+def _user_fks(bind, table):
+    return [
+        fk
+        for fk in sa.inspect(bind).get_foreign_keys(table)
+        if fk.get("referred_table") == "users" and fk.get("constrained_columns") == ["user_id"]
+    ]
+
+
+def _fk_name(table):
+    return f"fk_{table}_user_id_users"
 
 
 def upgrade():
@@ -65,7 +83,13 @@ def upgrade():
             if check_name not in checks:
                 batch.create_check_constraint(check_name, check_sql)
 
+        if not _user_fks(bind, table):
+            with op.batch_alter_table(table) as batch:
+                batch.create_foreign_key(_fk_name(table), "users", ["user_id"], ["id"])
+
         indexes = _indexes(bind, table)
+        if f"ix_{table}_user_id" not in indexes:
+            op.create_index(f"ix_{table}_user_id", table, ["user_id"])
         if index_name not in indexes:
             if table == "availability_rules":
                 op.create_index(index_name, table, ["user_id", "weekday"])
@@ -119,7 +143,12 @@ def downgrade():
         indexes = _indexes(bind, table)
         if index_name in indexes:
             op.drop_index(index_name, table_name=table)
+        if f"ix_{table}_user_id" in indexes:
+            op.drop_index(f"ix_{table}_user_id", table_name=table)
+        named_fks = [fk["name"] for fk in _user_fks(bind, table) if fk.get("name")]
         with op.batch_alter_table(table) as batch:
+            for fk_name in named_fks:
+                batch.drop_constraint(fk_name, type_="foreignkey")
             if check_name in checks:
                 batch.drop_constraint(check_name, type_="check")
             if "user_id" in columns:
