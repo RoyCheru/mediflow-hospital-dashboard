@@ -582,10 +582,16 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
     # Pending approvals and cash reconciliation.
     # A void needs an invoice with no money collected (paid invoices must be
     # refunded first); the refund request targets a separately paid invoice.
-    unpaid_invoice = (
-        Invoice.query.filter(Invoice.status == InvoiceStatus.ISSUED, Invoice.amount_paid_minor == 0)
-        .order_by(Invoice.created_at.desc())
-        .first()
+    # The pending void targets a dedicated, unpaid duplicate invoice: invoices
+    # with collected money or open claims cannot be voided.
+    unpaid_invoice = _invoice(
+        patients[0],
+        departments["GEN"],
+        "General consultation (duplicate entry)",
+        250000,
+        PaymentMethod.CASH,
+        utcnow() - timedelta(hours=3),
+        status=InvoiceStatus.ISSUED,
     )
     if unpaid_invoice is not None:
         db.session.add(
