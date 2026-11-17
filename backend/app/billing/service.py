@@ -2,6 +2,7 @@ import uuid
 from datetime import timezone
 
 from sqlalchemy import func
+from sqlalchemy.orm import lazyload
 
 from app.billing.models import (
     CashReconciliation,
@@ -207,9 +208,13 @@ def invoice_lock_query(invoice_id):
     concurrent payments, callbacks, settlements and voids serialize per
     invoice. SQLite ignores ``FOR UPDATE``; Postgres honours it.
     """
+    # Lock only the invoices row: Invoice eager-loads relationships through
+    # LEFT OUTER JOINs, and Postgres refuses FOR UPDATE on the nullable side of
+    # an outer join. lazyload("*") also keeps the locking query small.
     return (
-        Invoice.query.filter(Invoice.id == invoice_id)
-        .with_for_update()
+        Invoice.query.options(lazyload("*"))
+        .filter(Invoice.id == invoice_id)
+        .with_for_update(of=Invoice)
         .execution_options(populate_existing=True)
     )
 

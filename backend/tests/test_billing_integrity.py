@@ -12,7 +12,10 @@ def test_invoice_lock_query_uses_select_for_update_on_postgres(app):
     with app.app_context():
         statement = invoice_lock_query(uuid4()).statement
         sql = str(statement.compile(dialect=postgresql.dialect()))
-    assert "FOR UPDATE" in sql
+    # Must lock only the invoices row: Postgres rejects FOR UPDATE on the
+    # nullable side of the eager-load outer joins.
+    assert "FOR UPDATE OF invoices" in sql
+    assert "OUTER JOIN" not in sql
 
 
 def test_second_payment_cannot_exceed_balance(client, tokens, ids):
