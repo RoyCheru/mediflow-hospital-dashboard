@@ -93,7 +93,7 @@ def test_migration_upgrade_and_downgrade_on_existing_appointments(tmp_path):
     app = _app_for(path)
     runner = app.test_cli_runner()
 
-    upgrade = runner.invoke(args=["db", "upgrade"])
+    upgrade = runner.invoke(args=["db", "upgrade", "0002_walk_in_appointment_model"])
     assert upgrade.exit_code == 0, upgrade.output
 
     connection = sqlite3.connect(path)
@@ -170,7 +170,7 @@ def test_migration_refuses_unfixable_walk_in_rows(tmp_path):
     app = _app_for(path)
     runner = app.test_cli_runner()
 
-    upgrade = runner.invoke(args=["db", "upgrade"])
+    upgrade = runner.invoke(args=["db", "upgrade", "0002_walk_in_appointment_model"])
     assert upgrade.exit_code != 0
 
     connection = sqlite3.connect(path)

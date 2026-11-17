@@ -22,6 +22,7 @@ from app.common.enums import (
     AllocationStatus,
     AppointmentSource,
     AppointmentStatus,
+    AvailabilityExceptionKind,
     CashReconciliationStatus,
     ClaimStatus,
     InvoiceStatus,
@@ -42,6 +43,7 @@ from app.notifications.models import Notification
 from app.patients.service import create_patient_profile
 from app.scheduling.models import (
     Appointment,
+    AvailabilityException,
     AvailabilityRule,
     DoctorProfile,
 )
@@ -188,6 +190,7 @@ def _claim(invoice, patient, amount, status, submitted_days_ago, actor):
 def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_patient):
     """Create realistic admin data: staff, patients, appointments, billing, claims, audit."""
     from app.common.enums import Sex
+    from app.common.time import hospital_day_bounds, hospital_local_datetime, hospital_today
 
     reception = User.query.filter_by(email="reception@mediflow.test").first()
     cashier = User.query.filter_by(email="cashier@mediflow.test").first()
@@ -236,6 +239,30 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
                 timezone="Africa/Nairobi",
             )
         )
+
+    for weekday in range(5):
+        db.session.add(
+            AvailabilityRule(
+                user_id=second_reception.id,
+                weekday=weekday,
+                start_time=time(8, 0),
+                end_time=time(17, 0),
+                slot_minutes=30,
+                timezone="Africa/Nairobi",
+            )
+        )
+
+    today_date = hospital_today()
+    leave_start, leave_end = hospital_day_bounds(today_date)
+    db.session.add(
+        AvailabilityException(
+            doctor_id=second_doctor.id,
+            start_at=leave_start,
+            end_at=leave_end,
+            kind=AvailabilityExceptionKind.LEAVE,
+            reason="Annual leave",
+        )
+    )
 
     patients = [main_patient]
     people = [
@@ -292,7 +319,7 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
 
     dept_codes = ["GEN", "PED", "CAR", "ORT"]
     service_codes = ["CONS-GEN", "CONS-PED", "CONS-CAR", "LAB-CBC", "XRAY-CHEST"]
-    today = utcnow().date()
+    today = hospital_today()
 
     source_plan = [
         AppointmentSource.RECEPTION,
@@ -462,6 +489,76 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
                 when + timedelta(days=2),
                 cashier or admin,
             )
+
+    # Past and future appointments so the admin list spans every date and
+    # source/status combination.
+    past_day = today - timedelta(days=7)
+    future_day = today + timedelta(days=7)
+    past_specs = [
+        (patients[6], AppointmentSource.ONLINE, AppointmentStatus.COMPLETED, time(9, 0)),
+        (patients[7], AppointmentSource.RECEPTION, AppointmentStatus.NO_SHOW, time(11, 0)),
+        (patients[3], AppointmentSource.FOLLOW_UP, AppointmentStatus.COMPLETED, time(14, 0)),
+        (patients[2], AppointmentSource.WALK_IN, AppointmentStatus.COMPLETED, time(10, 0)),
+        (patients[1], AppointmentSource.RECEPTION, AppointmentStatus.CANCELLED, time(15, 0)),
+    ]
+    for patient, appt_source, appt_status, clock in past_specs:
+        start_at = hospital_local_datetime(past_day, clock).astimezone(timezone.utc)
+        if appt_source == AppointmentSource.WALK_IN:
+            scheduled_start = None
+            scheduled_end = None
+            arrived_at = start_at
+        else:
+            scheduled_start = start_at
+            scheduled_end = start_at + timedelta(minutes=30)
+            arrived_at = (
+                start_at + timedelta(minutes=5)
+                if appt_status in {AppointmentStatus.COMPLETED}
+                else None
+            )
+        appointment = Appointment(
+            patient_id=patient.id,
+            doctor_id=doctor.id,
+            service_id=services["CONS-GEN"].id,
+            department_id=departments["GEN"].id,
+            scheduled_start=scheduled_start,
+            scheduled_end=scheduled_end,
+            arrived_at=arrived_at,
+            status=appt_status,
+            source=appt_source,
+            urgency=Urgency.ROUTINE,
+            booked_by_id=reception.id if reception else admin.id,
+        )
+        if arrived_at is not None:
+            appointment.checked_in_at = arrived_at
+        if appt_status == AppointmentStatus.COMPLETED:
+            appointment.started_at = (arrived_at or start_at) + timedelta(minutes=10)
+            appointment.completed_at = (arrived_at or start_at) + timedelta(minutes=40)
+        elif appt_status == AppointmentStatus.CANCELLED:
+            appointment.cancelled_at = start_at - timedelta(hours=1)
+            appointment.cancellation_reason = "Patient request"
+        db.session.add(appointment)
+
+    future_specs = [
+        (patients[4], AppointmentSource.ONLINE, time(9, 30)),
+        (patients[5], AppointmentSource.RECEPTION, time(11, 0)),
+        (patients[6], AppointmentSource.FOLLOW_UP, time(14, 30)),
+    ]
+    for patient, appt_source, clock in future_specs:
+        start_at = hospital_local_datetime(future_day, clock).astimezone(timezone.utc)
+        db.session.add(
+            Appointment(
+                patient_id=patient.id,
+                doctor_id=doctor.id,
+                service_id=services["CONS-GEN"].id,
+                department_id=departments["GEN"].id,
+                scheduled_start=start_at,
+                scheduled_end=start_at + timedelta(minutes=30),
+                status=AppointmentStatus.SCHEDULED,
+                source=appt_source,
+                urgency=Urgency.ROUTINE,
+                booked_by_id=reception.id if reception else admin.id,
+            )
+        )
 
     # Pending approvals and cash reconciliation.
     pending_invoice = (
