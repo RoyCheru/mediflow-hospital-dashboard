@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import UUID
 
 from flask import Blueprint, jsonify, request
 
@@ -71,13 +72,23 @@ def list_admin_appointments():
     return jsonify(result), 200
 
 
+def _uuid_arg(name):
+    value = request.args.get(name)
+    if not value:
+        return None
+    try:
+        return UUID(value)
+    except ValueError as exc:
+        raise bad_request(f"Invalid {name}") from exc
+
+
 @bp.get("/admin/queue")
 @auth_required(Role.ADMIN)
 def admin_queue():
     return ok(
         staff_service.admin_queue(
-            doctor_id=request.args.get("doctor_id"),
-            department_id=request.args.get("department_id"),
+            doctor_id=_uuid_arg("doctor_id"),
+            department_id=_uuid_arg("department_id"),
         )
     )
 

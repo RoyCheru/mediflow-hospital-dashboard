@@ -150,8 +150,6 @@ def admin_appointments(
     department_id=None,
     q=None,
     sort="-slot",
-    page=1,
-    page_size=20,
 ):
     from app.common.pagination import pagination_args
     from app.patients.models import PatientProfile
@@ -488,19 +486,52 @@ def _next_available_slot(doctor_id, now=None, days=14):
     return None
 
 
+def _in_consultation_today(doctor_ids):
+    """Doctors with an IN_CONSULTATION appointment whose effective time is today."""
+    if not doctor_ids:
+        return set()
+    start, end = hospital_day_bounds(hospital_today())
+    effective = func.coalesce(
+        Appointment.scheduled_start,
+        Appointment.arrived_at,
+        Appointment.created_at,
+    )
+    return {
+        doctor_id
+        for (doctor_id,) in db.session.query(Appointment.doctor_id)
+        .filter(
+            Appointment.doctor_id.in_(list(doctor_ids)),
+            Appointment.status == AppointmentStatus.IN_CONSULTATION,
+            effective >= start,
+            effective < end,
+        )
+        .distinct()
+        .all()
+    }
+
+
+def _belongs_to(item, doctor_id, user_id):
+    """True when a rule/exception is owned by this doctor profile or staff user."""
+    if doctor_id is not None:
+        return item.doctor_id == doctor_id
+    return item.doctor_id is None and item.user_id == user_id
+
+
+def _today_status(doctor, rules, exceptions, in_consultation_doctor_ids, target_date):
+    if _on_leave(exceptions, target_date):
+        return "on_leave"
+    if doctor is not None and doctor.id in in_consultation_doctor_ids:
+        return "in_consultation"
+    if _working_hours(rules, target_date):
+        return "available"
+    return "off_today"
+
+
 def _staff_item(user, doctor, rules, exceptions, in_consultation_doctor_ids):
     target_date = hospital_today()
-    on_leave = _on_leave(exceptions, target_date)
     hours = _working_hours(rules, target_date)
     is_doctor = doctor is not None
-    if on_leave:
-        today_status = "on_leave"
-    elif is_doctor and doctor.id in in_consultation_doctor_ids:
-        today_status = "in_consultation"
-    elif hours:
-        today_status = "available"
-    else:
-        today_status = "off_today"
+    today_status = _today_status(doctor, rules, exceptions, in_consultation_doctor_ids, target_date)
     return {
         "id": str(user.id),
         "user_id": str(user.id),
@@ -540,32 +571,13 @@ def admin_staff(q=None, role=None, status=None):
     rules = _rules_for_owners(doctor_ids, user_ids)
     today_start, today_end = hospital_day_bounds(hospital_today())
     exceptions = _exceptions_overlapping(doctor_ids, user_ids, today_start, today_end)
-    in_consultation = set()
-    if doctor_ids:
-        in_consultation = {
-            doctor_id
-            for (doctor_id,) in db.session.query(Appointment.doctor_id)
-            .filter(
-                Appointment.doctor_id.in_(doctor_ids),
-                Appointment.status == AppointmentStatus.IN_CONSULTATION,
-            )
-            .all()
-        }
+    in_consultation = _in_consultation_today(doctor_ids)
     items = []
     for user in users:
         doctor = doctor_by_user.get(user.id)
-        owner_rules = [
-            rule
-            for rule in rules
-            if (doctor and rule.doctor_id == doctor.id)
-            or (doctor is None and rule.user_id == user.id)
-        ]
-        owner_exceptions = [
-            item
-            for item in exceptions
-            if (doctor and item.doctor_id == doctor.id)
-            or (doctor is None and item.user_id == user.id)
-        ]
+        doctor_id = doctor.id if doctor else None
+        owner_rules = [rule for rule in rules if _belongs_to(rule, doctor_id, user.id)]
+        owner_exceptions = [item for item in exceptions if _belongs_to(item, doctor_id, user.id)]
         items.append(_staff_item(user, doctor, owner_rules, owner_exceptions, in_consultation))
     pages = (total + page_size - 1) // page_size if total else 0
     return {
@@ -575,67 +587,57 @@ def admin_staff(q=None, role=None, status=None):
 
 
 def working_today(target_date=None):
+    """Staff with working hours on ``target_date`` (hospital day) and not on leave."""
     target_date = target_date or hospital_today()
     start, end = hospital_day_bounds(target_date)
-    rules = AvailabilityRule.query.filter_by(weekday=target_date.weekday()).all()
-    rules = [rule for rule in rules if rule.is_active]
+    rules = [
+        rule
+        for rule in AvailabilityRule.query.filter_by(
+            weekday=target_date.weekday(), is_active=True
+        ).all()
+        if _rule_applies(rule, target_date)
+    ]
     doctor_ids = {rule.doctor_id for rule in rules if rule.doctor_id}
     user_ids = {rule.user_id for rule in rules if rule.user_id}
     exceptions = _exceptions_overlapping(doctor_ids, user_ids, start, end)
+    # DoctorProfile.user and .department are eager-joined; one query each.
     doctors = (
         DoctorProfile.query.filter(DoctorProfile.id.in_(doctor_ids)).all() if doctor_ids else []
     )
     doctor_by_id = {doctor.id: doctor for doctor in doctors}
-    users_by_id = {}
-    if user_ids:
-        users_by_id = {user.id: user for user in User.query.filter(User.id.in_(user_ids)).all()}
-    for doctor in doctors:
-        if doctor.user_id not in users_by_id:
-            users_by_id[doctor.user_id] = User.query.get(doctor.user_id)
-    results = []
-    for rule in rules:
-        if rule.doctor_id:
-            doctor = doctor_by_id.get(rule.doctor_id)
-            user = users_by_id.get(doctor.user_id) if doctor else None
-        else:
-            doctor = None
-            user = users_by_id.get(rule.user_id)
-        if user is None:
-            continue
-        if _on_leave(
-            [
-                item
-                for item in exceptions
-                if item.doctor_id == rule.doctor_id or item.user_id == rule.user_id
-            ],
-            target_date,
-        ):
-            continue
-        results.append(
-            {
-                "user_id": str(user.id),
-                "full_name": _person(user),
-                "role": user.role.value,
-                "is_doctor": doctor is not None,
-                "department": {
-                    "id": str(doctor.department_id) if doctor else None,
-                    "name": getattr(doctor.department, "name", None) if doctor else None,
-                },
-                "working_hours": [
-                    {
-                        "start": rule.start_time.strftime("%H:%M"),
-                        "end": rule.end_time.strftime("%H:%M"),
-                    }
-                ],
-            }
-        )
+    users_by_id = (
+        {user.id: user for user in User.query.filter(User.id.in_(user_ids)).all()}
+        if user_ids
+        else {}
+    )
+
     merged = {}
-    for item in results:
-        existing = merged.get(item["user_id"])
-        if existing is None:
-            merged[item["user_id"]] = item
-        else:
-            existing["working_hours"].extend(item["working_hours"])
+    for rule in sorted(rules, key=lambda item: item.start_time):
+        doctor = doctor_by_id.get(rule.doctor_id) if rule.doctor_id else None
+        user = doctor.user if doctor else users_by_id.get(rule.user_id)
+        if user is None or user.status != UserStatus.ACTIVE:
+            continue
+        owner_exceptions = [
+            item for item in exceptions if _belongs_to(item, rule.doctor_id, rule.user_id)
+        ]
+        if _on_leave(owner_exceptions, target_date):
+            continue
+        hours = {"start": rule.start_time.strftime("%H:%M"), "end": rule.end_time.strftime("%H:%M")}
+        key = str(user.id)
+        if key in merged:
+            merged[key]["working_hours"].append(hours)
+            continue
+        merged[key] = {
+            "user_id": key,
+            "full_name": _person(user),
+            "role": user.role.value,
+            "is_doctor": doctor is not None,
+            "department": {
+                "id": str(doctor.department_id) if doctor and doctor.department_id else None,
+                "name": getattr(doctor.department, "name", None) if doctor else None,
+            },
+            "working_hours": [hours],
+        }
     items = sorted(merged.values(), key=lambda item: item["full_name"])
     return {
         "date": target_date.isoformat(),
@@ -749,13 +751,24 @@ def staff_availability(user, date_from=None, date_to=None):
         cursor += timedelta(days=1)
 
     target_date = hospital_today()
-    in_consultation = set()
-    if doctor:
-        exists = Appointment.query.filter_by(
-            doctor_id=doctor.id, status=AppointmentStatus.IN_CONSULTATION
-        ).first()
-        if exists is not None:
-            in_consultation.add(doctor.id)
+    today_start, today_end = hospital_day_bounds(target_date)
+    owner_filter = (
+        AvailabilityException.doctor_id == doctor.id
+        if doctor
+        else AvailabilityException.user_id == user.id
+    )
+    today_exceptions = AvailabilityException.query.filter(
+        owner_filter,
+        AvailabilityException.start_at < today_end,
+        AvailabilityException.end_at > today_start,
+    ).all()
+    upcoming = (
+        AvailabilityException.query.filter(owner_filter, AvailabilityException.end_at > utcnow())
+        .order_by(AvailabilityException.start_at)
+        .limit(50)
+        .all()
+    )
+    in_consultation = _in_consultation_today({doctor.id}) if doctor else set()
     return {
         "staff": {
             "id": str(user.id),
@@ -768,13 +781,14 @@ def staff_availability(user, date_from=None, date_to=None):
         "timezone": hospital_timezone_name(),
         "from": date_from.isoformat(),
         "to": date_to.isoformat(),
-        "today_status": _staff_item(user, doctor, rules, exceptions, in_consultation)[
-            "today_status"
-        ],
+        "today_status": _today_status(
+            doctor, rules, today_exceptions, in_consultation, target_date
+        ),
         "today_working_hours": _working_hours(rules, target_date),
         "next_available_slot": _next_available_slot(doctor.id) if doctor else None,
         "weekly_pattern": [serialize_rule(rule) for rule in rules if rule.is_active],
         "exceptions": [serialize_exception(item) for item in exceptions],
+        "upcoming_exceptions": [serialize_exception(item) for item in upcoming],
         "days": days,
     }
 
