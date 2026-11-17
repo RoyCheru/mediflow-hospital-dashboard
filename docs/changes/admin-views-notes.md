@@ -117,3 +117,91 @@ This task restores the PRD-required behavior on the current model:
 - `next_available_slot` is computed for doctors only.
 - Availability calendar shows booked doctor slots but does not allow editing
   appointments from this panel.
+
+---
+
+# Resume audit (2026-11-17)
+
+A later session resumed this branch with no memory of the earlier one. The
+earlier session left all implementation uncommitted. It was reviewed and
+committed as three `wip:` commits (`814de31`, `eb15eb5`, `09928fe`) so nothing
+was lost, then fixed forward.
+
+## Git and environment state found
+
+- Branch `fix/admin-appointments-queue-availability`, in sync with origin at
+  `c993f10` (PRD update only). No stash. No pull request (the `gh` CLI is not installed).
+- Default branch `main` (`57474e4`); this branch is stacked on
+  `fix/walk-in-appointment-model` → `feat/admin-integration` (see "Branch base
+  decision" above).
+- PRD (`backend/docs/PRD.md`) already contains APT-8, APT-9, APT-10, ADM-5 and
+  the Section 8 admin wording, so no PRD change was needed.
+- Migrations: one linear chain `0001_initial → 0002_walk_in_appointment_model →
+  0003_admin_staff_availability` (head). No duplicates or branches. The dev
+  Postgres DB is stamped at `0003`.
+- The frontend is TanStack Start/Router (Vite), not Next.js as the task prompt
+  says (see discrepancies).
+
+## Baseline (before any fix, uncommitted WIP in the tree)
+
+| Check | Result |
+| --- | --- |
+| `pytest` (backend) | 66 passed |
+| `ruff check` / `ruff format --check` | clean |
+| `npm run lint` (frontend) | 0 errors, 9 warnings (all pre-existing, in `components/ui`, `kit.tsx`, `auth.tsx`, `PlaceholderPage.tsx`) |
+| `tsc --noEmit` | clean |
+| `npm run build` | OK |
+| `vitest` | 14 passed |
+| Playwright | not run at baseline (needs live API and seeded DB); run in Step 4 |
+
+## Status table
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| APT-8 All Appointments (overall) | partial | Endpoint and table exist. Existing row actions (Check in, Update) were dropped by the WIP rewrite of `routes/admin/appointments.tsx` |
+| APT-9 Live Queue (overall) | partial | Endpoint and panel exist; malformed `doctor_id` → 500; summary query and panel poll with two different query keys (double requests); arrived time hidden for booked rows |
+| APT-10 Doctor availability (overall) | partial | Endpoints and panel exist; no UI to edit an existing rule (PATCH unused); bugs below |
+| ADM-5 Non-doctor working hours (overall) | partial | Model supports `user_id` owner; `working_today` leave bug hides staff (below) |
+| Data model (`user_id` owner, check constraint) | done and verified | `scheduling/models.py`; dev DB has the check constraint |
+| Migration 0003 | broken | Adds `availability_*.user_id` **without FK to `users`** and without the model's `ix_availability_*_user_id` index; dev DB (`\d availability_rules`) confirms drift. No up/down test for 0003 |
+| `HOSPITAL_TIMEZONE` setting + helpers | done and verified | `config.py`, `common/time.py`, `test_admin_appointments_uses_hospital_timezone_day_boundaries` |
+| `GET /admin/appointments` | done and verified | `test_admin_appointments_filters_pagination_and_nullable_slot`; relationships are `lazy="joined"`, so no N+1 |
+| `GET /admin/queue` | partial | Reuses `scheduling.service.queue()` (single ordering); `test_admin_queue_orders_today_only_and_groups_by_doctor`; invalid UUID → 500 |
+| `GET /admin/staff` | partial | `today_status` "in_consultation" counts IN_CONSULTATION rows from any day, not today |
+| `GET /admin/staff/:id/availability` | partial | `today_status` computed from range exceptions, so it is wrong when range excludes today; time off limited to the 7-day range (no "upcoming") |
+| `GET /admin/availability` | broken | Leave filter `item.doctor_id == rule.doctor_id or item.user_id == rule.user_id` matches `None == None`, so **one doctor on leave hides every doctor**; ignores `effective_from/to`; N+1 `User.query.get` per doctor |
+| Admin CRUD + audit | done and verified | `test_admin_availability_crud_writes_audit_entries` |
+| RBAC 401/403 | done and verified | `test_admin_views_require_admin` |
+| Seed data | partial (to verify on dev DB) | `demo_seed.py` adds past/future rows, receptionist hours, doctor leave today |
+| Frontend API/types | done | `lib/api/adminViews.ts`, `types/api.ts` |
+| Appointments tabs + URL state | done | `validateSearch` `tab` in `routes/admin/appointments.tsx` |
+| Sidebar single entry, dashboard link `?tab=queue` | to verify | `routes/admin/index.tsx` link added |
+| Staff page list + Working today | done | `routes/admin/staff.tsx` (phone column folded into the profile tab) |
+| Staff availability panel | partial | `StaffAvailabilityPanel.tsx`: add/delete only, no edit of existing rule/exception |
+| E2E specs | unverified | `e2e/admin-integration.spec.ts` new tests never run |
+
+## Broken or suspicious items
+
+1. Migration 0003 missing FK and single-column indexes (schema drift on the dev DB).
+2. `working_today` leave matching bug (`None == None`), effective dates ignored, N+1.
+3. `today_status` for staff detail uses the requested range, not today.
+4. `in_consultation` status is not limited to today.
+5. `/admin/queue?doctor_id=bad` raises an unhandled `ValueError` (500).
+6. Existing Check in / Update appointment actions removed from the admin appointments page.
+7. Page-level queue summary and Live Queue panel poll under different query keys.
+8. No edit form for existing availability rules.
+9. `frontend/check-admin.mjs` is an ad-hoc debug script with demo credentials.
+   It was moved out of the repository and not committed.
+
+## Plan (remaining work only)
+
+1. Repair migration 0003 in place: add the FK and the indexes, keeping it idempotent. Re-apply it on the
+   dev DB by `stamp 0002` + `upgrade` (non-destructive). Add an up/down test for 0003.
+2. Fix `working_today`, `today_status`, in-consultation-today and queue param
+   validation. Add `upcoming_exceptions` to the staff availability response. Add
+   tests (leave isolation, effective dates, upcoming, bad UUID).
+3. Restore Check in / Update actions on All Appointments. Share the queue query key
+   between the tab label and the panel. Show arrival time for every queue entry.
+4. Add edit of existing rules and exceptions in the availability panel.
+5. Verify seed on the dev DB, then run the full verification (pytest, lint, tsc, build,
+   vitest, Playwright) and the leftovers search. Finish the notes and the PR.
