@@ -5,7 +5,8 @@ import { CalendarPlus } from "lucide-react";
 import { Field, Modal, PageHeader, inputCls, textareaCls } from "@/components/kit";
 import { Button } from "@/components/ui/button";
 import { AllAppointments } from "@/components/admin/AllAppointments";
-import { LiveQueuePanel, QUEUE_POLL_INTERVAL_MS } from "@/components/admin/LiveQueuePanel";
+import { LiveQueuePanel } from "@/components/admin/LiveQueuePanel";
+import { queueRefetchInterval } from "@/lib/queuePolling";
 import { adminViewKeys, getAdminQueue } from "@/lib/api/adminViews";
 import {
   createAppointment,
@@ -66,7 +67,9 @@ function Page() {
   const queueSummary = useQuery({
     queryKey: adminViewKeys.queue({}),
     queryFn: () => getAdminQueue(),
-    refetchInterval: tab === "queue" ? QUEUE_POLL_INTERVAL_MS : false,
+    // Shares the unfiltered queue cache entry with LiveQueuePanel, so the tab
+    // label count and the panel never issue duplicate requests.
+    refetchInterval: tab === "queue" ? queueRefetchInterval : false,
     refetchIntervalInBackground: false,
     staleTime: 10_000,
   });

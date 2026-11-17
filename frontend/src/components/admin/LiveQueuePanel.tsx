@@ -1,15 +1,14 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Clock, RefreshCw, Users } from "lucide-react";
-import { Badge, EmptyState, Panel, inputCls } from "@/components/kit";
+import { Badge, Panel, inputCls } from "@/components/kit";
 import { EmptyBlock, ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
 import { adminViewKeys, getAdminQueue, listAdminStaff } from "@/lib/api/adminViews";
 import { listDepartments } from "@/lib/api/management";
 import { formatDate, formatTime, titleize } from "@/lib/format";
+import { queueRefetchInterval } from "@/lib/queuePolling";
 import { cn } from "@/lib/utils";
-
-export const QUEUE_POLL_INTERVAL_MS = 25_000;
 
 export function LiveQueuePanel() {
   const [doctorId, setDoctorId] = useState("All");
@@ -21,7 +20,7 @@ export function LiveQueuePanel() {
   const queue = useQuery({
     queryKey: adminViewKeys.queue(params),
     queryFn: () => getAdminQueue(params),
-    refetchInterval: QUEUE_POLL_INTERVAL_MS,
+    refetchInterval: queueRefetchInterval,
     refetchIntervalInBackground: false,
     staleTime: 10_000,
   });
@@ -158,12 +157,15 @@ export function LiveQueuePanel() {
                           {entry.urgent && <Badge tone="danger">Urgent</Badge>}
                         </div>
                         <p className="text-xs text-muted-foreground">
-                          {entry.patient.number ?? ""} ·{" "}
-                          {entry.slot
-                            ? `Slot ${formatTime(entry.slot)}`
-                            : entry.arrived_at
+                          {[
+                            entry.patient.number,
+                            entry.slot ? `Slot ${formatTime(entry.slot)}` : "Walk-in, no slot",
+                            entry.arrived_at
                               ? `Arrived ${formatTime(entry.arrived_at)}`
-                              : "—"}
+                              : "Arrival not recorded",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </p>
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-1">
