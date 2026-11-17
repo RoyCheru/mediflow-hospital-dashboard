@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timezone
+from datetime import date, timedelta
 
 from flask import Blueprint, Response, request
 from sqlalchemy import or_
@@ -24,7 +24,7 @@ from app.common.idempotency import begin, complete
 from app.common.pagination import paginated
 from app.common.permissions import patient_profile_for_user
 from app.common.responses import created, ok
-from app.common.time import hospital_today
+from app.common.time import hospital_day_bounds, hospital_today
 from app.extensions import db
 from app.integrations.documents import get_document_renderer
 from app.integrations.mpesa import get_mpesa_gateway
@@ -49,8 +49,15 @@ def _date_bound(name, end_of_day=False):
     value = request.args.get(name)
     if not value:
         return None
-    parsed = date.fromisoformat(value)
-    return datetime.combine(parsed, time.max if end_of_day else time.min, tzinfo=timezone.utc)
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        from app.common.errors import bad_request
+
+        raise bad_request(f"Invalid {name} date") from exc
+    # Hospital business day: [local midnight, next local midnight).
+    start, end = hospital_day_bounds(parsed)
+    return end - timedelta(microseconds=1) if end_of_day else start
 
 
 def _sorted(query, default="-created_at"):

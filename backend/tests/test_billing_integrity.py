@@ -372,3 +372,29 @@ def test_cash_totals_use_the_hospital_business_day(client, tokens, ids):
     )
     assert logged.status_code == 201, logged.get_json()
     assert logged.get_json()["data"]["status"] == "BALANCED"
+
+
+def test_invoice_list_date_filter_uses_hospital_day(client, tokens, ids):
+    from datetime import datetime, timezone
+
+    from app.billing.models import Invoice
+    from app.extensions import db
+
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    row = db.session.get(Invoice, UUID(invoice["id"]))
+    # 21:30 UTC on 2030-03-04 is 00:30 on 2030-03-05 in Africa/Nairobi.
+    row.created_at = datetime(2030, 3, 4, 21, 30, tzinfo=timezone.utc)
+    db.session.commit()
+
+    def listed(day):
+        response = client.get(
+            f"/api/v1/invoices?date_from={day}&date_to={day}",
+            headers=auth(tokens["cashier"]),
+        )
+        assert response.status_code == 200, response.get_json()
+        return {item["id"] for item in response.get_json()["data"]["items"]}
+
+    assert invoice["id"] not in listed("2030-03-04")
+    assert invoice["id"] in listed("2030-03-05")
+    bad = client.get("/api/v1/invoices?date_from=nope", headers=auth(tokens["cashier"]))
+    assert bad.status_code == 400
