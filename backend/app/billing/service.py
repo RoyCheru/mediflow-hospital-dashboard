@@ -521,6 +521,29 @@ def create_payment_intent(invoice, data, actor, idempotency_key=None):
     return intent
 
 
+def _callback_amount_minor(metadata, intent):
+    """Amount reported by the callback, in the same units the STK push sent.
+
+    Single conversion point: if the gateway ever sends whole shillings to
+    Daraja, convert here and nowhere else.
+    """
+    reported = metadata.get("Amount")
+    return int(reported) if reported is not None else int(intent.amount_minor)
+
+
+def _callback_problem(intent, invoice, amount):
+    """Why a successful M-Pesa callback cannot be applied automatically, if at all."""
+    if invoice is None:
+        return "invoice not found"
+    if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
+        return f"invoice is {invoice.status.value.lower()}"
+    if amount != int(intent.amount_minor):
+        return f"amount {amount} does not match requested {intent.amount_minor}"
+    if amount > invoice.balance_minor:
+        return "amount exceeds outstanding balance"
+    return None
+
+
 def handle_mpesa_callback(payload):
     callback = (payload or {}).get("Body", {}).get("stkCallback", {}) or {}
     checkout_id = callback.get("CheckoutRequestID")
@@ -538,38 +561,57 @@ def handle_mpesa_callback(payload):
     }
     if result_code == 0:
         receipt = metadata.get("MpesaReceiptNumber") or f"MPESA-{uuid.uuid4().hex[:12]}"
+        amount = _callback_amount_minor(metadata, intent)
+        invoice = invoice_lock_query(intent.invoice_id).first()
+        problem = _callback_problem(intent, invoice, amount)
         existing = Transaction.query.filter_by(reference=receipt).first()
         if existing is None:
-            transaction = Transaction(
-                invoice_id=intent.invoice_id,
-                payment_intent_id=intent.id,
-                method=PaymentMethod.MPESA,
-                amount_minor=int(metadata.get("Amount") or intent.amount_minor),
-                status=TransactionStatus.SUCCESS,
-                reference=receipt,
-                provider_reference=receipt,
-                paid_at=utcnow(),
-                notes="Matched from M-Pesa Daraja callback",
+            db.session.add(
+                Transaction(
+                    invoice_id=intent.invoice_id,
+                    payment_intent_id=intent.id,
+                    method=PaymentMethod.MPESA,
+                    amount_minor=amount,
+                    # Money that cannot be applied safely is kept, but parked
+                    # for manual reconciliation instead of settling the invoice.
+                    status=TransactionStatus.UNCONFIRMED if problem else TransactionStatus.SUCCESS,
+                    reference=receipt,
+                    provider_reference=receipt,
+                    paid_at=utcnow(),
+                    notes=(
+                        f"Needs reconciliation: {problem}"
+                        if problem
+                        else "Matched from M-Pesa Daraja callback"
+                    ),
+                )
             )
-            db.session.add(transaction)
-        intent.status = PaymentIntentStatus.SUCCESS
-        invoice = Invoice.query.get(intent.invoice_id)
-        if invoice is not None:
+        if problem:
+            intent.status = PaymentIntentStatus.UNCONFIRMED
+            _alert_admins(
+                "mpesa_failed_alert",
+                {
+                    "checkout_id": checkout_id or "",
+                    "invoice_id": str(intent.invoice_id),
+                    "status": f"{intent.status.value} ({problem})",
+                },
+            )
+        else:
+            intent.status = PaymentIntentStatus.SUCCESS
             invoice.primary_method = PaymentMethod.MPESA
             db.session.flush()
             recompute_invoice(invoice)
-        enqueue_event(
-            "payment.received",
-            "payment_intent",
-            intent.id,
-            {
-                "payment_intent_id": str(intent.id),
-                "invoice_id": str(intent.invoice_id),
-                "patient_id": str(invoice.patient_id) if invoice else None,
-                "amount_minor": int(metadata.get("Amount") or intent.amount_minor),
-                "reference": receipt,
-            },
-        )
+            enqueue_event(
+                "payment.received",
+                "payment_intent",
+                intent.id,
+                {
+                    "payment_intent_id": str(intent.id),
+                    "invoice_id": str(intent.invoice_id),
+                    "patient_id": str(invoice.patient_id),
+                    "amount_minor": amount,
+                    "reference": receipt,
+                },
+            )
     elif result_code in {1032, 1037, 2001}:
         intent.status = PaymentIntentStatus.UNCONFIRMED
         _alert_admins(
