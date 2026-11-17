@@ -561,34 +561,38 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
         )
 
     # Pending approvals and cash reconciliation.
-    pending_invoice = (
-        Invoice.query.filter(Invoice.status != InvoiceStatus.VOIDED)
+    # A void needs an invoice with no money collected (paid invoices must be
+    # refunded first); the refund request targets a separately paid invoice.
+    unpaid_invoice = (
+        Invoice.query.filter(Invoice.status == InvoiceStatus.ISSUED, Invoice.amount_paid_minor == 0)
         .order_by(Invoice.created_at.desc())
         .first()
     )
-    if pending_invoice is not None:
+    if unpaid_invoice is not None:
         db.session.add(
             VoidRequest(
-                invoice_id=pending_invoice.id,
+                invoice_id=unpaid_invoice.id,
                 reason="Duplicate invoice created during a ward transfer",
                 requested_by_id=reception.id if reception else admin.id,
                 status=VoidRequestStatus.PENDING,
             )
         )
-        original = Transaction.query.filter_by(
-            invoice_id=pending_invoice.id, status=TransactionStatus.SUCCESS
-        ).first()
-        if original is not None:
-            db.session.add(
-                Refund(
-                    invoice_id=pending_invoice.id,
-                    original_transaction_id=original.id,
-                    amount_minor=max(original.amount_minor // 2, 1000),
-                    reason="Patient overpaid at the cash desk",
-                    requested_by_id=cashier.id if cashier else admin.id,
-                    status=RefundStatus.PENDING,
-                )
+    original = (
+        Transaction.query.filter_by(method=PaymentMethod.CASH, status=TransactionStatus.SUCCESS)
+        .order_by(Transaction.paid_at.desc())
+        .first()
+    )
+    if original is not None:
+        db.session.add(
+            Refund(
+                invoice_id=original.invoice_id,
+                original_transaction_id=original.id,
+                amount_minor=max(original.amount_minor // 2, 1000),
+                reason="Patient overpaid at the cash desk",
+                requested_by_id=cashier.id if cashier else admin.id,
+                status=RefundStatus.PENDING,
             )
+        )
 
     cash_expected = (
         db.session.query(db.func.coalesce(db.func.sum(Transaction.amount_minor), 0))
