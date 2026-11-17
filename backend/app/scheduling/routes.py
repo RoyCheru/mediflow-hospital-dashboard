@@ -176,14 +176,14 @@ def my_availability():
 def create_availability():
     doctor = _doctor_for_user(current_user())
     data = AvailabilityRuleSchema().load(request.get_json(silent=True) or {})
-    return created(service.serialize_rule(service.create_rule(doctor, data)))
+    return created(service.serialize_rule(service.create_rule(doctor, data, actor=current_user())))
 
 
 @bp.delete("/doctors/me/availability/<uuid:rule_id>")
 @auth_required(Role.DOCTOR)
 def delete_availability(rule_id):
     doctor = _doctor_for_user(current_user())
-    return ok(service.serialize_rule(service.delete_rule(rule_id, doctor)))
+    return ok(service.serialize_rule(service.delete_rule(rule_id, doctor, actor=current_user())))
 
 
 @bp.post("/doctors/me/exceptions")
@@ -194,7 +194,9 @@ def create_exception():
     if doctor is None:
         doctor = service.get_doctor_or_404(payload.get("doctor_id"))
     data = AvailabilityExceptionSchema().load(payload)
-    return created(service.serialize_exception(service.create_exception(doctor, data)))
+    return created(
+        service.serialize_exception(service.create_exception(doctor, data, actor=current_user()))
+    )
 
 
 @bp.get("/availability")

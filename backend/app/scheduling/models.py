@@ -111,11 +111,25 @@ class DoctorProfile(BaseModel, TimestampMixin):
 
 class AvailabilityRule(BaseModel, TimestampMixin):
     __tablename__ = "availability_rules"
+    __table_args__ = (
+        db.CheckConstraint(
+            "(doctor_id IS NOT NULL AND user_id IS NULL) OR "
+            "(doctor_id IS NULL AND user_id IS NOT NULL)",
+            name="ck_availability_rules_owner",
+        ),
+        db.Index("ix_availability_rules_user_weekday", "user_id", "weekday"),
+    )
 
     doctor_id = db.Column(
         db.Uuid(as_uuid=True),
         db.ForeignKey("doctor_profiles.id"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    user_id = db.Column(
+        db.Uuid(as_uuid=True),
+        db.ForeignKey("users.id"),
+        nullable=True,
         index=True,
     )
     weekday = db.Column(db.Integer, nullable=False)  # 0 = Monday, 6 = Sunday
@@ -128,6 +142,7 @@ class AvailabilityRule(BaseModel, TimestampMixin):
     is_active = db.Column(db.Boolean, nullable=False, default=True)
 
     doctor = db.relationship("DoctorProfile", back_populates="availability_rules")
+    user = db.relationship("User", lazy="joined")
 
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())
@@ -136,11 +151,25 @@ class AvailabilityRule(BaseModel, TimestampMixin):
 
 class AvailabilityException(BaseModel, TimestampMixin):
     __tablename__ = "availability_exceptions"
+    __table_args__ = (
+        db.CheckConstraint(
+            "(doctor_id IS NOT NULL AND user_id IS NULL) OR "
+            "(doctor_id IS NULL AND user_id IS NOT NULL)",
+            name="ck_availability_exceptions_owner",
+        ),
+        db.Index("ix_availability_exceptions_user_start", "user_id", "start_at"),
+    )
 
     doctor_id = db.Column(
         db.Uuid(as_uuid=True),
         db.ForeignKey("doctor_profiles.id"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    user_id = db.Column(
+        db.Uuid(as_uuid=True),
+        db.ForeignKey("users.id"),
+        nullable=True,
         index=True,
     )
     start_at = db.Column(db.DateTime(timezone=True), nullable=False)
@@ -153,6 +182,7 @@ class AvailabilityException(BaseModel, TimestampMixin):
     reason = db.Column(db.Text, nullable=True)
 
     doctor = db.relationship("DoctorProfile", back_populates="exceptions")
+    user = db.relationship("User", lazy="joined")
 
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())
@@ -166,6 +196,8 @@ class Appointment(BaseModel, TimestampMixin):
         db.Index("ix_appointments_patient_date", "patient_id", "scheduled_start"),
         db.Index("ix_appointments_queue", "doctor_id", "status", "scheduled_start"),
         db.Index("ix_appointments_doctor_arrived", "doctor_id", "status", "arrived_at"),
+        db.Index("ix_appointments_department_date", "department_id", "scheduled_start"),
+        db.Index("ix_appointments_source_created", "source", "created_at"),
         db.CheckConstraint(
             "source <> 'WALK_IN' OR (arrived_at IS NOT NULL AND status <> 'SCHEDULED')",
             name="ck_appointments_walk_in_arrived",

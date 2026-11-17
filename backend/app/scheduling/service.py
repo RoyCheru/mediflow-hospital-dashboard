@@ -14,6 +14,12 @@ from app.common.enums import (
 )
 from app.common.errors import bad_request, conflict, forbidden, not_found
 from app.common.outbox import enqueue_event
+from app.common.time import (
+    hospital_day_bounds,
+    hospital_timezone_name,
+    hospital_today,
+    hospital_tz,
+)
 from app.extensions import db
 from app.scheduling.models import (
     Appointment,
@@ -150,7 +156,9 @@ def serialize_appointment(appointment):
 def serialize_rule(rule):
     return {
         "id": str(rule.id),
-        "doctor_id": str(rule.doctor_id),
+        "doctor_id": str(rule.doctor_id) if rule.doctor_id else None,
+        "user_id": str(rule.user_id) if rule.user_id else None,
+        "owner_type": "doctor" if rule.doctor_id else "staff",
         "weekday": rule.weekday,
         "start_time": rule.start_time.isoformat(),
         "end_time": rule.end_time.isoformat(),
@@ -165,7 +173,9 @@ def serialize_rule(rule):
 def serialize_exception(exception):
     return {
         "id": str(exception.id),
-        "doctor_id": str(exception.doctor_id),
+        "doctor_id": str(exception.doctor_id) if exception.doctor_id else None,
+        "user_id": str(exception.user_id) if exception.user_id else None,
+        "owner_type": "doctor" if exception.doctor_id else "staff",
         "start_at": _iso(_aware(exception.start_at)),
         "end_at": _iso(_aware(exception.end_at)),
         "kind": exception.kind.value,
@@ -298,44 +308,217 @@ def update_doctor(doctor, data, actor):
     return doctor
 
 
-def create_rule(doctor, data):
+def owner_for_user(user):
+    from app.scheduling.models import DoctorProfile
+
+    doctor = DoctorProfile.query.filter_by(user_id=user.id).first()
+    if doctor is not None:
+        return {
+            "doctor": doctor,
+            "doctor_id": doctor.id,
+            "user_id": None,
+            "is_doctor": True,
+            "user": user,
+        }
+    return {
+        "doctor": None,
+        "doctor_id": None,
+        "user_id": user.id,
+        "is_doctor": False,
+        "user": user,
+    }
+
+
+def owner_for_doctor(doctor):
+    return {
+        "doctor": doctor,
+        "doctor_id": doctor.id,
+        "user_id": None,
+        "is_doctor": True,
+        "user": doctor.user,
+    }
+
+
+def _hospital_aware(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=hospital_tz())
+    return value.astimezone(timezone.utc)
+
+
+def _owner_values(owner):
+    return {"doctor_id": owner["doctor_id"], "user_id": owner["user_id"]}
+
+
+def _owner_filter(model, owner):
+    if owner["doctor_id"] is not None:
+        return model.doctor_id == owner["doctor_id"]
+    return model.user_id == owner["user_id"]
+
+
+def _audit_owner(owner):
+    return {
+        "staff_user_id": str(owner["user"].id),
+        "doctor_id": str(owner["doctor_id"]) if owner["doctor_id"] else None,
+    }
+
+
+def create_rule_for_owner(owner, data, actor=None):
     rule = AvailabilityRule(
-        doctor_id=doctor.id,
+        **_owner_values(owner),
         weekday=data["weekday"],
         start_time=data["start_time"],
         end_time=data["end_time"],
         slot_minutes=data.get("slot_minutes", 30),
-        timezone=data.get("timezone", "Africa/Nairobi"),
+        timezone=data.get("timezone") or hospital_timezone_name(),
         effective_from=data.get("effective_from"),
         effective_to=data.get("effective_to"),
+        is_active=data.get("is_active", True),
     )
     if rule.end_time <= rule.start_time:
         raise bad_request("end_time must be after start_time")
     db.session.add(rule)
+    db.session.flush()
+    if actor is not None:
+        record_audit(
+            "availability.rule_create",
+            "availability_rule",
+            rule.id,
+            actor=actor,
+            after={**_audit_owner(owner), "rule": serialize_rule(rule)},
+        )
     db.session.commit()
     return rule
 
 
-def delete_rule(rule_id, doctor):
-    rule = AvailabilityRule.query.filter_by(id=rule_id, doctor_id=doctor.id).first()
+def create_rule(doctor, data, actor=None):
+    return create_rule_for_owner(owner_for_doctor(doctor), data, actor=actor)
+
+
+def update_rule(rule, data, actor=None):
+    before = serialize_rule(rule)
+    for field in (
+        "weekday",
+        "start_time",
+        "end_time",
+        "slot_minutes",
+        "timezone",
+        "effective_from",
+        "effective_to",
+        "is_active",
+    ):
+        if field in data:
+            setattr(rule, field, data[field])
+    if rule.end_time <= rule.start_time:
+        raise bad_request("end_time must be after start_time")
+    if actor is not None:
+        owner = owner_for_user(rule.doctor.user if rule.doctor_id else rule.user)
+        record_audit(
+            "availability.rule_update",
+            "availability_rule",
+            rule.id,
+            actor=actor,
+            before={**_audit_owner(owner), "rule": before},
+            after={**_audit_owner(owner), "rule": serialize_rule(rule)},
+        )
+    db.session.commit()
+    return rule
+
+
+def delete_rule_for_owner(rule_id, owner, actor=None):
+    rule = AvailabilityRule.query.filter(
+        AvailabilityRule.id == rule_id,
+        _owner_filter(AvailabilityRule, owner),
+    ).first()
     if rule is None:
         raise not_found("Availability rule not found")
+    before = serialize_rule(rule)
     rule.is_active = False
+    if actor is not None:
+        record_audit(
+            "availability.rule_delete",
+            "availability_rule",
+            rule.id,
+            actor=actor,
+            before={**_audit_owner(owner), "rule": before},
+            after={**_audit_owner(owner), "is_active": False},
+        )
     db.session.commit()
     return rule
 
 
-def create_exception(doctor, data):
-    if data["end_at"] <= data["start_at"]:
+def delete_rule(rule_id, doctor, actor=None):
+    return delete_rule_for_owner(rule_id, owner_for_doctor(doctor), actor=actor)
+
+
+def create_exception_for_owner(owner, data, actor=None):
+    start_at = _hospital_aware(data["start_at"])
+    end_at = _hospital_aware(data["end_at"])
+    if end_at <= start_at:
         raise bad_request("end_at must be after start_at")
     exception = AvailabilityException(
-        doctor_id=doctor.id,
-        start_at=data["start_at"],
-        end_at=data["end_at"],
+        **_owner_values(owner),
+        start_at=start_at,
+        end_at=end_at,
         kind=data.get("kind"),
         reason=data.get("reason"),
     )
     db.session.add(exception)
+    db.session.flush()
+    if actor is not None:
+        record_audit(
+            "availability.exception_create",
+            "availability_exception",
+            exception.id,
+            actor=actor,
+            after={**_audit_owner(owner), "exception": serialize_exception(exception)},
+        )
+    db.session.commit()
+    return exception
+
+
+def create_exception(doctor, data, actor=None):
+    return create_exception_for_owner(owner_for_doctor(doctor), data, actor=actor)
+
+
+def update_exception(exception, data, actor=None):
+    before = serialize_exception(exception)
+    for field in ("start_at", "end_at", "kind", "reason"):
+        if field in data:
+            value = data[field]
+            if field in {"start_at", "end_at"}:
+                value = _hospital_aware(value)
+            setattr(exception, field, value)
+    if exception.end_at <= exception.start_at:
+        raise bad_request("end_at must be after start_at")
+    if actor is not None:
+        owner = owner_for_user(exception.doctor.user if exception.doctor_id else exception.user)
+        record_audit(
+            "availability.exception_update",
+            "availability_exception",
+            exception.id,
+            actor=actor,
+            before={**_audit_owner(owner), "exception": before},
+            after={**_audit_owner(owner), "exception": serialize_exception(exception)},
+        )
+    db.session.commit()
+    return exception
+
+
+def delete_exception(exception, actor=None):
+    before = serialize_exception(exception)
+    if actor is not None:
+        owner = owner_for_user(exception.doctor.user if exception.doctor_id else exception.user)
+        record_audit(
+            "availability.exception_delete",
+            "availability_exception",
+            exception.id,
+            actor=actor,
+            before={**_audit_owner(owner), "exception": before},
+            after={**_audit_owner(owner), "deleted": True},
+        )
+    db.session.delete(exception)
     db.session.commit()
     return exception
 
@@ -670,10 +853,9 @@ def _effective_time(appointment):
     )
 
 
-def queue(doctor_id=None, target_date=None):
-    target_date = target_date or utcnow().date()
-    start = datetime.combine(target_date, time.min, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
+def queue(doctor_id=None, target_date=None, department_id=None):
+    target_date = target_date or hospital_today()
+    start, end = hospital_day_bounds(target_date)
     query = Appointment.query.filter(
         Appointment.status.in_(
             {
@@ -700,6 +882,12 @@ def queue(doctor_id=None, target_date=None):
         if isinstance(doctor_id, str):
             doctor_id = UUID(doctor_id)
         query = query.filter(Appointment.doctor_id == doctor_id)
+    if department_id is not None:
+        from uuid import UUID
+
+        if isinstance(department_id, str):
+            department_id = UUID(department_id)
+        query = query.filter(Appointment.department_id == department_id)
     urgency_order = {
         Urgency.EMERGENCY: 0,
         Urgency.URGENT: 1,

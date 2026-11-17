@@ -92,6 +92,30 @@ class AvailabilityExceptionSchema(Schema):
     reason = fields.String(required=False, allow_none=True)
 
 
+class AvailabilityRuleUpdateSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    weekday = fields.Integer(required=False, validate=validate.Range(min=0, max=6))
+    start_time = fields.Time(required=False)
+    end_time = fields.Time(required=False)
+    slot_minutes = fields.Integer(required=False, validate=validate.Range(min=5, max=240))
+    timezone = fields.String(required=False)
+    effective_from = fields.Date(required=False, allow_none=True)
+    effective_to = fields.Date(required=False, allow_none=True)
+    is_active = fields.Boolean(required=False)
+
+
+class AvailabilityExceptionUpdateSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    start_at = fields.DateTime(required=False)
+    end_at = fields.DateTime(required=False)
+    kind = fields.Enum(AvailabilityExceptionKind, by_value=True, required=False)
+    reason = fields.String(required=False, allow_none=True)
+
+
 class AppointmentCreateSchema(Schema):
     class Meta:
         unknown = EXCLUDE
