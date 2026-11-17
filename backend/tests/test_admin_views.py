@@ -2,10 +2,11 @@ from datetime import time, timedelta, timezone
 from uuid import uuid4
 
 from app.audit.models import AuditLog
-from app.common.enums import AppointmentSource, AppointmentStatus, Urgency
+from app.common.enums import AppointmentSource, AppointmentStatus, Role, Urgency
 from app.common.time import hospital_day_bounds, hospital_local_datetime, hospital_today
 from app.extensions import db
-from app.scheduling.models import Appointment
+from app.scheduling.models import Appointment, AvailabilityRule, DoctorProfile
+from tests.conftest import make_user
 from tests.helpers import auth
 
 
@@ -308,9 +309,10 @@ def test_admin_availability_doctor_slots_include_booked_slots(client, tokens, id
     booked_slot = next(slot for slot in slots if slot["appointment"])
     assert booked_slot["appointment"]["id"] == str(booked.id)
     assert booked_slot["available"] is False
-    assert any(
-        slot["available"] for slot in slots if slot["start"].endswith("06:00:00+00:00") or True
-    )
+    first_slot_start = _local_datetime(today, 6, 0).astimezone(timezone.utc).isoformat()
+    first_slot = next(slot for slot in slots if slot["start"] == first_slot_start)
+    assert first_slot["available"] is True
+    assert first_slot["appointment"] is None
 
 
 def test_admin_availability_crud_writes_audit_entries(client, tokens, ids):
@@ -333,7 +335,11 @@ def test_admin_availability_crud_writes_audit_entries(client, tokens, ids):
         headers=_admin_headers(tokens),
     )
     assert update.status_code == 200, update.get_json()
-    assert AuditLog.query.filter_by(action="availability.rule_update").first() is not None
+    updated_audit = AuditLog.query.filter_by(action="availability.rule_update").first()
+    assert updated_audit is not None
+    assert updated_audit.before["rule"]["end_time"] == "12:00:00"
+    assert updated_audit.after["rule"]["end_time"] == "13:00:00"
+    assert updated_audit.after["staff_user_id"] == str(ids["reception_id"])
 
     delete = client.delete(
         f"/api/v1/admin/staff/{ids['reception_id']}/availability/rules/{rule['id']}",
@@ -407,3 +413,187 @@ def test_admin_views_require_admin(client, tokens, ids):
         ).status_code
         == 403
     )
+
+
+def _second_doctor(ids, weekday):
+    user = make_user(
+        "second.doctor@test.local", "0700000999", "Doctor12345!", Role.DOCTOR, "Sara", "Second"
+    )
+    doctor = DoctorProfile(
+        user_id=user.id,
+        department_id=ids["department_id"],
+        specialty="General",
+        license_number="LIC-SECOND",
+        consultation_fee_minor=100000,
+    )
+    db.session.add(doctor)
+    db.session.flush()
+    db.session.add(
+        AvailabilityRule(
+            doctor_id=doctor.id,
+            weekday=weekday,
+            start_time=time(8, 0),
+            end_time=time(12, 0),
+            slot_minutes=30,
+            timezone="Africa/Nairobi",
+        )
+    )
+    db.session.commit()
+    return user, doctor
+
+
+def test_working_today_leave_hides_only_that_doctor(client, tokens, ids):
+    today = hospital_today()
+    second_user, _ = _second_doctor(ids, today.weekday())
+    first_rule = client.post(
+        f"/api/v1/admin/staff/{ids['doctor_user_id']}/availability/rules",
+        json=_rule_payload(today, "13:00", "15:00"),
+        headers=_admin_headers(tokens),
+    )
+    assert first_rule.status_code == 201, first_rule.get_json()
+    leave = client.post(
+        f"/api/v1/admin/staff/{second_user.id}/availability/exceptions",
+        json=_leave_payload(today),
+        headers=_admin_headers(tokens),
+    )
+    assert leave.status_code == 201, leave.get_json()
+
+    working = client.get(
+        f"/api/v1/admin/availability?date={today.isoformat()}",
+        headers=_admin_headers(tokens),
+    ).get_json()["data"]
+    working_ids = {item["user_id"] for item in working["items"]}
+    assert str(second_user.id) not in working_ids
+    assert str(ids["doctor_user_id"]) in working_ids
+
+    staff = client.get("/api/v1/admin/staff", headers=_admin_headers(tokens)).get_json()
+    by_user = {item["user_id"]: item for item in staff["data"]}
+    assert by_user[str(second_user.id)]["today_status"] == "on_leave"
+    assert by_user[str(ids["doctor_user_id"])]["today_status"] != "on_leave"
+
+
+def test_working_today_respects_rule_effective_dates(client, tokens, ids):
+    today = hospital_today()
+    payload = _rule_payload(today, "09:00", "17:00")
+    payload["effective_from"] = (today + timedelta(days=1)).isoformat()
+    created = client.post(
+        f"/api/v1/admin/staff/{ids['reception_id']}/availability/rules",
+        json=payload,
+        headers=_admin_headers(tokens),
+    )
+    assert created.status_code == 201, created.get_json()
+
+    working = client.get(
+        f"/api/v1/admin/availability?date={today.isoformat()}",
+        headers=_admin_headers(tokens),
+    ).get_json()["data"]
+    assert str(ids["reception_id"]) not in {item["user_id"] for item in working["items"]}
+
+
+def test_in_consultation_status_only_counts_today(client, tokens, ids):
+    today = hospital_today()
+    _create_appointment(
+        ids,
+        scheduled_start=_local_datetime(today - timedelta(days=2), 9),
+        scheduled_end=_local_datetime(today - timedelta(days=2), 9, 30),
+        arrived_at=_local_datetime(today - timedelta(days=2), 8, 55),
+        status=AppointmentStatus.IN_CONSULTATION,
+        source=AppointmentSource.RECEPTION,
+    )
+    db.session.commit()
+    staff = client.get("/api/v1/admin/staff", headers=_admin_headers(tokens)).get_json()
+    doctor = next(item for item in staff["data"] if item["user_id"] == str(ids["doctor_user_id"]))
+    assert doctor["today_status"] != "in_consultation"
+
+    _create_appointment(
+        ids,
+        arrived_at=_local_datetime(today, 0, 5),
+        status=AppointmentStatus.IN_CONSULTATION,
+        source=AppointmentSource.WALK_IN,
+    )
+    db.session.commit()
+    staff = client.get("/api/v1/admin/staff", headers=_admin_headers(tokens)).get_json()
+    doctor = next(item for item in staff["data"] if item["user_id"] == str(ids["doctor_user_id"]))
+    assert doctor["today_status"] == "in_consultation"
+
+
+def test_staff_availability_today_status_and_upcoming_time_off(client, tokens, ids):
+    today = hospital_today()
+    leave_today = client.post(
+        f"/api/v1/admin/staff/{ids['reception_id']}/availability/exceptions",
+        json=_leave_payload(today),
+        headers=_admin_headers(tokens),
+    )
+    assert leave_today.status_code == 201, leave_today.get_json()
+    later = today + timedelta(days=20)
+    leave_later = client.post(
+        f"/api/v1/admin/staff/{ids['reception_id']}/availability/exceptions",
+        json=_leave_payload(later),
+        headers=_admin_headers(tokens),
+    )
+    assert leave_later.status_code == 201, leave_later.get_json()
+
+    # A range that excludes today must still report today's status correctly.
+    start = today + timedelta(days=10)
+    details = client.get(
+        f"/api/v1/admin/staff/{ids['reception_id']}/availability"
+        f"?from={start.isoformat()}&to={(start + timedelta(days=6)).isoformat()}",
+        headers=_admin_headers(tokens),
+    )
+    assert details.status_code == 200, details.get_json()
+    payload = details.get_json()["data"]
+    assert payload["is_doctor"] is False
+    assert payload["today_status"] == "on_leave"
+    assert payload["exceptions"] == []
+    upcoming_ids = [item["id"] for item in payload["upcoming_exceptions"]]
+    assert upcoming_ids == [
+        leave_today.get_json()["data"]["id"],
+        leave_later.get_json()["data"]["id"],
+    ]
+    assert all(
+        item["user_id"] == str(ids["reception_id"]) for item in payload["upcoming_exceptions"]
+    )
+
+
+def test_admin_views_validation_and_not_found(client, tokens, ids):
+    headers = _admin_headers(tokens)
+    assert client.get("/api/v1/admin/queue?doctor_id=nope", headers=headers).status_code == 400
+    assert client.get("/api/v1/admin/queue?department_id=x", headers=headers).status_code == 400
+    assert client.get("/api/v1/admin/availability?date=bad", headers=headers).status_code == 400
+    assert (
+        client.get(f"/api/v1/admin/staff/{uuid4()}/availability", headers=headers).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            f"/api/v1/admin/staff/{ids['patient_user_id']}/availability", headers=headers
+        ).status_code
+        == 404
+    )
+    invalid_rule = client.post(
+        f"/api/v1/admin/staff/{ids['reception_id']}/availability/rules",
+        json={"weekday": 9, "start_time": "08:00:00", "end_time": "09:00:00"},
+        headers=headers,
+    )
+    assert invalid_rule.status_code == 422
+    assert (
+        client.patch(
+            f"/api/v1/admin/staff/{ids['reception_id']}/availability/rules/{uuid4()}",
+            json={"is_active": False},
+            headers=headers,
+        ).status_code
+        == 404
+    )
+
+
+def test_doctor_self_service_availability_still_works(client, tokens):
+    headers = auth(tokens["doctor"])
+    created = client.post(
+        "/api/v1/doctors/me/availability",
+        json={"weekday": 5, "start_time": "08:00:00", "end_time": "10:00:00"},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.get_json()
+    listed = client.get("/api/v1/doctors/me/availability", headers=headers)
+    assert listed.status_code == 200
+    assert AuditLog.query.filter_by(action="availability.rule_create").first() is not None
