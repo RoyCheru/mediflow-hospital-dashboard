@@ -235,3 +235,59 @@ def test_void_refused_while_sha_claim_is_open(client, tokens, ids):
     assert refused.get_json()["error"]["details"]["open_claim_ids"] == [
         claim.get_json()["data"]["id"]
     ]
+
+
+def _claim(client, tokens, invoice_id, amount):
+    return client.post(
+        f"/api/v1/invoices/{invoice_id}/claims",
+        json={"member_reference": "SHA-DEMO-ACTIVE", "amount_minor": amount},
+        headers=auth(tokens["reception"]),
+    )
+
+
+def test_claim_cannot_exceed_balance_after_partial_payment(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    paid = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions",
+        json={"method": "CASH", "amount_minor": 100_000},
+        headers=auth(tokens["cashier"]),
+    )
+    assert paid.status_code == 201
+    balance = invoice["total_minor"] - 100_000
+
+    too_much = _claim(client, tokens, invoice["id"], invoice["total_minor"])
+    assert too_much.status_code == 400
+    assert too_much.get_json()["error"]["details"]["balance_minor"] == balance
+
+    exact = _claim(client, tokens, invoice["id"], balance)
+    assert exact.status_code == 201, exact.get_json()
+
+
+def test_second_open_claim_on_same_invoice_is_refused(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    assert _claim(client, tokens, invoice["id"], 100_000).status_code == 201
+    second = _claim(client, tokens, invoice["id"], 100_000)
+    assert second.status_code == 409
+
+
+def test_resubmitted_claim_is_capped_at_balance(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    claim = _claim(client, tokens, invoice["id"], 200_000).get_json()["data"]
+    rejected = client.post(
+        f"/api/v1/claims/{claim['id']}/status",
+        json={"status": "REJECTED", "rejection_reason": "Missing documents"},
+        headers=auth(tokens["admin"]),
+    )
+    assert rejected.status_code == 200, rejected.get_json()
+    too_much = client.post(
+        f"/api/v1/claims/{claim['id']}/resubmissions",
+        json={"amount_minor": invoice["total_minor"] + 1, "note": "retry"},
+        headers=auth(tokens["admin"]),
+    )
+    assert too_much.status_code == 400
+    ok = client.post(
+        f"/api/v1/claims/{claim['id']}/resubmissions",
+        json={"amount_minor": 200_000, "note": "Documents attached"},
+        headers=auth(tokens["admin"]),
+    )
+    assert ok.status_code == 201, ok.get_json()

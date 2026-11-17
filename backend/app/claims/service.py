@@ -1,5 +1,5 @@
-from app.billing.models import Invoice, InvoiceAllocation, Transaction
-from app.billing.service import lock_invoice, recompute_invoice
+from app.billing.models import InvoiceAllocation, Transaction
+from app.billing.service import OPEN_CLAIM_STATUSES, lock_invoice, recompute_invoice
 from app.claims.models import Claim, ClaimStatusHistory, EligibilityCheck
 from app.common.audit import record_audit
 from app.common.base import as_utc, utcnow
@@ -147,6 +147,28 @@ def run_eligibility_check(invoice, member_reference, actor):
     return check
 
 
+def _ensure_no_open_claim(invoice):
+    open_claim = Claim.query.filter(
+        Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+    ).first()
+    if open_claim is not None:
+        raise conflict(
+            "This invoice already has an open SHA claim",
+            {"claim_id": str(open_claim.id), "status": open_claim.status.value},
+        )
+
+
+def _validate_claim_amount(invoice, amount):
+    """A claim may cover at most what is still owed on the invoice."""
+    if amount <= 0:
+        raise bad_request("Claim amount must be greater than zero")
+    if amount > invoice.balance_minor:
+        raise bad_request(
+            "Claim amount exceeds the outstanding balance",
+            {"balance_minor": invoice.balance_minor},
+        )
+
+
 def create_claim(invoice, data, actor):
     if invoice.status == InvoiceStatus.VOIDED:
         raise conflict("Cannot create a claim for a voided invoice")
@@ -171,6 +193,9 @@ def create_claim(invoice, data, actor):
             },
         )
 
+    # Eligibility checks commit, so take the lock only after them.
+    invoice = lock_invoice(invoice)
+    _ensure_no_open_claim(invoice)
     amount = data.get("amount_minor")
     if amount is None:
         sha_allocation = next(
@@ -182,10 +207,7 @@ def create_claim(invoice, data, actor):
             None,
         )
         amount = sha_allocation.amount_minor if sha_allocation else invoice.balance_minor
-    if amount <= 0:
-        raise bad_request("Claim amount must be greater than zero")
-    if amount > invoice.total_minor:
-        raise bad_request("Claim amount exceeds invoice total")
+    _validate_claim_amount(invoice, amount)
 
     allocation = next(
         (
@@ -334,10 +356,12 @@ def transition_claim(claim, data, actor):
 def resubmit_claim(claim, data, actor):
     if claim.status != ClaimStatus.REJECTED:
         raise conflict("Only rejected claims can be resubmitted")
-    invoice = Invoice.query.get(claim.invoice_id)
-    if invoice is None:
-        raise not_found("Invoice not found")
+    invoice = lock_invoice(claim.invoice_id)
+    if invoice.status == InvoiceStatus.VOIDED:
+        raise conflict("Cannot resubmit a claim for a voided invoice")
+    _ensure_no_open_claim(invoice)
     amount = data.get("amount_minor") or claim.claimed_amount_minor
+    _validate_claim_amount(invoice, amount)
     gateway = get_sha_gateway()
     result = gateway.submit_claim(
         {
