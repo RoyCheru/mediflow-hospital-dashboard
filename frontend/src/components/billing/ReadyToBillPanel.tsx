@@ -17,7 +17,7 @@ import {
 } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
-import { billingKeys, createInvoice, listReadyToBill } from "@/lib/api/billing";
+import { billingKeys, finalizeVisitInvoice, listReadyToBill } from "@/lib/api/billing";
 import { kesToMinor } from "@/lib/billingShares";
 import { formatDateTime, formatKshMinor } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,7 @@ import { toast } from "sonner";
 import type { ReadyToBillVisit } from "@/types/api";
 import { ListPagination } from "./ListPagination";
 
-/** Completed visits without an invoice; creating one opens checkout. */
+/** Completed visits with an open encounter draft; finalizing opens checkout. */
 export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: string) => void }) {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
@@ -45,7 +45,7 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
       const amount = discount.amount ? kesToMinor(discount.amount) : null;
       if (discount.amount && amount === null) throw new Error("Enter a valid discount");
       if (amount && !discount.reason.trim()) throw new Error("A discount needs a reason");
-      return createInvoice(
+      return finalizeVisitInvoice(
         target.visit_id,
         amount ? { discount_minor: amount, discount_reason: discount.reason.trim() } : {},
       );
@@ -53,8 +53,8 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
     onSuccess: (invoice) => {
       toast.success(
         invoice.discount_status === "PENDING_APPROVAL"
-          ? `Invoice ${invoice.invoice_number} created; discount awaiting admin approval`
-          : `Invoice ${invoice.invoice_number} created`,
+          ? `Invoice ${invoice.invoice_number} finalized; discount awaiting admin approval`
+          : `Invoice ${invoice.invoice_number} finalized`,
       );
       setTarget(null);
       setDiscount({ amount: "", reason: "" });
@@ -124,7 +124,7 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
                       onClick={() => setTarget(visit)}
                       disabled={!visit.expected_line}
                     >
-                      <FilePlus2 /> Create invoice
+                      <FilePlus2 /> Finalize draft
                     </Button>
                   </td>
                 </tr>
@@ -144,7 +144,7 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
       <Modal
         open={Boolean(target)}
         onClose={() => setTarget(null)}
-        title="Create invoice"
+        title="Finalize draft"
         subtitle={target?.patient.name ?? undefined}
         footer={
           <>
@@ -152,7 +152,7 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
               Cancel
             </Button>
             <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
-              {createMutation.isPending ? "Creating…" : "Create invoice"}
+              {createMutation.isPending ? "Finalizing…" : "Finalize draft"}
             </Button>
           </>
         }

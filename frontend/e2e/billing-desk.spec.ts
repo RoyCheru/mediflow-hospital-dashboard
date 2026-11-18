@@ -79,12 +79,12 @@ async function openNewInvoice(page: Page, patientName: string) {
     timeout: 90_000,
   });
   const row = page.getByRole("row").filter({ hasText: patientName });
-  await row.getByRole("button", { name: "Create invoice" }).click();
+  await row.getByRole("button", { name: "Finalize draft" }).click();
   await page
-    .getByRole("dialog", { name: "Create invoice" })
-    .getByRole("button", { name: "Create invoice" })
+    .getByRole("dialog", { name: "Finalize draft" })
+    .getByRole("button", { name: "Finalize draft" })
     .click();
-  await expect(page.getByText(/Invoice INV-\d{4}-\d+ created/)).toBeVisible();
+  await expect(page.getByText(/Invoice INV-\d{4}-\d+ finalized/)).toBeVisible();
   return page.getByRole("dialog", { name: /^INV-/ });
 }
 

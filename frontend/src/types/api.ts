@@ -105,10 +105,11 @@ export type InvoiceAllocation = {
 
 export type Invoice = {
   id: string;
-  invoice_number: string;
+  invoice_number: string | null;
   patient_id: string;
   patient_name: string | null;
   patient_number: string | null;
+  appointment_id: string | null;
   visit_id: string | null;
   doctor_name: string | null;
   department_id: string | null;
@@ -125,6 +126,7 @@ export type Invoice = {
   status: InvoiceStatus;
   primary_method: PaymentMethod | null;
   issued_at: string | null;
+  finalized_at: string | null;
   due_at: string | null;
   created_at: string;
   lines: InvoiceLine[];
@@ -255,11 +257,24 @@ export type ClaimAgingReport = {
   average_days_to_payment: number | null;
 };
 
+export type EligibilityStatus = "ACTIVE" | "INACTIVE" | "LIMIT_EXHAUSTED" | "UNKNOWN";
+
+export type PayerSummary = {
+  type: "SHA" | "INSURANCE" | "CASH";
+  label: string;
+  eligibility_status: EligibilityStatus | null;
+  eligibility_check_id: string | null;
+  remaining_coverage_minor: number | null;
+  estimated_total_minor: number;
+  copay_due_minor: number;
+};
+
 export type EligibilityCheck = {
   id: string;
   patient_id: string;
   invoice_id: string | null;
-  status: "ACTIVE" | "INACTIVE" | "LIMIT_EXHAUSTED" | "UNKNOWN";
+  appointment_id: string | null;
+  status: EligibilityStatus;
   coverage_limit_minor: number | null;
   consumed_minor: number | null;
   remaining_coverage_minor: number | null;
@@ -385,6 +400,8 @@ export type Appointment = {
   follow_up_of_visit_id: string | null;
   created_at: string;
   queue_position?: number | null;
+  payer?: PayerSummary;
+  copay_due_minor?: number;
 };
 
 export type Visit = {
@@ -508,6 +525,8 @@ export type AdminAppointment = {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  payer?: PayerSummary;
+  copay_due_minor?: number;
 };
 
 export type AdminQueueEntry = {
@@ -520,6 +539,8 @@ export type AdminQueueEntry = {
   arrived_at: string | null;
   waiting_minutes: number;
   slot: string | null;
+  payer?: PayerSummary;
+  copay_due_minor?: number;
 };
 
 export type AdminQueueDoctor = {
@@ -651,4 +672,7 @@ export type ReadyToBillVisit = {
   doctor_name: string | null;
   department_name: string | null;
   expected_line: { description: string; unit_price_minor: number } | null;
+  draft_invoice_id: string | null;
+  draft_total_minor: number | null;
+  draft_line_count: number;
 };

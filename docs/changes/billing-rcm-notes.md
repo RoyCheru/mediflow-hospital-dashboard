@@ -207,6 +207,80 @@ validates this before sending. Tests that fake Daraja callbacks now report KES.
 - E2E tests that sign in through the form wait for `networkidle`. Submitting before hydration falls
   back to a native GET.
 
+## Phase D: encounter bill, finalize and eligibility at check-in (done)
+
+| Item | Commit(s) | Tests |
+|---|---|---|
+| D1 `invoices.appointment_id`, nullable `invoice_number`, `finalized_at`, `eligibility_checks.appointment_id`; migration `0005` with `finalized_at` backfill | `0475857` | `test_billing_phase_d_migration.py` |
+| D2 Draft encounter bill at check-in/walk-in; line add/remove only while `DRAFT`; `POST /invoices/:id/finalize` assigns the number, sets `finalized_at` and recalculates totals | `47bd88f` | `test_billing_phase_d.py` |
+| D3 Eligibility runs at check-in (including walk-ins); failure/timeout stores `UNKNOWN` and never blocks check-in; payer badge and co-pay on queue/check-in payloads | `55b381f` | `test_billing_eligibility_check_in.py` |
+| D4 Desk action is now “Finalize draft”; legacy create-invoice endpoint is deprecated but still works | this branch | `e2e/billing-desk.spec.ts` |
+
+### Encounter bill lifecycle
+
+1. Check-in and walk-in create one `DRAFT` invoice linked to the appointment. It
+   carries the default consultation line when the service is priced, and has no
+   invoice number. The partial unique index `uq_invoices_draft_appointment`
+   allows at most one draft per appointment.
+2. Line endpoints (`POST /invoices/:id/lines`,
+   `DELETE /invoices/:id/lines/:line_id`) only work while the invoice is `DRAFT`.
+   Payments, payment intents and SHA claims are refused on a draft.
+3. Finalize locks the invoice row, refuses a second finalize, recalculates the
+   subtotal from the lines, applies the current discount, assigns the number
+   through the existing sequence, sets `finalized_at`, recomputes the status,
+   and rebalances Phase B payer shares.
+4. The ready-to-bill list keeps completed visits with a draft and exposes
+   `draft_invoice_id`, `draft_total_minor` and `draft_line_count`. A finalized,
+   paid or refunded invoice removes the visit; a void puts it back.
+
+### Eligibility at check-in
+
+- `EligibilityCheck` now stores `appointment_id` as well as the draft
+  `invoice_id`. Existing rows keep `appointment_id = NULL`.
+- The check runs once per appointment. It uses the patient's SHA profile number.
+  No SHA number means a cash/insurer payer badge and no check row.
+- An `INACTIVE`/`LIMIT_EXHAUSTED` result converts the draft to self-pay as before.
+- `ProviderError` (including the new `ProviderTimeout`) is stored as an
+  `UNKNOWN` check with the error class in `raw_response`. It does not convert
+  the invoice and does not block check-in.
+- Check-in, walk-in, `GET /queue`, `GET /admin/queue` and admin appointment rows
+  include `payer` and `copay_due_minor`. The co-pay is an estimate from the draft
+  total and remaining SHA cover; the final claim can change it.
+
+### Migration `0005` and downgrade
+
+- Adds the appointment links, nullable numbers, `finalized_at`, indexes, FKs and
+  the partial unique draft index.
+- Backfills `finalized_at = COALESCE(issued_at, created_at)` for invoices that
+  already have a number and a non-draft status.
+- `eligibility_checks.invoice_id` was already nullable, so the migration only
+  asserts/fixes it.
+- Downgrade keeps every row: drafts get a `DRAFT-<id>` placeholder number before
+  `invoice_number` becomes `NOT NULL` again, then the new columns/FKs/indexes are
+  dropped. This placeholder is downgrade-only and documented as such.
+
+### Legacy endpoint
+
+`POST /visits/:id/invoices` remains for compatibility and is marked deprecated.
+It ensures the encounter draft exists (or reuses it), honours explicit items and
+the discount payload, then finalizes it and returns `201` like before.
+
+### Verification
+
+- Backend: full pytest suite, ruff check/format; migration `0005` tested upgrade →
+  downgrade → upgrade.
+- Frontend: tsc, eslint (0 errors, same 9 pre-existing warnings), production build,
+  vitest, and updated E2E assertions for “Finalize draft”.
+
+### Known gaps
+
+- The receptionist queue page is still a placeholder (as in Phase C); the payer
+  badge is shown on the live admin queue, check-in response and admin appointment
+  rows.
+- The desk can finalize a draft but there is no dedicated add/remove-line UI yet;
+  the line endpoints are ready for it.
+- Check-in co-pay is an estimate, not a claim decision.
+
 ## Open items
 
 - `tests/test_billing_postgres_locking.py` needs a disposable migrated and seeded

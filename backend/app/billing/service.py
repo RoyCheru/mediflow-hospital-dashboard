@@ -616,6 +616,11 @@ def finalize_visit_invoice(visit, data, actor):
                 after={"visit_id": str(visit.id)},
             )
 
+    if invoice.visit_id is None:
+        invoice.visit_id = visit.id
+    if data.get("due_at") and invoice.due_at is None:
+        invoice.due_at = data["due_at"]
+
     line_specs = data.get("items") or []
     if line_specs:
         _replace_invoice_lines(invoice, line_specs)

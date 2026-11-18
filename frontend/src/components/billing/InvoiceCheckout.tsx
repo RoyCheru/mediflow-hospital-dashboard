@@ -19,6 +19,7 @@ import { ApiError } from "@/lib/api/client";
 import {
   billingKeys,
   createPaymentIntent,
+  finalizeInvoice,
   getInvoice,
   recordPayment,
   requestDiscount,
@@ -83,11 +84,21 @@ export function InvoiceCheckout({
   const invoice = invoiceQuery.data;
   const shares = invoice ? payerShares(invoice) : null;
   const closed = invoice ? ["VOIDED", "REFUNDED", "PAID"].includes(invoice.status) : true;
+  const isDraft = invoice?.status === "DRAFT";
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: billingKeys.all });
     void queryClient.invalidateQueries({ queryKey: claimKeys.all });
   };
+
+  const finalizeMutation = useMutation({
+    mutationFn: () => finalizeInvoice(invoiceId),
+    onSuccess: (finalized) => {
+      toast.success(`Invoice ${finalized.invoice_number} finalized`);
+      refresh();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
   const openPayment = (current: Invoice, method: DeskMethod = "CASH") => {
     const due = payerShares(current).patientDue;
@@ -219,7 +230,7 @@ export function InvoiceCheckout({
     <Modal
       open
       onClose={onClose}
-      title={invoice?.invoice_number ?? "Invoice"}
+      title={invoice?.invoice_number ?? (isDraft ? "Draft invoice" : "Invoice")}
       subtitle={
         invoice
           ? `${invoice.patient_name ?? "Patient"} · ${invoice.department_name ?? "Department"}`
@@ -236,12 +247,23 @@ export function InvoiceCheckout({
               <Button variant="outline" onClick={() => setPanel("discount")}>
                 <BadgePercent /> Discount
               </Button>
-              <Button variant="outline" onClick={() => setPanel("sha")}>
-                <ShieldCheck /> Pay via SHA
-              </Button>
-              <Button onClick={() => openPayment(invoice)} disabled={!shares?.patientDue}>
-                <CreditCard /> Collect payment
-              </Button>
+              {isDraft ? (
+                <Button
+                  onClick={() => finalizeMutation.mutate()}
+                  disabled={finalizeMutation.isPending || !invoice.lines.length}
+                >
+                  {finalizeMutation.isPending ? "Finalizing…" : "Finalize invoice"}
+                </Button>
+              ) : (
+                <>
+                  <Button variant="outline" onClick={() => setPanel("sha")}>
+                    <ShieldCheck /> Pay via SHA
+                  </Button>
+                  <Button onClick={() => openPayment(invoice)} disabled={!shares?.patientDue}>
+                    <CreditCard /> Collect payment
+                  </Button>
+                </>
+              )}
             </>
           )}
         </>
@@ -332,7 +354,9 @@ export function InvoiceCheckout({
                 </Badge>
               ))}
             <span className="text-xs text-muted-foreground">
-              Issued {formatDateTime(invoice.issued_at)}
+              {invoice.status === "DRAFT"
+                ? "Draft — not finalized"
+                : `Issued ${formatDateTime(invoice.issued_at)}`}
             </span>
           </div>
 

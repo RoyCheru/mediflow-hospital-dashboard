@@ -185,7 +185,10 @@ backend/
 
 ### Billing, payments, refunds
 
-- `GET|POST /visits/<id>/invoices`, `GET /invoices`, `GET /invoices/<id>`
+- `GET|POST /visits/<id>/invoices` (POST deprecated; use finalize)
+- `POST /visits/<id>/invoices/finalize`, `POST /invoices/<id>/finalize`
+- `POST|DELETE /invoices/<id>/lines[/<line_id>]`
+- `GET /invoices`, `GET /invoices/<id>`
 - `POST /invoices/<id>/allocations`
 - `POST /invoices/<id>/transactions`
 - `POST /invoices/<id>/payment-intents`
@@ -276,7 +279,10 @@ credentials. Real adapters are selected with `MPESA_MODE=live`,
 
 ## Business Rules Implemented
 
-- Invoice totals are service prices plus the doctor consultation fee.
+- Invoice totals come from the service price list; the doctor fee is only the
+  fallback default price, never an extra line.
+- Check-in and walk-in create one draft encounter bill; the number is assigned
+  only when it is finalized.
 - M-Pesa callbacks are idempotent by provider reference; duplicate callbacks do
   not double-post payments.
 - Invoice voids and refunds require two different users (requester and
