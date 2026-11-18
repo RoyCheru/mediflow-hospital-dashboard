@@ -1,16 +1,38 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { FileText } from "lucide-react";
-import { placeholderRoute } from "@/components/PlaceholderPage";
+import { useState } from "react";
+import { PageHeader } from "@/components/kit";
+import { InvoiceCheckout } from "@/components/billing/InvoiceCheckout";
+import { InvoiceListPanel } from "@/components/billing/InvoiceListPanel";
 
 export const Route = createFileRoute("/cashier/invoices")({
-  ...placeholderRoute({
-    title: "Invoices",
-    description: "Find invoices, review line items and follow outstanding balances.",
-    icon: FileText,
-    items: [
-      "Invoice search by number, patient or status",
-      "Line items, totals and balances",
-      "Invoice PDF and receipt downloads",
+  head: () => ({
+    meta: [
+      { title: "Invoices — MediFlow" },
+      {
+        name: "description",
+        content: "Find invoices, review line items and collect outstanding balances.",
+      },
     ],
   }),
+  component: Page,
 });
+
+function Page() {
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
+  return (
+    <div>
+      <PageHeader
+        title="Invoices"
+        subtitle="Find invoices, review line items and collect outstanding balances."
+      />
+      <InvoiceListPanel onOpen={setOpenInvoiceId} />
+      {openInvoiceId && (
+        <InvoiceCheckout
+          key={openInvoiceId}
+          invoiceId={openInvoiceId}
+          onClose={() => setOpenInvoiceId(null)}
+        />
+      )}
+    </div>
+  );
+}

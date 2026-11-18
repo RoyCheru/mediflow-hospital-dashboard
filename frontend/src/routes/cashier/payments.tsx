@@ -1,17 +1,25 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CreditCard } from "lucide-react";
-import { placeholderRoute } from "@/components/PlaceholderPage";
+import { PageHeader } from "@/components/kit";
+import { TransactionListPanel } from "@/components/billing/TransactionListPanel";
 
 export const Route = createFileRoute("/cashier/payments")({
-  ...placeholderRoute({
-    title: "Payments",
-    description: "Record cash, M-Pesa and card payments and allocate them to invoices.",
-    icon: CreditCard,
-    items: [
-      "Cash tendered, change and staff attribution",
-      "M-Pesa STK push and callback status",
-      "Payment allocation across invoices",
-      "Instant receipt generation",
+  head: () => ({
+    meta: [
+      { title: "Payments — MediFlow" },
+      { name: "description", content: "Cash, M-Pesa, card and SHA payments recorded at the desk." },
     ],
   }),
+  component: Page,
 });
+
+function Page() {
+  return (
+    <div>
+      <PageHeader
+        title="Payments"
+        subtitle="Cash, M-Pesa, card and SHA payments recorded at the desk."
+      />
+      <TransactionListPanel />
+    </div>
+  );
+}
