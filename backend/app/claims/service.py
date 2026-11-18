@@ -2,6 +2,7 @@ from app.billing.models import InvoiceAllocation, Transaction
 from app.billing.service import (
     OPEN_CLAIM_STATUSES,
     alert_admins,
+    estimate_appointment_charge_minor,
     lock_invoice,
     rebalance_patient_share,
     recompute_invoice,
@@ -21,6 +22,7 @@ from app.common.enums import (
 from app.common.errors import bad_request, conflict, not_found
 from app.common.outbox import enqueue_event
 from app.extensions import db
+from app.integrations.base import ProviderError
 from app.integrations.sha import get_sha_gateway
 
 TRANSITIONS = {
@@ -52,6 +54,7 @@ def serialize_eligibility(check):
         "id": str(check.id),
         "patient_id": str(check.patient_id),
         "invoice_id": str(check.invoice_id) if check.invoice_id else None,
+        "appointment_id": str(check.appointment_id) if check.appointment_id else None,
         "status": check.status.value,
         "coverage_limit_minor": check.coverage_limit_minor,
         "consumed_minor": check.consumed_minor,
@@ -115,10 +118,30 @@ def get_claim_or_404(claim_id):
     return claim
 
 
-def run_eligibility_check(invoice, member_reference, actor):
+def _resolve_eligibility_subject(subject):
+    """Return (invoice, appointment) for an invoice or an appointment."""
+    from app.billing.models import Invoice
+    from app.scheduling.models import Appointment
+
+    invoice = subject if isinstance(subject, Invoice) else None
+    appointment = subject if isinstance(subject, Appointment) else None
+    if invoice is not None and appointment is None and invoice.appointment_id:
+        appointment = Appointment.query.get(invoice.appointment_id)
+    if appointment is not None and invoice is None:
+        invoice = Invoice.query.filter_by(
+            appointment_id=appointment.id, status=InvoiceStatus.DRAFT
+        ).first()
+    if invoice is None and appointment is None:
+        raise bad_request("An invoice or appointment is required for an eligibility check")
+    return invoice, appointment
+
+
+def run_eligibility_check(subject, member_reference, actor):
     from app.patients.models import PatientProfile
 
-    patient = PatientProfile.query.get(invoice.patient_id)
+    invoice, appointment = _resolve_eligibility_subject(subject)
+    patient_id = invoice.patient_id if invoice is not None else appointment.patient_id
+    patient = PatientProfile.query.get(patient_id)
     if patient is None:
         raise not_found("Patient not found")
     member = member_reference or patient.sha_number
@@ -134,7 +157,8 @@ def run_eligibility_check(invoice, member_reference, actor):
     )
     check = EligibilityCheck(
         patient_id=patient.id,
-        invoice_id=invoice.id,
+        invoice_id=invoice.id if invoice is not None else None,
+        appointment_id=appointment.id if appointment is not None else None,
         sha_member_reference=member,
         status=result["status"],
         coverage_limit_minor=result.get("coverage_limit_minor"),
@@ -150,13 +174,185 @@ def run_eligibility_check(invoice, member_reference, actor):
         "eligibility_check",
         check.id,
         actor=actor,
-        after={"status": check.status.value},
+        after={
+            "status": check.status.value,
+            "appointment_id": str(appointment.id) if appointment is not None else None,
+        },
     )
     db.session.flush()
-    if not is_claimable(check):
+    if invoice is not None and not is_claimable(check):
         convert_to_self_pay(invoice, check, actor)
     db.session.commit()
     return check
+
+
+def _record_failed_eligibility(patient, invoice, appointment, member, actor, error):
+    """Store an UNKNOWN check when the provider fails; never block check-in."""
+    check = EligibilityCheck(
+        patient_id=patient.id,
+        invoice_id=invoice.id if invoice is not None else None,
+        appointment_id=appointment.id if appointment is not None else None,
+        sha_member_reference=member,
+        status=EligibilityStatus.UNKNOWN,
+        coverage_limit_minor=None,
+        consumed_minor=None,
+        provider="simulated",
+        provider_reference=None,
+        raw_response={
+            "error": str(error),
+            "error_class": getattr(error, "error_class", "provider_error"),
+            "appointment_id": str(appointment.id),
+        },
+        checked_by_id=actor.id if actor else None,
+    )
+    db.session.add(check)
+    record_audit(
+        "claim.eligibility_check",
+        "eligibility_check",
+        check.id,
+        actor=actor,
+        after={
+            "status": EligibilityStatus.UNKNOWN.value,
+            "error_class": getattr(error, "error_class", "provider_error"),
+            "appointment_id": str(appointment.id),
+        },
+    )
+    db.session.commit()
+    return check
+
+
+def ensure_check_in_eligibility(appointment, actor):
+    """Run eligibility at check-in once; provider failure returns UNKNOWN."""
+    from app.billing.models import Invoice
+    from app.patients.models import PatientProfile
+
+    existing = (
+        EligibilityCheck.query.filter_by(appointment_id=appointment.id)
+        .order_by(EligibilityCheck.checked_at.desc(), EligibilityCheck.created_at.desc())
+        .first()
+    )
+    if existing is not None:
+        return existing
+    patient = PatientProfile.query.get(appointment.patient_id)
+    if patient is None:
+        return None
+    member = patient.sha_number
+    if not member:
+        return None
+    invoice = Invoice.query.filter_by(
+        appointment_id=appointment.id, status=InvoiceStatus.DRAFT
+    ).first()
+    try:
+        return run_eligibility_check(invoice or appointment, member, actor)
+    except ProviderError as error:
+        return _record_failed_eligibility(patient, invoice, appointment, member, actor, error)
+
+
+def _latest_checks_for_appointments(appointment_ids):
+    if not appointment_ids:
+        return {}
+    checks = (
+        EligibilityCheck.query.filter(EligibilityCheck.appointment_id.in_(appointment_ids))
+        .order_by(EligibilityCheck.checked_at.desc(), EligibilityCheck.created_at.desc())
+        .all()
+    )
+    latest = {}
+    for check in checks:
+        latest.setdefault(check.appointment_id, check)
+    return latest
+
+
+def _drafts_for_appointments(appointment_ids):
+    from app.billing.models import Invoice
+
+    if not appointment_ids:
+        return {}
+    invoices = (
+        Invoice.query.filter(
+            Invoice.appointment_id.in_(appointment_ids),
+            Invoice.status == InvoiceStatus.DRAFT,
+        )
+        .order_by(Invoice.created_at.desc())
+        .all()
+    )
+    drafts = {}
+    for invoice in invoices:
+        drafts.setdefault(invoice.appointment_id, invoice)
+    return drafts
+
+
+def payer_summary(appointment, check=None, invoice=None):
+    """Payer badge and co-pay due for a checked-in appointment.
+
+    The co-pay is an estimate based on the encounter draft and remaining SHA
+    cover; the final claim may change it. This is display-only.
+    """
+    from app.patients.models import PatientProfile
+
+    patient = getattr(appointment, "patient", None)
+    if patient is None:
+        patient = PatientProfile.query.get(appointment.patient_id)
+    estimated = (
+        int(invoice.total_minor)
+        if invoice is not None
+        else estimate_appointment_charge_minor(appointment)
+    )
+
+    sha_number = getattr(patient, "sha_number", None) if patient is not None else None
+    if sha_number:
+        status = check.status if check is not None else None
+        labels = {
+            EligibilityStatus.ACTIVE: "SHA · Active",
+            EligibilityStatus.INACTIVE: "SHA · Inactive",
+            EligibilityStatus.LIMIT_EXHAUSTED: "SHA · Limit exhausted",
+            EligibilityStatus.UNKNOWN: "SHA · Unverified",
+        }
+        label = labels.get(status, "SHA · Not checked")
+        remaining = remaining_coverage(check) if check is not None else None
+        if check is not None and is_claimable(check):
+            copay = 0 if remaining is None else max(estimated - remaining, 0)
+        else:
+            copay = estimated
+        return {
+            "type": "SHA",
+            "label": label,
+            "eligibility_status": status.value if status is not None else None,
+            "eligibility_check_id": str(check.id) if check is not None else None,
+            "remaining_coverage_minor": remaining,
+            "estimated_total_minor": estimated,
+            "copay_due_minor": copay,
+        }
+
+    insurance = getattr(patient, "insurance_provider", None) if patient is not None else None
+    if insurance:
+        return {
+            "type": "INSURANCE",
+            "label": insurance,
+            "eligibility_status": None,
+            "eligibility_check_id": None,
+            "remaining_coverage_minor": None,
+            "estimated_total_minor": estimated,
+            "copay_due_minor": estimated,
+        }
+    return {
+        "type": "CASH",
+        "label": "Cash",
+        "eligibility_status": None,
+        "eligibility_check_id": None,
+        "remaining_coverage_minor": None,
+        "estimated_total_minor": estimated,
+        "copay_due_minor": estimated,
+    }
+
+
+def payer_summaries_for_appointments(appointments):
+    appointment_ids = [item.id for item in appointments]
+    checks = _latest_checks_for_appointments(appointment_ids)
+    drafts = _drafts_for_appointments(appointment_ids)
+    return {
+        str(item.id): payer_summary(item, checks.get(item.id), drafts.get(item.id))
+        for item in appointments
+    }
 
 
 def remaining_coverage(check):
@@ -234,6 +430,11 @@ def _validate_claim_amount(invoice, amount):
 
 
 def create_claim(invoice, data, actor):
+    if invoice.status == InvoiceStatus.DRAFT:
+        raise conflict(
+            "Finalize the invoice before creating a claim",
+            {"invoice_id": str(invoice.id), "status": invoice.status.value},
+        )
     if invoice.status == InvoiceStatus.VOIDED:
         raise conflict("Cannot create a claim for a voided invoice")
     if invoice.status == InvoiceStatus.PAID:

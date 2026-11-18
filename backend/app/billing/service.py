@@ -2,7 +2,7 @@ import uuid
 from datetime import timezone
 
 from flask import current_app
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import lazyload
 
 from app.billing.models import (
@@ -77,6 +77,7 @@ def serialize_invoice(invoice):
         "patient_id": str(invoice.patient_id),
         "patient_name": _person_name(patient),
         "patient_number": getattr(patient, "patient_number", None),
+        "appointment_id": str(invoice.appointment_id) if invoice.appointment_id else None,
         "visit_id": str(invoice.visit_id) if invoice.visit_id else None,
         "doctor_name": _person_name(doctor_user),
         "department_id": str(invoice.department_id) if invoice.department_id else None,
@@ -93,6 +94,7 @@ def serialize_invoice(invoice):
         "status": invoice.status.value,
         "primary_method": invoice.primary_method.value if invoice.primary_method else None,
         "issued_at": _iso(_aware(invoice.issued_at)),
+        "finalized_at": _iso(_aware(invoice.finalized_at)),
         "due_at": _iso(_aware(invoice.due_at)),
         "created_at": _iso(_aware(invoice.created_at)),
         "lines": [
@@ -246,25 +248,64 @@ def get_invoice_or_404(invoice_id):
 
 
 def ready_to_bill_query():
-    """Completed visits with no active (non-voided) invoice, newest first."""
+    """Completed visits with no finalized invoice, newest first.
+
+    A draft does not remove the visit from the work-list: the desk opens the
+    draft and finalizes it. A finalized (or partially paid, paid or refunded)
+    invoice does, until it is voided.
+    """
     from app.clinical_records.models import Visit
 
-    invoiced = db.session.query(Invoice.visit_id).filter(
-        Invoice.visit_id.isnot(None), Invoice.status != InvoiceStatus.VOIDED
+    finalized = db.session.query(Invoice.visit_id).filter(
+        Invoice.visit_id.isnot(None),
+        Invoice.status.notin_([InvoiceStatus.VOIDED, InvoiceStatus.DRAFT]),
     )
-    return Visit.query.filter(Visit.completed_at.isnot(None), ~Visit.id.in_(invoiced)).order_by(
+    return Visit.query.filter(Visit.completed_at.isnot(None), ~Visit.id.in_(finalized)).order_by(
         Visit.completed_at.desc()
     )
 
 
+def _draft_for_visit(visit):
+    clauses = [Invoice.visit_id == visit.id]
+    if visit.appointment_id:
+        clauses.append(Invoice.appointment_id == visit.appointment_id)
+    return (
+        Invoice.query.filter(Invoice.status == InvoiceStatus.DRAFT, or_(*clauses))
+        .order_by(Invoice.created_at.desc())
+        .first()
+    )
+
+
 def serialize_ready_to_bill(visit):
-    """Work-list row: who to bill and the charge a default invoice would carry."""
+    """Work-list row: who to bill and the charge the encounter bill carries."""
     patient = visit.patient
     doctor_user = getattr(visit.doctor, "user", None) if visit.doctor else None
+    draft = _draft_for_visit(visit)
     try:
-        line = _default_consultation_line(visit)
+        default_line = _default_consultation_line(visit)
     except ApiError:
-        line = None  # unpriced service: the cashier must enter items manually
+        default_line = None  # unpriced service: the cashier must enter items manually
+
+    if draft is not None and draft.lines:
+        if len(draft.lines) == 1:
+            line = draft.lines[0]
+            expected_line = {
+                "description": line.description,
+                "unit_price_minor": line.line_total_minor,
+            }
+        else:
+            expected_line = {
+                "description": f"{len(draft.lines)} lines",
+                "unit_price_minor": draft.total_minor,
+            }
+    elif default_line is not None:
+        expected_line = {
+            "description": default_line["description"],
+            "unit_price_minor": default_line["unit_price_minor"],
+        }
+    else:
+        expected_line = None
+
     return {
         "visit_id": str(visit.id),
         "appointment_id": str(visit.appointment_id) if visit.appointment_id else None,
@@ -277,34 +318,32 @@ def serialize_ready_to_bill(visit):
         },
         "doctor_name": _person_name(doctor_user),
         "department_name": getattr(visit.department, "name", None),
-        "expected_line": (
-            {
-                "description": line["description"],
-                "unit_price_minor": line["unit_price_minor"],
-            }
-            if line
-            else None
-        ),
+        "expected_line": expected_line,
+        "draft_invoice_id": str(draft.id) if draft is not None else None,
+        "draft_total_minor": draft.total_minor if draft is not None else None,
+        "draft_line_count": len(draft.lines) if draft is not None else 0,
     }
 
 
-def _default_consultation_line(visit):
-    """The single consultation charge for a visit invoiced without explicit items.
+def _default_line_for_appointment(appointment, doctor=None):
+    """The single consultation charge for an encounter.
 
     The service price list is the source of truth. The doctor's consultation
     fee is only the default price for that service when the price list has
     no current price, or the charge when the appointment names no service.
     The two are never billed together.
     """
-    from app.scheduling.models import Appointment, DoctorProfile, Service
+    from app.scheduling.models import DoctorProfile, Service
     from app.scheduling.service import current_price
 
-    appointment = Appointment.query.get(visit.appointment_id) if visit.appointment_id else None
-    doctor = DoctorProfile.query.get(visit.doctor_id)
+    if doctor is None and appointment is not None:
+        doctor = DoctorProfile.query.get(appointment.doctor_id)
     doctor_fee = doctor.consultation_fee_minor if doctor is not None else 0
 
     if appointment is not None and appointment.service_id:
         service = Service.query.get(appointment.service_id)
+        if service is None:
+            raise not_found("Service not found")
         price = current_price(service.id)
         unit_price = price.amount_minor if price else doctor_fee
         if not unit_price:
@@ -323,93 +362,182 @@ def _default_consultation_line(visit):
     return None
 
 
-def create_invoice(visit, data, actor):
-    if visit.completed_at is None:
-        raise conflict(
-            "Complete the visit before invoicing it",
-            {"visit_id": str(visit.id)},
-        )
-    existing = (
-        Invoice.query.filter_by(visit_id=visit.id)
-        .filter(Invoice.status != InvoiceStatus.VOIDED)
-        .first()
-    )
-    if existing is not None:
-        raise conflict(
-            "An invoice already exists for this visit",
-            {"invoice_id": str(existing.id)},
-        )
+def _default_consultation_line(visit):
+    from app.scheduling.models import Appointment, DoctorProfile
 
-    line_specs = data.get("items") or []
-    if not line_specs:
-        default_line = _default_consultation_line(visit)
-        if default_line is not None:
-            line_specs.append(default_line)
-    if not line_specs:
-        raise bad_request(
-            "Invoice requires at least one line item",
-            {"items": ["Provide items or attach a priced service to the visit"]},
-        )
+    appointment = Appointment.query.get(visit.appointment_id) if visit.appointment_id else None
+    return _default_line_for_appointment(appointment, DoctorProfile.query.get(visit.doctor_id))
 
-    invoice = Invoice(
-        invoice_number=next_sequence_value("invoice_number", prefix="INV-{year}-", width=6),
-        patient_id=visit.patient_id,
-        visit_id=visit.id,
-        department_id=visit.department_id,
-        issued_by_id=actor.id if actor else None,
-        status=InvoiceStatus.ISSUED,
-        issued_at=utcnow(),
-        due_at=data.get("due_at"),
-    )
-    subtotal = 0
-    for spec in line_specs:
-        quantity = spec.get("quantity", 1)
-        unit_price = spec.get("unit_price_minor")
-        service = None
-        if spec.get("service_id"):
-            from app.scheduling.models import Service
-            from app.scheduling.service import current_price
 
-            service = Service.query.get(spec["service_id"])
-            if service is None:
-                raise not_found("Service not found")
-            if unit_price is None:
-                price = current_price(service.id)
-                unit_price = price.amount_minor if price else 0
+def estimate_appointment_charge_minor(appointment):
+    """Expected charge for the encounter bill, used by the check-in badge."""
+    try:
+        line = _default_line_for_appointment(appointment)
+    except ApiError:
+        return 0
+    if line is None:
+        return 0
+    return int(line.get("quantity", 1)) * int(line["unit_price_minor"])
+
+
+def _invoice_line_from_spec(spec):
+    quantity = int(spec.get("quantity", 1))
+    unit_price = spec.get("unit_price_minor")
+    service = None
+    if spec.get("service_id"):
+        from app.scheduling.models import Service
+        from app.scheduling.service import current_price
+
+        service = Service.query.get(spec["service_id"])
+        if service is None:
+            raise not_found("Service not found")
         if unit_price is None:
-            raise bad_request(
-                "Each line requires service_id or unit_price_minor",
-                {"items": ["Missing unit_price_minor"]},
-            )
-        line_total = int(quantity) * int(unit_price)
-        subtotal += line_total
-        invoice.lines.append(
-            InvoiceLine(
-                service_id=service.id if service else None,
-                description=spec.get("description") or (service.name if service else "Service"),
-                service_code=service.code if service else None,
-                quantity=quantity,
-                unit_price_minor=int(unit_price),
-                line_total_minor=line_total,
-            )
-        )
-
-    discount = int(data.get("discount_minor") or 0)
-    discount_reason = (data.get("discount_reason") or "").strip()
-    if discount > subtotal:
-        raise bad_request("Discount cannot exceed subtotal")
-    if discount and not discount_reason:
+            price = current_price(service.id)
+            unit_price = price.amount_minor if price else 0
+    if unit_price is None:
         raise bad_request(
-            "A discount requires a reason",
-            {"discount_reason": ["Required when discount_minor is set"]},
+            "Each line requires service_id or unit_price_minor",
+            {"items": ["Missing unit_price_minor"]},
+        )
+    line_total = quantity * int(unit_price)
+    return InvoiceLine(
+        service_id=service.id if service else None,
+        description=spec.get("description") or (service.name if service else "Service"),
+        service_code=service.code if service else None,
+        quantity=quantity,
+        unit_price_minor=int(unit_price),
+        line_total_minor=line_total,
+    )
+
+
+def _replace_invoice_lines(invoice, specs):
+    invoice.lines.clear()
+    db.session.flush()
+    for spec in specs:
+        invoice.lines.append(_invoice_line_from_spec(spec))
+    db.session.flush()
+
+
+def _recalculate_draft_totals(invoice):
+    subtotal = sum(int(line.line_total_minor) for line in invoice.lines)
+    if invoice.discount_minor > subtotal:
+        raise conflict(
+            "The discount would exceed the invoice subtotal",
+            {"subtotal_minor": subtotal, "discount_minor": invoice.discount_minor},
         )
     invoice.subtotal_minor = subtotal
+    invoice.total_minor = subtotal - invoice.discount_minor
+    invoice.amount_paid_minor = 0
+    invoice.balance_minor = invoice.total_minor
+    db.session.flush()
+    if any(item.status != AllocationStatus.VOIDED for item in invoice.allocations):
+        rebalance_patient_share(invoice)
+
+
+def _find_active_invoice_for_appointment(appointment_id):
+    return (
+        Invoice.query.filter(
+            Invoice.appointment_id == appointment_id,
+            Invoice.status != InvoiceStatus.VOIDED,
+        )
+        .order_by(Invoice.created_at.desc())
+        .first()
+    )
+
+
+def ensure_draft_invoice_for_appointment(appointment, actor=None, commit=True):
+    """Return the encounter bill for an appointment, creating it once.
+
+    The appointment row is locked so concurrent check-ins/finalize fallbacks
+    serialize on Postgres. A partial unique index is the database backstop.
+    """
+    from app.clinical_records.models import Visit
+    from app.scheduling.models import Appointment as AppointmentModel
+    from app.scheduling.models import DoctorProfile
+
+    db.session.execute(
+        db.select(AppointmentModel).where(AppointmentModel.id == appointment.id).with_for_update()
+    )
+    existing = _find_active_invoice_for_appointment(appointment.id)
+    visit = Visit.query.filter_by(appointment_id=appointment.id).first()
+    if existing is not None:
+        if existing.visit_id is None and visit is not None:
+            existing.visit_id = visit.id
+            db.session.flush()
+        if commit:
+            db.session.commit()
+        return existing
+
+    invoice = Invoice(
+        patient_id=appointment.patient_id,
+        appointment_id=appointment.id,
+        visit_id=visit.id if visit is not None else None,
+        department_id=appointment.department_id,
+        issued_by_id=actor.id if actor else None,
+        status=InvoiceStatus.DRAFT,
+    )
+    line = _default_line_for_appointment(
+        appointment, DoctorProfile.query.get(appointment.doctor_id)
+    )
+    if line is not None:
+        invoice.lines.append(_invoice_line_from_spec(line))
+    invoice.subtotal_minor = sum(int(item.line_total_minor) for item in invoice.lines)
     invoice.discount_minor = 0
-    invoice.total_minor = subtotal
+    invoice.total_minor = invoice.subtotal_minor
     invoice.amount_paid_minor = 0
     invoice.balance_minor = invoice.total_minor
     db.session.add(invoice)
     db.session.flush()
+    record_audit(
+        "invoice.draft_create",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        after={
+            "appointment_id": str(appointment.id),
+            "total_minor": invoice.total_minor,
+        },
+    )
+    if commit:
+        db.session.commit()
+    return invoice
+
+
+def finalize_invoice(invoice, actor):
+    """Assign the number, lock the lines and post the final totals."""
+    invoice = lock_invoice(invoice)
+    if invoice.status != InvoiceStatus.DRAFT:
+        raise conflict(
+            "Invoice is already finalized",
+            {
+                "invoice_id": str(invoice.id),
+                "invoice_number": invoice.invoice_number,
+                "status": invoice.status.value,
+            },
+        )
+    if not invoice.lines:
+        raise bad_request(
+            "Invoice requires at least one line item",
+            {"items": ["Add a line before finalizing"]},
+        )
+    subtotal = sum(int(line.line_total_minor) for line in invoice.lines)
+    if invoice.discount_minor > subtotal:
+        raise conflict(
+            "The discount would exceed the invoice subtotal",
+            {"subtotal_minor": subtotal, "discount_minor": invoice.discount_minor},
+        )
+    invoice.subtotal_minor = subtotal
+    invoice.total_minor = subtotal - invoice.discount_minor
+    invoice.amount_paid_minor = 0
+    invoice.balance_minor = invoice.total_minor
+    invoice.finalized_at = utcnow()
+    invoice.issued_at = invoice.issued_at or invoice.finalized_at
+    invoice.invoice_number = next_sequence_value("invoice_number", prefix="INV-{year}-", width=6)
+    invoice.status = InvoiceStatus.ISSUED
+    db.session.flush()
+    recompute_invoice(invoice)
+    if any(item.status != AllocationStatus.VOIDED for item in invoice.allocations):
+        rebalance_patient_share(invoice)
     enqueue_event(
         "invoice.created",
         "invoice",
@@ -422,14 +550,161 @@ def create_invoice(visit, data, actor):
         },
     )
     record_audit(
+        "invoice.finalize",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        after={
+            "invoice_number": invoice.invoice_number,
+            "total_minor": invoice.total_minor,
+            "finalized_at": _iso(_aware(invoice.finalized_at)),
+        },
+    )
+    db.session.commit()
+    return invoice
+
+
+def _find_invoice_for_visit(visit):
+    clauses = [Invoice.visit_id == visit.id]
+    if visit.appointment_id:
+        clauses.append(Invoice.appointment_id == visit.appointment_id)
+    return (
+        Invoice.query.filter(Invoice.status != InvoiceStatus.VOIDED, or_(*clauses))
+        .order_by(Invoice.created_at.desc())
+        .first()
+    )
+
+
+def finalize_visit_invoice(visit, data, actor):
+    """Finalize a visit's encounter bill, creating the draft when missing."""
+    if visit.completed_at is None:
+        raise conflict(
+            "Complete the visit before invoicing it",
+            {"visit_id": str(visit.id)},
+        )
+    invoice = _find_invoice_for_visit(visit)
+    if invoice is not None and invoice.status != InvoiceStatus.DRAFT:
+        raise conflict(
+            "An invoice already exists for this visit",
+            {"invoice_id": str(invoice.id), "invoice_number": invoice.invoice_number},
+        )
+
+    if invoice is None:
+        if visit.appointment_id:
+            from app.scheduling.models import Appointment
+
+            appointment = Appointment.query.get(visit.appointment_id)
+            invoice = ensure_draft_invoice_for_appointment(appointment, actor, commit=False)
+        else:
+            invoice = Invoice(
+                patient_id=visit.patient_id,
+                visit_id=visit.id,
+                department_id=visit.department_id,
+                issued_by_id=actor.id if actor else None,
+                status=InvoiceStatus.DRAFT,
+            )
+            line = _default_consultation_line(visit)
+            if line is not None:
+                invoice.lines.append(_invoice_line_from_spec(line))
+            db.session.add(invoice)
+            db.session.flush()
+            record_audit(
+                "invoice.draft_create",
+                "invoice",
+                invoice.id,
+                actor=actor,
+                after={"visit_id": str(visit.id)},
+            )
+
+    line_specs = data.get("items") or []
+    if line_specs:
+        _replace_invoice_lines(invoice, line_specs)
+    elif not invoice.lines:
+        line = _default_consultation_line(visit)
+        if line is not None:
+            invoice.lines.append(_invoice_line_from_spec(line))
+    _recalculate_draft_totals(invoice)
+
+    discount = int(data.get("discount_minor") or 0)
+    discount_reason = (data.get("discount_reason") or "").strip()
+    if discount > invoice.subtotal_minor:
+        raise bad_request("Discount cannot exceed subtotal")
+    if discount and not discount_reason:
+        raise bad_request(
+            "A discount requires a reason",
+            {"discount_reason": ["Required when discount_minor is set"]},
+        )
+    if discount:
+        _record_discount_request(invoice, discount, discount_reason, actor)
+
+    return finalize_invoice(invoice, actor)
+
+
+def add_invoice_line(invoice, data, actor):
+    invoice = lock_invoice(invoice)
+    if invoice.status != InvoiceStatus.DRAFT:
+        raise conflict(
+            "Only draft invoices can be edited",
+            {"invoice_id": str(invoice.id), "status": invoice.status.value},
+        )
+    line = _invoice_line_from_spec(data)
+    invoice.lines.append(line)
+    db.session.flush()
+    _recalculate_draft_totals(invoice)
+    record_audit(
+        "invoice.line_add",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        after={"description": line.description, "line_total_minor": line.line_total_minor},
+    )
+    db.session.commit()
+    return invoice
+
+
+def remove_invoice_line(invoice, line_id, actor):
+    invoice = lock_invoice(invoice)
+    if invoice.status != InvoiceStatus.DRAFT:
+        raise conflict(
+            "Only draft invoices can be edited",
+            {"invoice_id": str(invoice.id), "status": invoice.status.value},
+        )
+    line = next((item for item in invoice.lines if item.id == line_id), None)
+    if line is None:
+        raise not_found("Invoice line not found")
+    description = line.description
+    line_total = line.line_total_minor
+    invoice.lines.remove(line)
+    db.session.flush()
+    _recalculate_draft_totals(invoice)
+    record_audit(
+        "invoice.line_remove",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        before={"description": description, "line_total_minor": line_total},
+    )
+    db.session.commit()
+    return invoice
+
+
+def create_invoice(visit, data, actor):
+    """Compatibility wrapper for the pre-D create-invoice endpoint.
+
+    Deprecated: the desk should finalize the encounter draft. This keeps old
+    callers working by ensuring a draft exists and then finalizing it.
+    """
+    invoice = finalize_visit_invoice(visit, data, actor)
+    record_audit(
         "invoice.create",
         "invoice",
         invoice.id,
         actor=actor,
-        after={"total_minor": invoice.total_minor},
+        after={
+            "invoice_number": invoice.invoice_number,
+            "total_minor": invoice.total_minor,
+        },
     )
-    if discount:
-        _record_discount_request(invoice, discount, discount_reason, actor)
     db.session.commit()
     return invoice
 
@@ -680,6 +955,11 @@ def record_payment(invoice, data, actor):
     if method == PaymentMethod.MPESA:
         raise bad_request("Use the M-Pesa payment-intent workflow")
     invoice = lock_invoice(invoice)
+    if invoice.status == InvoiceStatus.DRAFT:
+        raise conflict(
+            "Finalize the invoice before taking payment",
+            {"invoice_id": str(invoice.id), "status": invoice.status.value},
+        )
     if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
         raise conflict("Invoice cannot receive payment in its current state")
     if invoice.balance_minor <= 0:
@@ -760,6 +1040,9 @@ def recompute_invoice(invoice):
     net = int(paid) - int(refunded)
     invoice.amount_paid_minor = net
     invoice.balance_minor = invoice.total_minor - net
+    # A draft keeps its lifecycle status until finalize assigns the number.
+    if invoice.status == InvoiceStatus.DRAFT:
+        return invoice
     if invoice.status == InvoiceStatus.VOIDED:
         return invoice
     if invoice.total_minor == 0 and net == 0:
@@ -775,6 +1058,11 @@ def recompute_invoice(invoice):
 
 def create_payment_intent(invoice, data, actor, idempotency_key=None):
     invoice = lock_invoice(invoice)
+    if invoice.status == InvoiceStatus.DRAFT:
+        raise conflict(
+            "Finalize the invoice before taking payment",
+            {"invoice_id": str(invoice.id), "status": invoice.status.value},
+        )
     if invoice.balance_minor <= 0:
         raise conflict("Invoice is already settled")
     amount = int(data["amount_minor"])

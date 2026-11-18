@@ -102,6 +102,7 @@ def _invoice(patient, department, description, amount, method, when, status=Invo
         status=status,
         primary_method=method,
         issued_at=when,
+        finalized_at=when if status != InvoiceStatus.DRAFT else None,
         created_at=when,
         updated_at=when,
     )

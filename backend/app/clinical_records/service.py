@@ -165,6 +165,17 @@ def create_visit(appointment, data, doctor_user):
     )
     db.session.add(visit)
     db.session.flush()
+
+    from app.billing.models import Invoice
+    from app.common.enums import InvoiceStatus
+
+    draft = Invoice.query.filter_by(
+        appointment_id=appointment.id, status=InvoiceStatus.DRAFT
+    ).first()
+    if draft is not None and draft.visit_id is None:
+        draft.visit_id = visit.id
+        db.session.flush()
+
     record_audit(
         "visit.create",
         "visit",

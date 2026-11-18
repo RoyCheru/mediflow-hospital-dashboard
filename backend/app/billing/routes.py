@@ -12,6 +12,7 @@ from app.billing.schemas import (
     DecisionSchema,
     DiscountRequestSchema,
     InvoiceCreateSchema,
+    InvoiceLineSchema,
     PaymentIntentSchema,
     ReconciliationResolveSchema,
     RefundRequestSchema,
@@ -44,6 +45,40 @@ def create_invoice(visit_id):
     data = InvoiceCreateSchema().load(request.get_json(silent=True) or {})
     invoice = service.create_invoice(visit, data, current_user())
     return created(service.serialize_invoice(invoice))
+
+
+@bp.post("/visits/<uuid:visit_id>/invoices/finalize")
+@auth_required(*BILLING)
+def finalize_visit_invoice(visit_id):
+    visit = get_visit_or_404(visit_id)
+    data = InvoiceCreateSchema().load(request.get_json(silent=True) or {})
+    invoice = service.finalize_visit_invoice(visit, data, current_user())
+    return created(service.serialize_invoice(invoice))
+
+
+@bp.post("/invoices/<uuid:invoice_id>/finalize")
+@auth_required(*BILLING)
+def finalize_invoice(invoice_id):
+    invoice = service.get_invoice_or_404(invoice_id)
+    invoice = service.finalize_invoice(invoice, current_user())
+    return ok(service.serialize_invoice(invoice))
+
+
+@bp.post("/invoices/<uuid:invoice_id>/lines")
+@auth_required(*BILLING)
+def add_invoice_line(invoice_id):
+    invoice = service.get_invoice_or_404(invoice_id)
+    data = InvoiceLineSchema().load(request.get_json(silent=True) or {})
+    invoice = service.add_invoice_line(invoice, data, current_user())
+    return created(service.serialize_invoice(invoice))
+
+
+@bp.delete("/invoices/<uuid:invoice_id>/lines/<uuid:line_id>")
+@auth_required(*BILLING)
+def remove_invoice_line(invoice_id, line_id):
+    invoice = service.get_invoice_or_404(invoice_id)
+    invoice = service.remove_invoice_line(invoice, line_id, current_user())
+    return ok(service.serialize_invoice(invoice))
 
 
 def _date_bound(name, end_of_day=False):

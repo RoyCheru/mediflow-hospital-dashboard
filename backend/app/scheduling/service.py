@@ -109,13 +109,13 @@ def serialize_doctor(doctor):
     }
 
 
-def serialize_appointment(appointment):
+def serialize_appointment(appointment, payer=None):
     patient = getattr(appointment, "patient", None)
     doctor = getattr(appointment, "doctor", None)
     doctor_user = getattr(doctor, "user", None) if doctor is not None else None
     service = getattr(appointment, "service", None)
     department = getattr(appointment, "department", None)
-    return {
+    data = {
         "id": str(appointment.id),
         "patient_id": str(appointment.patient_id),
         "patient_name": " ".join(part for part in (patient.first_name, patient.last_name) if part)
@@ -151,6 +151,10 @@ def serialize_appointment(appointment):
         else None,
         "created_at": _iso(_aware(appointment.created_at)),
     }
+    if payer is not None:
+        data["payer"] = payer
+        data["copay_due_minor"] = payer.get("copay_due_minor", 0)
+    return data
 
 
 def serialize_rule(rule):
@@ -663,6 +667,11 @@ def create_appointment(
     db.session.flush()
 
     if source == AppointmentSource.WALK_IN:
+        from app.billing.service import ensure_draft_invoice_for_appointment
+
+        ensure_draft_invoice_for_appointment(appointment, actor, commit=False)
+
+    if source == AppointmentSource.WALK_IN:
         audit_action = "appointment.walk_in"
     elif source == AppointmentSource.FOLLOW_UP:
         audit_action = "appointment.follow_up"
@@ -765,6 +774,11 @@ def transition(appointment, new_status, actor, reason=None):
     elif new_status == AppointmentStatus.CANCELLED:
         appointment.cancelled_at = now
         appointment.cancellation_reason = reason
+    if new_status == AppointmentStatus.CHECKED_IN:
+        # The encounter bill starts at check-in and is finalized at the desk.
+        from app.billing.service import ensure_draft_invoice_for_appointment
+
+        ensure_draft_invoice_for_appointment(appointment, actor, commit=False)
     record_audit(
         "appointment.status_change",
         "appointment",
