@@ -1,6 +1,7 @@
 import uuid
 from datetime import timezone
 
+from flask import current_app
 from sqlalchemy import func
 from sqlalchemy.orm import lazyload
 
@@ -21,6 +22,7 @@ from app.common.enums import (
     AllocationStatus,
     CashReconciliationStatus,
     ClaimStatus,
+    DiscountStatus,
     InvoiceStatus,
     PaymentIntentStatus,
     PaymentMethod,
@@ -77,6 +79,9 @@ def serialize_invoice(invoice):
         "currency": invoice.currency,
         "subtotal_minor": invoice.subtotal_minor,
         "discount_minor": invoice.discount_minor,
+        "discount_reason": invoice.discount_reason,
+        "discount_status": invoice.discount_status.value if invoice.discount_status else None,
+        "discount_requested_minor": invoice.discount_requested_minor,
         "total_minor": invoice.total_minor,
         "amount_paid_minor": invoice.amount_paid_minor,
         "balance_minor": invoice.balance_minor,
@@ -342,11 +347,17 @@ def create_invoice(visit, data, actor):
         )
 
     discount = int(data.get("discount_minor") or 0)
+    discount_reason = (data.get("discount_reason") or "").strip()
     if discount > subtotal:
         raise bad_request("Discount cannot exceed subtotal")
+    if discount and not discount_reason:
+        raise bad_request(
+            "A discount requires a reason",
+            {"discount_reason": ["Required when discount_minor is set"]},
+        )
     invoice.subtotal_minor = subtotal
-    invoice.discount_minor = discount
-    invoice.total_minor = subtotal - discount
+    invoice.discount_minor = 0
+    invoice.total_minor = subtotal
     invoice.amount_paid_minor = 0
     invoice.balance_minor = invoice.total_minor
     db.session.add(invoice)
@@ -368,6 +379,131 @@ def create_invoice(visit, data, actor):
         invoice.id,
         actor=actor,
         after={"total_minor": invoice.total_minor},
+    )
+    if discount:
+        _record_discount_request(invoice, discount, discount_reason, actor)
+    db.session.commit()
+    return invoice
+
+
+def discount_needs_approval(subtotal_minor, amount_minor):
+    """Above 10% of the subtotal or above KES 1,000 (configurable) needs an admin."""
+    percent = current_app.config.get("DISCOUNT_APPROVAL_PERCENT", 10)
+    limit = current_app.config.get("DISCOUNT_APPROVAL_MINOR", 100000)
+    return amount_minor > limit or amount_minor * 100 > subtotal_minor * percent
+
+
+def _ensure_discount_allowed(invoice, amount):
+    from app.claims.models import Claim  # local: claims imports billing
+
+    if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
+        raise conflict("Cannot discount a voided or refunded invoice")
+    if amount < 0 or amount > invoice.subtotal_minor:
+        raise bad_request("Discount must be between zero and the invoice subtotal")
+    if invoice.subtotal_minor - amount < invoice.amount_paid_minor:
+        raise conflict(
+            "The discount would leave the invoice overpaid; refund the difference first",
+            {"net_paid_minor": invoice.amount_paid_minor},
+        )
+    open_claim = Claim.query.filter(
+        Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+    ).first()
+    if open_claim is not None:
+        raise conflict(
+            "Cannot change the discount while a SHA claim is open",
+            {"claim_id": str(open_claim.id)},
+        )
+
+
+def _apply_discount(invoice, amount):
+    invoice.discount_minor = amount
+    invoice.total_minor = invoice.subtotal_minor - amount
+    db.session.flush()
+    recompute_invoice(invoice)
+    if any(item.status != AllocationStatus.VOIDED for item in invoice.allocations):
+        rebalance_patient_share(invoice)
+
+
+def _record_discount_request(invoice, amount, reason, actor):
+    """Apply a discount within the threshold, or park it for admin approval."""
+    _ensure_discount_allowed(invoice, amount)
+    before = {"discount_minor": invoice.discount_minor, "total_minor": invoice.total_minor}
+    invoice.discount_reason = reason
+    invoice.discount_requested_minor = amount
+    invoice.discount_requested_by_id = actor.id if actor else None
+    invoice.discount_decided_by_id = None
+    invoice.discount_decided_at = None
+    if discount_needs_approval(invoice.subtotal_minor, amount):
+        invoice.discount_status = DiscountStatus.PENDING_APPROVAL
+        alert_admins(
+            "discount_approval_alert",
+            {
+                "invoice_number": invoice.invoice_number,
+                "amount": f"{amount / 100:.2f}",
+                "reason": reason,
+            },
+        )
+        action = "invoice.discount_request"
+    else:
+        invoice.discount_status = DiscountStatus.APPLIED
+        _apply_discount(invoice, amount)
+        action = "invoice.discount_apply"
+    record_audit(
+        action,
+        "invoice",
+        invoice.id,
+        actor=actor,
+        before=before,
+        after={
+            "requested_minor": amount,
+            "reason": reason,
+            "status": invoice.discount_status.value,
+            "total_minor": invoice.total_minor,
+        },
+    )
+
+
+def request_discount(invoice, data, actor):
+    invoice = lock_invoice(invoice)
+    if invoice.discount_status == DiscountStatus.PENDING_APPROVAL:
+        raise conflict("A discount request is already waiting for approval")
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        raise bad_request("A discount requires a reason", {"reason": ["Required"]})
+    _record_discount_request(invoice, int(data["amount_minor"]), reason, actor)
+    db.session.commit()
+    return invoice
+
+
+def decide_discount(invoice, data, actor):
+    invoice = lock_invoice(invoice)
+    if invoice.discount_status != DiscountStatus.PENDING_APPROVAL:
+        raise conflict("There is no discount waiting for approval")
+    if invoice.discount_requested_by_id == actor.id:
+        raise conflict("The requester cannot approve their own discount")
+    amount = int(invoice.discount_requested_minor or 0)
+    before = {"discount_minor": invoice.discount_minor, "total_minor": invoice.total_minor}
+    if data["approve"]:
+        # Money or a claim may have arrived since the request; re-check.
+        _ensure_discount_allowed(invoice, amount)
+        _apply_discount(invoice, amount)
+        invoice.discount_status = DiscountStatus.APPLIED
+    else:
+        invoice.discount_status = DiscountStatus.REJECTED
+    invoice.discount_decided_by_id = actor.id
+    invoice.discount_decided_at = utcnow()
+    record_audit(
+        "invoice.discount_decision",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        before=before,
+        after={
+            "approved": bool(data["approve"]),
+            "requested_minor": amount,
+            "decision_reason": data.get("reason"),
+            "total_minor": invoice.total_minor,
+        },
     )
     db.session.commit()
     return invoice
@@ -578,7 +714,9 @@ def recompute_invoice(invoice):
     invoice.balance_minor = invoice.total_minor - net
     if invoice.status == InvoiceStatus.VOIDED:
         return invoice
-    if net <= 0:
+    if invoice.total_minor == 0 and net == 0:
+        invoice.status = InvoiceStatus.PAID  # fully discounted: nothing to collect
+    elif net <= 0:
         invoice.status = InvoiceStatus.REFUNDED if refunded > 0 else InvoiceStatus.ISSUED
     elif net >= invoice.total_minor:
         invoice.status = InvoiceStatus.PAID

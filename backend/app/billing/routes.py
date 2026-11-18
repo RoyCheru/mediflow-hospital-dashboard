@@ -10,6 +10,7 @@ from app.billing.schemas import (
     CashPaymentSchema,
     CashReconciliationSchema,
     DecisionSchema,
+    DiscountRequestSchema,
     InvoiceCreateSchema,
     PaymentIntentSchema,
     ReconciliationResolveSchema,
@@ -135,6 +136,24 @@ def get_invoice(invoice_id):
         profile = patient_profile_for_user(current_user())
         if profile is None or invoice.patient_id != profile.id:
             raise forbidden()
+    return ok(service.serialize_invoice(invoice))
+
+
+@bp.post("/invoices/<uuid:invoice_id>/discount")
+@auth_required(*BILLING)
+def request_discount(invoice_id):
+    invoice = service.get_invoice_or_404(invoice_id)
+    data = DiscountRequestSchema().load(request.get_json(silent=True) or {})
+    invoice = service.request_discount(invoice, data, current_user())
+    return ok(service.serialize_invoice(invoice))
+
+
+@bp.post("/invoices/<uuid:invoice_id>/discount/decision")
+@auth_required(Role.ADMIN)
+def decide_discount(invoice_id):
+    invoice = service.get_invoice_or_404(invoice_id)
+    data = DecisionSchema().load(request.get_json(silent=True) or {})
+    invoice = service.decide_discount(invoice, data, current_user())
     return ok(service.serialize_invoice(invoice))
 
 

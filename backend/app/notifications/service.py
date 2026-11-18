@@ -70,6 +70,11 @@ DEFAULT_TEMPLATES = [
         "M-Pesa payment {checkout_id} for invoice {invoice_id} is {status}.",
     ),
     (
+        "discount_approval_alert",
+        "Discount waiting for approval",
+        "A discount of KES {amount} on invoice {invoice_number} needs approval: {reason}",
+    ),
+    (
         "claim_patient_share_alert",
         "Patient balance increased after SHA decision",
         "Claim {claim_id} is {status}; the patient now owes KES {patient_share} "
