@@ -432,6 +432,35 @@ def _refresh_patient_allocation_status(invoice, allocation):
         allocation.status = AllocationStatus.PENDING
 
 
+def _active_patient_allocation(invoice):
+    return next(
+        (
+            item
+            for item in invoice.allocations
+            if item.payer == AllocationPayer.PATIENT and item.status != AllocationStatus.VOIDED
+        ),
+        None,
+    )
+
+
+def apply_patient_money(invoice, transaction=None):
+    """Attribute patient money to the PATIENT allocation and refresh its status.
+
+    Links ``transaction`` (a non-SHA payment) to the invoice's active patient
+    allocation, if the invoice has one, so outstanding co-pay can be
+    reported. Also call after refunds. No-op for invoices without a payer
+    split.
+    """
+    allocation = _active_patient_allocation(invoice)
+    if allocation is None:
+        return None
+    if transaction is not None and transaction.method != PaymentMethod.SHA:
+        transaction.allocation_id = allocation.id
+    db.session.flush()
+    _refresh_patient_allocation_status(invoice, allocation)
+    return allocation
+
+
 def add_allocation(invoice, data, actor):
     invoice = lock_invoice(invoice)
     if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
@@ -502,6 +531,7 @@ def record_payment(invoice, data, actor):
     db.session.add(transaction)
     db.session.flush()
     recompute_invoice(invoice)
+    apply_patient_money(invoice, transaction)
     enqueue_event(
         "payment.received",
         "transaction",
@@ -650,27 +680,26 @@ def handle_mpesa_callback(payload):
         amount = _callback_amount_minor(metadata, intent)
         invoice = invoice_lock_query(intent.invoice_id).first()
         problem = _callback_problem(intent, invoice, amount)
-        existing = Transaction.query.filter_by(reference=receipt).first()
-        if existing is None:
-            db.session.add(
-                Transaction(
-                    invoice_id=intent.invoice_id,
-                    payment_intent_id=intent.id,
-                    method=PaymentMethod.MPESA,
-                    amount_minor=amount,
-                    # Money that cannot be applied safely is kept, but parked
-                    # for manual reconciliation instead of settling the invoice.
-                    status=TransactionStatus.UNCONFIRMED if problem else TransactionStatus.SUCCESS,
-                    reference=receipt,
-                    provider_reference=receipt,
-                    paid_at=utcnow(),
-                    notes=(
-                        f"Needs reconciliation: {problem}"
-                        if problem
-                        else "Matched from M-Pesa Daraja callback"
-                    ),
-                )
+        transaction = Transaction.query.filter_by(reference=receipt).first()
+        if transaction is None:
+            transaction = Transaction(
+                invoice_id=intent.invoice_id,
+                payment_intent_id=intent.id,
+                method=PaymentMethod.MPESA,
+                amount_minor=amount,
+                # Money that cannot be applied safely is kept, but parked
+                # for manual reconciliation instead of settling the invoice.
+                status=TransactionStatus.UNCONFIRMED if problem else TransactionStatus.SUCCESS,
+                reference=receipt,
+                provider_reference=receipt,
+                paid_at=utcnow(),
+                notes=(
+                    f"Needs reconciliation: {problem}"
+                    if problem
+                    else "Matched from M-Pesa Daraja callback"
+                ),
             )
+            db.session.add(transaction)
         if problem:
             intent.status = PaymentIntentStatus.UNCONFIRMED
             alert_admins(
@@ -686,6 +715,7 @@ def handle_mpesa_callback(payload):
             invoice.primary_method = PaymentMethod.MPESA
             db.session.flush()
             recompute_invoice(invoice)
+            apply_patient_money(invoice, transaction)
             enqueue_event(
                 "payment.received",
                 "payment_intent",
@@ -822,6 +852,7 @@ def decide_void(request_id, data, actor):
                 invoice = lock_invoice(transaction.invoice_id)
                 transaction.status = TransactionStatus.REVERSED
                 recompute_invoice(invoice)
+                apply_patient_money(invoice)
     record_audit(
         "void.decision",
         "void_request",
@@ -884,6 +915,7 @@ def decide_refund(refund_id, data, actor):
         invoice = lock_invoice(refund.invoice_id)
         db.session.flush()
         recompute_invoice(invoice)
+        apply_patient_money(invoice)
     record_audit(
         "refund.decision",
         "refund",
@@ -912,6 +944,9 @@ def resolve_transaction(transaction, data, actor):
     else:
         transaction.status = TransactionStatus.FAILED
     recompute_invoice(invoice)
+    apply_patient_money(
+        invoice, transaction if transaction.status == TransactionStatus.SUCCESS else None
+    )
     record_audit(
         "payment.reconcile",
         "transaction",

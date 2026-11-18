@@ -253,8 +253,9 @@ def test_partial_approval_shortfall_is_owed_by_the_patient_until_paid(client, to
         headers=auth(tokens["cashier"]),
     )
     assert paid.status_code == 201, paid.get_json()
-    updated, _ = _allocations(client, tokens, invoice["id"])
+    updated, active = _allocations(client, tokens, invoice["id"])
     assert updated["status"] == "PAID"
+    assert active["PATIENT"]["status"] == "PAID"
 
 
 def test_approved_amount_cannot_exceed_claimed(client, tokens, ids):
@@ -277,3 +278,76 @@ def test_resubmitted_claim_takes_the_share_back_from_the_patient(client, tokens,
     _, active = _allocations(client, tokens, invoice["id"])
     assert set(active) == {"SHA"}
     assert active["SHA"]["amount_minor"] == invoice["total_minor"]
+
+
+def test_co_pay_payments_are_linked_to_the_patient_allocation(client, tokens, ids):
+    from app.billing.models import Transaction
+
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    _submit_claim(client, tokens, invoice["id"], amount=300000)
+    _, active = _allocations(client, tokens, invoice["id"])
+    patient_allocation_id = active["PATIENT"]["id"]
+    co_pay = active["PATIENT"]["amount_minor"]
+
+    cash = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions",
+        json={"method": "CASH", "amount_minor": co_pay - 50000},
+        headers=auth(tokens["cashier"]),
+    )
+    assert cash.status_code == 201
+    assert cash.get_json()["data"]["allocation_id"] == patient_allocation_id
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert active["PATIENT"]["status"] == "PENDING"
+
+    intent = client.post(
+        f"/api/v1/invoices/{invoice['id']}/payment-intents",
+        json={"amount_minor": 50000, "phone": "0700000005"},
+        headers={**auth(tokens["reception"]), "Idempotency-Key": "co-pay-stk"},
+    ).get_json()["data"]
+    client.post(
+        "/api/v1/webhooks/mpesa/daraja",
+        json={
+            "Body": {
+                "stkCallback": {
+                    "CheckoutRequestID": intent["checkout_request_id"],
+                    "ResultCode": 0,
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 50000},
+                            {"Name": "MpesaReceiptNumber", "Value": "QKCOPAY01"},
+                        ]
+                    },
+                }
+            }
+        },
+    )
+    mpesa = Transaction.query.filter_by(reference="QKCOPAY01").one()
+    assert str(mpesa.allocation_id) == patient_allocation_id
+    updated, active = _allocations(client, tokens, invoice["id"])
+    assert active["PATIENT"]["status"] == "PAID"
+    assert active["SHA"]["status"] == "PENDING"
+    assert updated["balance_minor"] == 300000  # the SHA portion is still outstanding
+
+    refund = client.post(
+        f"/api/v1/transactions/{mpesa.id}/refund-requests",
+        json={"amount_minor": 50000, "reason": "Paid twice"},
+        headers=auth(tokens["cashier"]),
+    ).get_json()["data"]
+    client.post(
+        f"/api/v1/refunds/{refund['id']}/decision",
+        json={"approve": True},
+        headers=auth(tokens["admin"]),
+    )
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert active["PATIENT"]["status"] == "PENDING"
+
+
+def test_payments_without_a_payer_split_are_not_linked(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    cash = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions",
+        json={"method": "CASH", "amount_minor": 100000},
+        headers=auth(tokens["cashier"]),
+    )
+    assert cash.status_code == 201
+    assert cash.get_json()["data"]["allocation_id"] is None
