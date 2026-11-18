@@ -139,6 +139,12 @@ def get_invoice(invoice_id):
     return ok(service.serialize_invoice(invoice))
 
 
+@bp.get("/billing/ready-to-bill")
+@auth_required(*BILLING)
+def ready_to_bill():
+    return ok(paginated(service.ready_to_bill_query(), service.serialize_ready_to_bill))
+
+
 @bp.post("/invoices/<uuid:invoice_id>/discount")
 @auth_required(*BILLING)
 def request_discount(invoice_id):

@@ -30,7 +30,7 @@ from app.common.enums import (
     TransactionStatus,
     VoidRequestStatus,
 )
-from app.common.errors import bad_request, conflict, not_found
+from app.common.errors import ApiError, bad_request, conflict, not_found
 from app.common.outbox import enqueue_event
 from app.common.sequences import next_sequence_value
 from app.common.time import hospital_day_bounds
@@ -243,6 +243,49 @@ def get_invoice_or_404(invoice_id):
     if invoice is None:
         raise not_found("Invoice not found")
     return invoice
+
+
+def ready_to_bill_query():
+    """Completed visits with no active (non-voided) invoice, newest first."""
+    from app.clinical_records.models import Visit
+
+    invoiced = db.session.query(Invoice.visit_id).filter(
+        Invoice.visit_id.isnot(None), Invoice.status != InvoiceStatus.VOIDED
+    )
+    return Visit.query.filter(Visit.completed_at.isnot(None), ~Visit.id.in_(invoiced)).order_by(
+        Visit.completed_at.desc()
+    )
+
+
+def serialize_ready_to_bill(visit):
+    """Work-list row: who to bill and the charge a default invoice would carry."""
+    patient = visit.patient
+    doctor_user = getattr(visit.doctor, "user", None) if visit.doctor else None
+    try:
+        line = _default_consultation_line(visit)
+    except ApiError:
+        line = None  # unpriced service: the cashier must enter items manually
+    return {
+        "visit_id": str(visit.id),
+        "appointment_id": str(visit.appointment_id) if visit.appointment_id else None,
+        "completed_at": _iso(_aware(visit.completed_at)),
+        "patient": {
+            "id": str(visit.patient_id),
+            "name": _person_name(patient),
+            "number": getattr(patient, "patient_number", None),
+            "has_sha_number": bool(getattr(patient, "sha_number", None)),
+        },
+        "doctor_name": _person_name(doctor_user),
+        "department_name": getattr(visit.department, "name", None),
+        "expected_line": (
+            {
+                "description": line["description"],
+                "unit_price_minor": line["unit_price_minor"],
+            }
+            if line
+            else None
+        ),
+    }
 
 
 def _default_consultation_line(visit):
