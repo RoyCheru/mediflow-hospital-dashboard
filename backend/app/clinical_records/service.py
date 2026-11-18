@@ -192,13 +192,33 @@ def update_visit(visit, data, doctor_user):
     ):
         if field in data:
             setattr(visit, field, data[field])
-    record_audit(
-        "visit.update",
-        "visit",
-        visit.id,
-        actor=doctor_user,
-        after={"fields": sorted(data.keys())},
-    )
+    if visit.completed_at is None:
+        record_audit(
+            "visit.update",
+            "visit",
+            visit.id,
+            actor=doctor_user,
+            after={"fields": sorted(data.keys())},
+        )
+    else:
+        # Amending a completed (possibly billed or claimed) visit is allowed,
+        # but recorded distinctly. Only field names are logged, never the
+        # clinical text. Charges are not affected by clinical amendments.
+        from app.billing.models import Invoice
+
+        invoice = Invoice.query.filter_by(visit_id=visit.id).first()
+        record_audit(
+            "visit.amend_after_completion",
+            "visit",
+            visit.id,
+            actor=doctor_user,
+            before={"completed_at": visit.completed_at.isoformat()},
+            after={
+                "fields": sorted(data.keys()),
+                "invoice_id": str(invoice.id) if invoice else None,
+                "invoice_status": invoice.status.value if invoice else None,
+            },
+        )
     db.session.commit()
     return visit
 
