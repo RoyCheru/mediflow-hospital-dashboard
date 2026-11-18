@@ -21,13 +21,30 @@ class Invoice(BaseModel, TimestampMixin):
     __table_args__ = (
         db.Index("ix_invoices_patient_date", "patient_id", "created_at"),
         db.Index("ix_invoices_status_date", "status", "created_at"),
+        # An encounter has at most one open draft. The partial index lets the
+        # same appointment be invoiced again after a void or after finalizing.
+        db.Index(
+            "uq_invoices_draft_appointment",
+            "appointment_id",
+            unique=True,
+            sqlite_where=db.text("status = 'DRAFT'"),
+            postgresql_where=db.text("status = 'DRAFT'"),
+        ),
     )
 
-    invoice_number = db.Column(db.String(40), nullable=False, unique=True, index=True)
+    # Drafts carry no number; the number is reserved only when the invoice is
+    # finalized. Both SQLite and Postgres allow many NULLs in a unique index.
+    invoice_number = db.Column(db.String(40), nullable=True, unique=True, index=True)
     patient_id = db.Column(
         db.Uuid(as_uuid=True),
         db.ForeignKey("patient_profiles.id"),
         nullable=False,
+        index=True,
+    )
+    appointment_id = db.Column(
+        db.Uuid(as_uuid=True),
+        db.ForeignKey("appointments.id"),
+        nullable=True,
         index=True,
     )
     visit_id = db.Column(
@@ -68,6 +85,7 @@ class Invoice(BaseModel, TimestampMixin):
     )
     discount_decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
     issued_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    finalized_at = db.Column(db.DateTime(timezone=True), nullable=True)
     due_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     patient = db.relationship("PatientProfile", lazy="joined")
