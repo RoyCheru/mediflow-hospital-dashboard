@@ -93,6 +93,8 @@ export type InvoiceLine = {
   line_total_minor: number;
 };
 
+export type DiscountStatus = "APPLIED" | "PENDING_APPROVAL" | "REJECTED";
+
 export type InvoiceAllocation = {
   id: string;
   payer: "PATIENT" | "SHA" | "INSURANCE";
@@ -114,6 +116,9 @@ export type Invoice = {
   currency: string;
   subtotal_minor: number;
   discount_minor: number;
+  discount_reason: string | null;
+  discount_status: DiscountStatus | null;
+  discount_requested_minor: number | null;
   total_minor: number;
   amount_paid_minor: number;
   balance_minor: number;
@@ -257,6 +262,9 @@ export type EligibilityCheck = {
   status: "ACTIVE" | "INACTIVE" | "LIMIT_EXHAUSTED" | "UNKNOWN";
   coverage_limit_minor: number | null;
   consumed_minor: number | null;
+  remaining_coverage_minor: number | null;
+  /** BIL-8: "choose_payment_method" when SHA cannot pay this invoice. */
+  next_action: "create_claim" | "choose_payment_method";
   provider: string;
   provider_reference: string | null;
   checked_at: string;
@@ -633,4 +641,14 @@ export type WorkingToday = {
     department: { id: string | null; name: string | null };
     working_hours: WorkingHours[];
   }[];
+};
+
+export type ReadyToBillVisit = {
+  visit_id: string;
+  appointment_id: string | null;
+  completed_at: string | null;
+  patient: { id: string; name: string | null; number: string | null; has_sha_number: boolean };
+  doctor_name: string | null;
+  department_name: string | null;
+  expected_line: { description: string; unit_price_minor: number } | null;
 };

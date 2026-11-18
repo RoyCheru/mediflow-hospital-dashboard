@@ -159,6 +159,13 @@ export const api = {
   getEnvelope: <T>(path: string, params?: ListParams) =>
     apiEnvelope<T>(`${path}${params ? buildQuery(params) : ""}`),
   post: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "POST", body }),
+  /** POST with an Idempotency-Key so retries and double submits are applied once. */
+  postIdempotent: <T>(path: string, body: unknown, idempotencyKey: string) =>
+    apiRequest<T>(path, {
+      method: "POST",
+      body,
+      headers: { "Idempotency-Key": idempotencyKey },
+    }),
   patch: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "PATCH", body }),
   delete: <T>(path: string) => apiRequest<T>(path, { method: "DELETE" }),
 };

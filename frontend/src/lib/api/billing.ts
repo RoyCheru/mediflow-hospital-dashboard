@@ -3,9 +3,11 @@ import type {
   CashReconciliation,
   CashSummary,
   Invoice,
+  InvoiceAllocation,
   ListParams,
   Paginated,
   PaymentIntent,
+  ReadyToBillVisit,
   Refund,
   Transaction,
   VoidRequest,
@@ -22,7 +24,45 @@ export const billingKeys = {
     ["admin", "billing", "reconciliations", params] as const,
   cashSummary: (params?: ListParams) => ["admin", "billing", "cash-summary", params] as const,
   reconciliationQueue: ["admin", "billing", "reconciliation-queue"] as const,
+  readyToBill: (params?: ListParams) => ["admin", "billing", "ready-to-bill", params] as const,
 };
+
+export function listReadyToBill(params?: ListParams) {
+  return api.get<Paginated<ReadyToBillVisit>>("/billing/ready-to-bill", params);
+}
+
+export type InvoiceItemInput = {
+  service_id?: string;
+  description?: string;
+  quantity?: number;
+  unit_price_minor?: number;
+};
+
+export function createInvoice(
+  visitId: string,
+  body: {
+    items?: InvoiceItemInput[];
+    discount_minor?: number;
+    discount_reason?: string;
+  } = {},
+) {
+  return api.post<Invoice>(`/visits/${visitId}/invoices`, body);
+}
+
+export function addAllocation(
+  invoiceId: string,
+  body: { payer: "PATIENT" | "SHA" | "INSURANCE"; amount_minor: number },
+) {
+  return api.post<InvoiceAllocation>(`/invoices/${invoiceId}/allocations`, body);
+}
+
+export function requestDiscount(invoiceId: string, body: { amount_minor: number; reason: string }) {
+  return api.post<Invoice>(`/invoices/${invoiceId}/discount`, body);
+}
+
+export function decideDiscount(invoiceId: string, body: { approve: boolean; reason?: string }) {
+  return api.post<Invoice>(`/invoices/${invoiceId}/discount/decision`, body);
+}
 
 export function listInvoices(params?: ListParams) {
   return api.get<Paginated<Invoice>>("/invoices", params);
@@ -48,8 +88,12 @@ export function recordPayment(
     reference?: string | undefined;
     notes?: string | undefined;
   },
+  idempotencyKey?: string,
 ) {
-  return api.post<Transaction>(`/invoices/${invoiceId}/transactions`, body);
+  const path = `/invoices/${invoiceId}/transactions`;
+  return idempotencyKey
+    ? api.postIdempotent<Transaction>(path, body, idempotencyKey)
+    : api.post<Transaction>(path, body);
 }
 
 export function listTransactions(params?: ListParams) {
