@@ -59,8 +59,10 @@ def _seed():
     service = Service(department_id=department.id, name="General consultation", code="CONS-GEN")
     db.session.add(service)
     db.session.flush()
+    # The price list is the single source of the consultation charge; the
+    # doctor fee (250000) is only a fallback, so a default invoice is 500000.
     db.session.add(
-        ServicePrice(service_id=service.id, amount_minor=250000, effective_from=utcnow())
+        ServicePrice(service_id=service.id, amount_minor=500000, effective_from=utcnow())
     )
 
     admin = make_user("admin@test.local", "0700000001", "Admin12345!", Role.ADMIN, "Ada", "Admin")

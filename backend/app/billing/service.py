@@ -234,6 +234,41 @@ def get_invoice_or_404(invoice_id):
     return invoice
 
 
+def _default_consultation_line(visit):
+    """The single consultation charge for a visit invoiced without explicit items.
+
+    The service price list is the source of truth. The doctor's consultation
+    fee is only the default price for that service when the price list has
+    no current price, or the charge when the appointment names no service.
+    The two are never billed together.
+    """
+    from app.scheduling.models import Appointment, DoctorProfile, Service
+    from app.scheduling.service import current_price
+
+    appointment = Appointment.query.get(visit.appointment_id) if visit.appointment_id else None
+    doctor = DoctorProfile.query.get(visit.doctor_id)
+    doctor_fee = doctor.consultation_fee_minor if doctor is not None else 0
+
+    if appointment is not None and appointment.service_id:
+        service = Service.query.get(appointment.service_id)
+        price = current_price(service.id)
+        unit_price = price.amount_minor if price else doctor_fee
+        if not unit_price:
+            raise bad_request(
+                "The visit's service has no current price",
+                {"service_id": str(service.id)},
+            )
+        return {
+            "service_id": service.id,
+            "description": service.name,
+            "quantity": 1,
+            "unit_price_minor": unit_price,
+        }
+    if doctor_fee > 0:
+        return {"description": "Consultation", "quantity": 1, "unit_price_minor": doctor_fee}
+    return None
+
+
 def create_invoice(visit, data, actor):
     existing = (
         Invoice.query.filter_by(visit_id=visit.id)
@@ -248,30 +283,9 @@ def create_invoice(visit, data, actor):
 
     line_specs = data.get("items") or []
     if not line_specs:
-        from app.scheduling.models import Appointment, DoctorProfile, Service
-        from app.scheduling.service import current_price
-
-        appointment = Appointment.query.get(visit.appointment_id) if visit.appointment_id else None
-        if appointment is not None and appointment.service_id:
-            service = Service.query.get(appointment.service_id)
-            price = current_price(service.id)
-            line_specs.append(
-                {
-                    "service_id": service.id,
-                    "description": service.name,
-                    "quantity": 1,
-                    "unit_price_minor": price.amount_minor if price else 0,
-                }
-            )
-        doctor = DoctorProfile.query.get(visit.doctor_id)
-        if doctor is not None and doctor.consultation_fee_minor > 0:
-            line_specs.append(
-                {
-                    "description": "Consultation",
-                    "quantity": 1,
-                    "unit_price_minor": doctor.consultation_fee_minor,
-                }
-            )
+        default_line = _default_consultation_line(visit)
+        if default_line is not None:
+            line_specs.append(default_line)
     if not line_specs:
         raise bad_request(
             "Invoice requires at least one line item",
