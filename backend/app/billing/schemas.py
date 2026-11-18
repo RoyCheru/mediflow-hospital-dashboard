@@ -20,6 +20,7 @@ class InvoiceCreateSchema(Schema):
         unknown = EXCLUDE
 
     discount_minor = fields.Integer(load_default=0, validate=validate.Range(min=0))
+    discount_reason = fields.String(required=False, allow_none=True)
     items = fields.List(fields.Nested(InvoiceLineSchema), load_default=list)
     due_at = fields.DateTime(required=False, allow_none=True)
 
@@ -94,3 +95,11 @@ class CashReconciliationSchema(Schema):
     business_date = fields.Date(required=True)
     counted_cash_minor = fields.Integer(required=True, validate=validate.Range(min=0))
     notes = fields.String(required=False, allow_none=True)
+
+
+class DiscountRequestSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    amount_minor = fields.Integer(required=True, validate=validate.Range(min=0))
+    reason = fields.String(required=True, validate=validate.Length(min=1))

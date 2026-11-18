@@ -1,5 +1,9 @@
-from flask import Blueprint, request
+from datetime import datetime, timedelta, timezone
 
+from flask import Blueprint, request
+from sqlalchemy import String, cast, or_
+
+from app.billing.models import Invoice
 from app.billing.service import get_invoice_or_404
 from app.claims import service
 from app.claims.models import Claim
@@ -10,7 +14,7 @@ from app.claims.schemas import (
     EligibilityCheckSchema,
 )
 from app.common.decorators import auth_required, current_user
-from app.common.enums import Role
+from app.common.enums import ClaimStatus, Role
 from app.common.errors import forbidden
 from app.common.pagination import paginated
 from app.common.responses import created, ok
@@ -55,6 +59,8 @@ def aging():
 @bp.get("/claims")
 @auth_required(Role.DOCTOR, *BILLING)
 def list_claims():
+    from app.patients.models import PatientProfile
+
     query = Claim.query
     if request.args.get("status"):
         query = query.filter(Claim.status == request.args["status"])
@@ -62,8 +68,49 @@ def list_claims():
         from uuid import UUID
 
         query = query.filter(Claim.invoice_id == UUID(request.args["invoice_id"]))
+    if request.args.get("q"):
+        like = f"%{request.args['q'].strip()}%"
+        query = query.filter(
+            or_(
+                Claim.invoice.has(Invoice.invoice_number.ilike(like)),
+                Claim.patient.has(
+                    or_(
+                        PatientProfile.first_name.ilike(like),
+                        PatientProfile.last_name.ilike(like),
+                        PatientProfile.patient_number.ilike(like),
+                    )
+                ),
+                Claim.external_reference.ilike(like),
+                cast(Claim.id, String).ilike(like),
+            )
+        )
+    bucket = request.args.get("aging_bucket")
+    if bucket in {"current", "14", "30", "60"}:
+        now = datetime.now(timezone.utc)
+        pending = [ClaimStatus.SUBMITTED, ClaimStatus.UNDER_REVIEW]
+        if bucket == "current":
+            query = query.filter(
+                Claim.status.in_(pending),
+                Claim.submitted_at >= now - timedelta(days=14),
+            )
+        elif bucket == "14":
+            query = query.filter(
+                Claim.status.in_(pending),
+                Claim.submitted_at < now - timedelta(days=14),
+                Claim.submitted_at >= now - timedelta(days=30),
+            )
+        elif bucket == "30":
+            query = query.filter(
+                Claim.status.in_(pending),
+                Claim.submitted_at < now - timedelta(days=30),
+                Claim.submitted_at >= now - timedelta(days=60),
+            )
+        else:
+            query = query.filter(
+                Claim.status.in_(pending),
+                Claim.submitted_at < now - timedelta(days=60),
+            )
     if current_user().role == Role.DOCTOR:
-        from app.billing.models import Invoice
         from app.clinical_records.models import Visit
         from app.scheduling.models import DoctorProfile
 
@@ -84,7 +131,6 @@ def list_claims():
 def get_claim(claim_id):
     claim = service.get_claim_or_404(claim_id)
     if current_user().role == Role.DOCTOR:
-        from app.billing.models import Invoice
         from app.clinical_records.models import Visit
         from app.scheduling.models import DoctorProfile
 

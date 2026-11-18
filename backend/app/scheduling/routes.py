@@ -1,6 +1,7 @@
 from datetime import date
 
 from flask import Blueprint, request
+from sqlalchemy import String, and_, cast, func, or_
 
 from app.common.base import utcnow
 from app.common.decorators import auth_required, current_user
@@ -175,14 +176,14 @@ def my_availability():
 def create_availability():
     doctor = _doctor_for_user(current_user())
     data = AvailabilityRuleSchema().load(request.get_json(silent=True) or {})
-    return created(service.serialize_rule(service.create_rule(doctor, data)))
+    return created(service.serialize_rule(service.create_rule(doctor, data, actor=current_user())))
 
 
 @bp.delete("/doctors/me/availability/<uuid:rule_id>")
 @auth_required(Role.DOCTOR)
 def delete_availability(rule_id):
     doctor = _doctor_for_user(current_user())
-    return ok(service.serialize_rule(service.delete_rule(rule_id, doctor)))
+    return ok(service.serialize_rule(service.delete_rule(rule_id, doctor, actor=current_user())))
 
 
 @bp.post("/doctors/me/exceptions")
@@ -193,7 +194,9 @@ def create_exception():
     if doctor is None:
         doctor = service.get_doctor_or_404(payload.get("doctor_id"))
     data = AvailabilityExceptionSchema().load(payload)
-    return created(service.serialize_exception(service.create_exception(doctor, data)))
+    return created(
+        service.serialize_exception(service.create_exception(doctor, data, actor=current_user()))
+    )
 
 
 @bp.get("/availability")
@@ -227,23 +230,14 @@ def create_appointment():
 @bp.post("/appointments/walk-in")
 @auth_required(Role.RECEPTIONIST, Role.ADMIN)
 def create_walk_in():
-    from datetime import timedelta
+    from app.patients.service import serialize_patient_brief
 
     data = WalkInSchema().load(request.get_json(silent=True) or {})
-    payload = {
-        "doctor_id": data["doctor_id"],
-        "service_id": data.get("service_id"),
-        "scheduled_start": utcnow() + timedelta(minutes=1),
-        "urgency": data.get("urgency"),
-        "notes": data.get("notes"),
-    }
-    appointment = service.create_appointment(
-        payload,
-        current_user(),
-        data["patient_id"],
-        source=AppointmentSource.WALK_IN,
-    )
-    return created(service.serialize_appointment(appointment))
+    appointment, position, duplicates = service.create_walk_in_appointment(data, current_user())
+    payload = service.serialize_appointment(appointment)
+    payload["queue_position"] = position
+    payload["potential_duplicates"] = [serialize_patient_brief(item) for item in duplicates]
+    return created(payload)
 
 
 @bp.get("/appointments")
@@ -260,15 +254,74 @@ def list_appointments():
         query = query.filter_by(doctor_id=_doctor_for_user(user).id)
     if request.args.get("status"):
         query = query.filter(Appointment.status == AppointmentStatus(request.args["status"]))
+    if request.args.get("source"):
+        query = query.filter(Appointment.source == AppointmentSource(request.args["source"]))
+    if request.args.get("doctor_id"):
+        from uuid import UUID
+
+        query = query.filter(Appointment.doctor_id == UUID(request.args["doctor_id"]))
+    if request.args.get("department_id"):
+        from uuid import UUID
+
+        query = query.filter(Appointment.department_id == UUID(request.args["department_id"]))
     if request.args.get("date"):
         target = date.fromisoformat(request.args["date"])
         from datetime import datetime, time, timezone
 
         start = datetime.combine(target, time.min, tzinfo=timezone.utc)
-        query = query.filter(Appointment.scheduled_start >= start).filter(
-            Appointment.scheduled_start < start.replace(hour=23, minute=59, second=59)
+        end = start.replace(hour=23, minute=59, second=59)
+        query = query.filter(
+            or_(
+                and_(
+                    Appointment.source != AppointmentSource.WALK_IN,
+                    Appointment.scheduled_start >= start,
+                    Appointment.scheduled_start <= end,
+                ),
+                and_(
+                    Appointment.source == AppointmentSource.WALK_IN,
+                    Appointment.arrived_at >= start,
+                    Appointment.arrived_at <= end,
+                ),
+            )
         )
-    query = query.order_by(Appointment.scheduled_start.desc())
+    if request.args.get("q"):
+        from app.patients.models import PatientProfile
+
+        like = f"%{request.args['q'].strip()}%"
+        query = query.filter(
+            or_(
+                Appointment.patient.has(
+                    or_(
+                        PatientProfile.first_name.ilike(like),
+                        PatientProfile.last_name.ilike(like),
+                        PatientProfile.patient_number.ilike(like),
+                        PatientProfile.phone.ilike(like),
+                    )
+                ),
+                Appointment.notes.ilike(like),
+                cast(Appointment.id, String).ilike(like),
+            )
+        )
+    sort = request.args.get("sort") or "-scheduled_start"
+    descending = sort.startswith("-")
+    sort_field = sort.lstrip("-")
+    effective_time = func.coalesce(
+        Appointment.scheduled_start,
+        Appointment.arrived_at,
+        Appointment.created_at,
+    )
+    sort_map = {
+        "scheduled_start": effective_time,
+        "arrived_at": func.coalesce(
+            Appointment.arrived_at,
+            Appointment.scheduled_start,
+            Appointment.created_at,
+        ),
+        "created_at": Appointment.created_at,
+        "status": Appointment.status,
+    }
+    column = sort_map.get(sort_field, effective_time)
+    query = query.order_by(column.desc() if descending else column.asc())
     return ok(paginated(query, service.serialize_appointment))
 
 

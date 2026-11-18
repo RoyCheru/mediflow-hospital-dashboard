@@ -61,7 +61,7 @@ def test_mpesa_callback_is_idempotent(client, tokens, ids, app):
                 "ResultDesc": "Success",
                 "CallbackMetadata": {
                     "Item": [
-                        {"Name": "Amount", "Value": 500000},
+                        {"Name": "Amount", "Value": 5000},  # KES, as Daraja reports
                         {"Name": "MpesaReceiptNumber", "Value": "QK123456"},
                     ]
                 },

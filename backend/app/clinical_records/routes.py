@@ -167,7 +167,7 @@ def attachment_content(attachment_id):
 
 
 @bp.post("/visits/<uuid:visit_id>/follow-up")
-@auth_required(Role.DOCTOR, Role.RECEPTIONIST, Role.ADMIN)
+@auth_required(Role.DOCTOR, Role.ADMIN)
 def schedule_follow_up(visit_id):
     from app.scheduling import service as scheduling_service
 
@@ -181,10 +181,11 @@ def schedule_follow_up(visit_id):
             "service_id": data.get("service_id"),
             "scheduled_start": data["scheduled_start"],
             "notes": data.get("notes") or "Follow-up visit",
+            "follow_up_of_visit_id": visit.id,
         },
         current_user(),
         visit.patient_id,
-        source=AppointmentSource.RECEPTION,
+        source=AppointmentSource.FOLLOW_UP,
         slot_minutes=data.get("slot_minutes", 30),
     )
     visit.follow_up_date = data["scheduled_start"].date()

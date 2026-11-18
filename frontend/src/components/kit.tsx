@@ -44,12 +44,13 @@ export function StatCard({
 }: {
   label: string;
   value: string;
-  change: number;
+  change?: number | null;
   icon: LucideIcon;
   tone: keyof typeof grads;
 }) {
   const dark = tone === "yellow" || tone === "pink";
-  const up = change >= 0;
+  const hasChange = typeof change === "number";
+  const up = hasChange && change >= 0;
   return (
     <div
       className={cn(
@@ -71,11 +72,19 @@ export function StatCard({
         </span>
         <div className="text-right">
           <span className="inline-flex items-center gap-1 rounded-full bg-on-gradient/35 px-2.5 py-1 text-xs font-semibold">
-            {up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-            {up ? "+" : ""}
-            {change}%
+            {hasChange ? (
+              <>
+                {up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                {up ? "+" : ""}
+                {change}%
+              </>
+            ) : (
+              "—"
+            )}
           </span>
-          <p className="mt-1 text-[11px] opacity-80">vs last month</p>
+          <p className="mt-1 text-[11px] opacity-80">
+            {hasChange ? "vs last month" : "no comparison"}
+          </p>
         </div>
       </div>
     </div>

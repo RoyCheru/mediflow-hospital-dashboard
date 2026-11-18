@@ -17,7 +17,12 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-me")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", SECRET_KEY)
     JWT_ALGORITHM = "HS256"
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:8080")
+    HOSPITAL_TIMEZONE = os.getenv("HOSPITAL_TIMEZONE", "Africa/Nairobi")
+    QUEUE_WAITING_THRESHOLD_MINUTES = int(os.getenv("QUEUE_WAITING_THRESHOLD_MINUTES", "30"))
+    # Discounts above either threshold need admin approval (strictly greater).
+    DISCOUNT_APPROVAL_PERCENT = int(os.getenv("DISCOUNT_APPROVAL_PERCENT", "10"))
+    DISCOUNT_APPROVAL_MINOR = int(os.getenv("DISCOUNT_APPROVAL_MINOR", "100000"))
 
     SQLALCHEMY_DATABASE_URI = _database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False

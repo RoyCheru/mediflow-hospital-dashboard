@@ -1,7 +1,9 @@
 import uuid
-from datetime import datetime, time, timedelta, timezone
+from datetime import timezone
 
+from flask import current_app
 from sqlalchemy import func
+from sqlalchemy.orm import lazyload
 
 from app.billing.models import (
     CashReconciliation,
@@ -16,8 +18,11 @@ from app.billing.models import (
 from app.common.audit import record_audit
 from app.common.base import utcnow
 from app.common.enums import (
+    AllocationPayer,
     AllocationStatus,
     CashReconciliationStatus,
+    ClaimStatus,
+    DiscountStatus,
     InvoiceStatus,
     PaymentIntentStatus,
     PaymentMethod,
@@ -25,11 +30,17 @@ from app.common.enums import (
     TransactionStatus,
     VoidRequestStatus,
 )
-from app.common.errors import bad_request, conflict, not_found
+from app.common.errors import ApiError, bad_request, conflict, not_found
 from app.common.outbox import enqueue_event
 from app.common.sequences import next_sequence_value
+from app.common.time import hospital_day_bounds
 from app.extensions import db
-from app.integrations.mpesa import get_mpesa_gateway, normalize_phone
+from app.integrations.mpesa import (
+    MINOR_UNITS_PER_SHILLING,
+    get_mpesa_gateway,
+    normalize_phone,
+    shillings_to_minor,
+)
 
 
 def _iso(value):
@@ -44,16 +55,38 @@ def _aware(value):
     return value.astimezone(timezone.utc)
 
 
+def _person_name(person):
+    if person is None:
+        return None
+    return getattr(person, "full_name", None) or " ".join(
+        part
+        for part in (getattr(person, "first_name", None), getattr(person, "last_name", None))
+        if part
+    )
+
+
 def serialize_invoice(invoice):
+    patient = getattr(invoice, "patient", None)
+    department = getattr(invoice, "department", None)
+    visit = getattr(invoice, "visit", None)
+    doctor = getattr(visit, "doctor", None) if visit is not None else None
+    doctor_user = getattr(doctor, "user", None) if doctor is not None else None
     return {
         "id": str(invoice.id),
         "invoice_number": invoice.invoice_number,
         "patient_id": str(invoice.patient_id),
+        "patient_name": _person_name(patient),
+        "patient_number": getattr(patient, "patient_number", None),
         "visit_id": str(invoice.visit_id) if invoice.visit_id else None,
+        "doctor_name": _person_name(doctor_user),
         "department_id": str(invoice.department_id) if invoice.department_id else None,
+        "department_name": getattr(department, "name", None),
         "currency": invoice.currency,
         "subtotal_minor": invoice.subtotal_minor,
         "discount_minor": invoice.discount_minor,
+        "discount_reason": invoice.discount_reason,
+        "discount_status": invoice.discount_status.value if invoice.discount_status else None,
+        "discount_requested_minor": invoice.discount_requested_minor,
         "total_minor": invoice.total_minor,
         "amount_paid_minor": invoice.amount_paid_minor,
         "balance_minor": invoice.balance_minor,
@@ -88,9 +121,13 @@ def serialize_invoice(invoice):
 
 
 def serialize_transaction(transaction):
+    invoice = getattr(transaction, "invoice", None)
+    patient = getattr(invoice, "patient", None) if invoice is not None else None
     return {
         "id": str(transaction.id),
         "invoice_id": str(transaction.invoice_id),
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": _person_name(patient),
         "allocation_id": str(transaction.allocation_id) if transaction.allocation_id else None,
         "method": transaction.method.value,
         "amount_minor": transaction.amount_minor,
@@ -122,9 +159,15 @@ def serialize_intent(intent):
 
 
 def serialize_void_request(item):
+    invoice = getattr(item, "invoice", None)
+    patient = getattr(invoice, "patient", None) if invoice is not None else None
     return {
         "id": str(item.id),
         "invoice_id": str(item.invoice_id) if item.invoice_id else None,
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": _person_name(patient),
+        "requested_by_name": _person_name(getattr(item, "requested_by", None)),
+        "reviewed_by_name": _person_name(getattr(item, "reviewed_by", None)),
         "transaction_id": str(item.transaction_id) if item.transaction_id else None,
         "reason": item.reason,
         "status": item.status.value,
@@ -137,9 +180,15 @@ def serialize_void_request(item):
 
 
 def serialize_refund(item):
+    invoice = getattr(item, "invoice", None)
+    patient = getattr(invoice, "patient", None) if invoice is not None else None
     return {
         "id": str(item.id),
         "invoice_id": str(item.invoice_id),
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": _person_name(patient),
+        "requested_by_name": _person_name(getattr(item, "requested_by", None)),
+        "approved_by_name": _person_name(getattr(item, "approved_by", None)),
         "original_transaction_id": str(item.original_transaction_id),
         "amount_minor": item.amount_minor,
         "reason": item.reason,
@@ -163,6 +212,32 @@ def serialize_cash_reconciliation(item):
     }
 
 
+def invoice_lock_query(invoice_id):
+    """Query that re-reads an invoice with a row lock (``SELECT ... FOR UPDATE``).
+
+    Every balance check followed by a money write must run under this lock so
+    concurrent payments, callbacks, settlements and voids serialize per
+    invoice. SQLite ignores ``FOR UPDATE``; Postgres honours it.
+    """
+    # Lock only the invoices row: Invoice eager-loads relationships through
+    # LEFT OUTER JOINs, and Postgres refuses FOR UPDATE on the nullable side of
+    # an outer join. lazyload("*") also keeps the locking query small.
+    return (
+        Invoice.query.options(lazyload("*"))
+        .filter(Invoice.id == invoice_id)
+        .with_for_update(of=Invoice)
+        .execution_options(populate_existing=True)
+    )
+
+
+def lock_invoice(invoice_or_id):
+    invoice_id = getattr(invoice_or_id, "id", invoice_or_id)
+    invoice = invoice_lock_query(invoice_id).first()
+    if invoice is None:
+        raise not_found("Invoice not found")
+    return invoice
+
+
 def get_invoice_or_404(invoice_id):
     invoice = Invoice.query.get(invoice_id)
     if invoice is None:
@@ -170,7 +245,90 @@ def get_invoice_or_404(invoice_id):
     return invoice
 
 
+def ready_to_bill_query():
+    """Completed visits with no active (non-voided) invoice, newest first."""
+    from app.clinical_records.models import Visit
+
+    invoiced = db.session.query(Invoice.visit_id).filter(
+        Invoice.visit_id.isnot(None), Invoice.status != InvoiceStatus.VOIDED
+    )
+    return Visit.query.filter(Visit.completed_at.isnot(None), ~Visit.id.in_(invoiced)).order_by(
+        Visit.completed_at.desc()
+    )
+
+
+def serialize_ready_to_bill(visit):
+    """Work-list row: who to bill and the charge a default invoice would carry."""
+    patient = visit.patient
+    doctor_user = getattr(visit.doctor, "user", None) if visit.doctor else None
+    try:
+        line = _default_consultation_line(visit)
+    except ApiError:
+        line = None  # unpriced service: the cashier must enter items manually
+    return {
+        "visit_id": str(visit.id),
+        "appointment_id": str(visit.appointment_id) if visit.appointment_id else None,
+        "completed_at": _iso(_aware(visit.completed_at)),
+        "patient": {
+            "id": str(visit.patient_id),
+            "name": _person_name(patient),
+            "number": getattr(patient, "patient_number", None),
+            "has_sha_number": bool(getattr(patient, "sha_number", None)),
+        },
+        "doctor_name": _person_name(doctor_user),
+        "department_name": getattr(visit.department, "name", None),
+        "expected_line": (
+            {
+                "description": line["description"],
+                "unit_price_minor": line["unit_price_minor"],
+            }
+            if line
+            else None
+        ),
+    }
+
+
+def _default_consultation_line(visit):
+    """The single consultation charge for a visit invoiced without explicit items.
+
+    The service price list is the source of truth. The doctor's consultation
+    fee is only the default price for that service when the price list has
+    no current price, or the charge when the appointment names no service.
+    The two are never billed together.
+    """
+    from app.scheduling.models import Appointment, DoctorProfile, Service
+    from app.scheduling.service import current_price
+
+    appointment = Appointment.query.get(visit.appointment_id) if visit.appointment_id else None
+    doctor = DoctorProfile.query.get(visit.doctor_id)
+    doctor_fee = doctor.consultation_fee_minor if doctor is not None else 0
+
+    if appointment is not None and appointment.service_id:
+        service = Service.query.get(appointment.service_id)
+        price = current_price(service.id)
+        unit_price = price.amount_minor if price else doctor_fee
+        if not unit_price:
+            raise bad_request(
+                "The visit's service has no current price",
+                {"service_id": str(service.id)},
+            )
+        return {
+            "service_id": service.id,
+            "description": service.name,
+            "quantity": 1,
+            "unit_price_minor": unit_price,
+        }
+    if doctor_fee > 0:
+        return {"description": "Consultation", "quantity": 1, "unit_price_minor": doctor_fee}
+    return None
+
+
 def create_invoice(visit, data, actor):
+    if visit.completed_at is None:
+        raise conflict(
+            "Complete the visit before invoicing it",
+            {"visit_id": str(visit.id)},
+        )
     existing = (
         Invoice.query.filter_by(visit_id=visit.id)
         .filter(Invoice.status != InvoiceStatus.VOIDED)
@@ -184,30 +342,9 @@ def create_invoice(visit, data, actor):
 
     line_specs = data.get("items") or []
     if not line_specs:
-        from app.scheduling.models import Appointment, DoctorProfile, Service
-        from app.scheduling.service import current_price
-
-        appointment = Appointment.query.get(visit.appointment_id) if visit.appointment_id else None
-        if appointment is not None and appointment.service_id:
-            service = Service.query.get(appointment.service_id)
-            price = current_price(service.id)
-            line_specs.append(
-                {
-                    "service_id": service.id,
-                    "description": service.name,
-                    "quantity": 1,
-                    "unit_price_minor": price.amount_minor if price else 0,
-                }
-            )
-        doctor = DoctorProfile.query.get(visit.doctor_id)
-        if doctor is not None and doctor.consultation_fee_minor > 0:
-            line_specs.append(
-                {
-                    "description": "Consultation",
-                    "quantity": 1,
-                    "unit_price_minor": doctor.consultation_fee_minor,
-                }
-            )
+        default_line = _default_consultation_line(visit)
+        if default_line is not None:
+            line_specs.append(default_line)
     if not line_specs:
         raise bad_request(
             "Invoice requires at least one line item",
@@ -258,11 +395,17 @@ def create_invoice(visit, data, actor):
         )
 
     discount = int(data.get("discount_minor") or 0)
+    discount_reason = (data.get("discount_reason") or "").strip()
     if discount > subtotal:
         raise bad_request("Discount cannot exceed subtotal")
+    if discount and not discount_reason:
+        raise bad_request(
+            "A discount requires a reason",
+            {"discount_reason": ["Required when discount_minor is set"]},
+        )
     invoice.subtotal_minor = subtotal
-    invoice.discount_minor = discount
-    invoice.total_minor = subtotal - discount
+    invoice.discount_minor = 0
+    invoice.total_minor = subtotal
     invoice.amount_paid_minor = 0
     invoice.balance_minor = invoice.total_minor
     db.session.add(invoice)
@@ -285,11 +428,225 @@ def create_invoice(visit, data, actor):
         actor=actor,
         after={"total_minor": invoice.total_minor},
     )
+    if discount:
+        _record_discount_request(invoice, discount, discount_reason, actor)
     db.session.commit()
     return invoice
 
 
+def discount_needs_approval(subtotal_minor, amount_minor):
+    """Above 10% of the subtotal or above KES 1,000 (configurable) needs an admin."""
+    percent = current_app.config.get("DISCOUNT_APPROVAL_PERCENT", 10)
+    limit = current_app.config.get("DISCOUNT_APPROVAL_MINOR", 100000)
+    return amount_minor > limit or amount_minor * 100 > subtotal_minor * percent
+
+
+def _ensure_discount_allowed(invoice, amount):
+    from app.claims.models import Claim  # local: claims imports billing
+
+    if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
+        raise conflict("Cannot discount a voided or refunded invoice")
+    if amount < 0 or amount > invoice.subtotal_minor:
+        raise bad_request("Discount must be between zero and the invoice subtotal")
+    if invoice.subtotal_minor - amount < invoice.amount_paid_minor:
+        raise conflict(
+            "The discount would leave the invoice overpaid; refund the difference first",
+            {"net_paid_minor": invoice.amount_paid_minor},
+        )
+    open_claim = Claim.query.filter(
+        Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+    ).first()
+    if open_claim is not None:
+        raise conflict(
+            "Cannot change the discount while a SHA claim is open",
+            {"claim_id": str(open_claim.id)},
+        )
+
+
+def _apply_discount(invoice, amount):
+    invoice.discount_minor = amount
+    invoice.total_minor = invoice.subtotal_minor - amount
+    db.session.flush()
+    recompute_invoice(invoice)
+    if any(item.status != AllocationStatus.VOIDED for item in invoice.allocations):
+        rebalance_patient_share(invoice)
+
+
+def _record_discount_request(invoice, amount, reason, actor):
+    """Apply a discount within the threshold, or park it for admin approval."""
+    _ensure_discount_allowed(invoice, amount)
+    before = {"discount_minor": invoice.discount_minor, "total_minor": invoice.total_minor}
+    invoice.discount_reason = reason
+    invoice.discount_requested_minor = amount
+    invoice.discount_requested_by_id = actor.id if actor else None
+    invoice.discount_decided_by_id = None
+    invoice.discount_decided_at = None
+    if discount_needs_approval(invoice.subtotal_minor, amount):
+        invoice.discount_status = DiscountStatus.PENDING_APPROVAL
+        alert_admins(
+            "discount_approval_alert",
+            {
+                "invoice_number": invoice.invoice_number,
+                "amount": f"{amount / 100:.2f}",
+                "reason": reason,
+            },
+        )
+        action = "invoice.discount_request"
+    else:
+        invoice.discount_status = DiscountStatus.APPLIED
+        _apply_discount(invoice, amount)
+        action = "invoice.discount_apply"
+    record_audit(
+        action,
+        "invoice",
+        invoice.id,
+        actor=actor,
+        before=before,
+        after={
+            "requested_minor": amount,
+            "reason": reason,
+            "status": invoice.discount_status.value,
+            "total_minor": invoice.total_minor,
+        },
+    )
+
+
+def request_discount(invoice, data, actor):
+    invoice = lock_invoice(invoice)
+    if invoice.discount_status == DiscountStatus.PENDING_APPROVAL:
+        raise conflict("A discount request is already waiting for approval")
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        raise bad_request("A discount requires a reason", {"reason": ["Required"]})
+    _record_discount_request(invoice, int(data["amount_minor"]), reason, actor)
+    db.session.commit()
+    return invoice
+
+
+def decide_discount(invoice, data, actor):
+    invoice = lock_invoice(invoice)
+    if invoice.discount_status != DiscountStatus.PENDING_APPROVAL:
+        raise conflict("There is no discount waiting for approval")
+    if invoice.discount_requested_by_id == actor.id:
+        raise conflict("The requester cannot approve their own discount")
+    amount = int(invoice.discount_requested_minor or 0)
+    before = {"discount_minor": invoice.discount_minor, "total_minor": invoice.total_minor}
+    if data["approve"]:
+        # Money or a claim may have arrived since the request; re-check.
+        _ensure_discount_allowed(invoice, amount)
+        _apply_discount(invoice, amount)
+        invoice.discount_status = DiscountStatus.APPLIED
+    else:
+        invoice.discount_status = DiscountStatus.REJECTED
+    invoice.discount_decided_by_id = actor.id
+    invoice.discount_decided_at = utcnow()
+    record_audit(
+        "invoice.discount_decision",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        before=before,
+        after={
+            "approved": bool(data["approve"]),
+            "requested_minor": amount,
+            "decision_reason": data.get("reason"),
+            "total_minor": invoice.total_minor,
+        },
+    )
+    db.session.commit()
+    return invoice
+
+
+def rebalance_patient_share(invoice):
+    """Keep the PATIENT allocation equal to what third-party payers do not cover.
+
+    Invariant: patient share = invoice total - active (non-voided) SHA and
+    insurance allocations. Call after any payer-mix change (self-pay
+    conversion, claim creation, rejection, partial approval, resubmission).
+    The caller holds the invoice lock and commits.
+    """
+    active = [item for item in invoice.allocations if item.status != AllocationStatus.VOIDED]
+    third_party = sum(item.amount_minor for item in active if item.payer != AllocationPayer.PATIENT)
+    target = max(invoice.total_minor - third_party, 0)
+    patient_allocations = [item for item in active if item.payer == AllocationPayer.PATIENT]
+    allocation = patient_allocations[0] if patient_allocations else None
+    for duplicate in patient_allocations[1:]:
+        duplicate.status = AllocationStatus.VOIDED
+
+    if allocation is None:
+        if target == 0:
+            return None
+        allocation = InvoiceAllocation(
+            invoice_id=invoice.id, payer=AllocationPayer.PATIENT, amount_minor=target
+        )
+        invoice.allocations.append(allocation)
+        db.session.add(allocation)
+        db.session.flush()
+    allocation.amount_minor = target
+    _refresh_patient_allocation_status(invoice, allocation)
+    return allocation
+
+
+def patient_paid_minor(invoice):
+    """Money the patient has paid on the invoice: non-SHA payments less refunds."""
+    paid = (
+        db.session.query(func.coalesce(func.sum(Transaction.amount_minor), 0))
+        .filter(
+            Transaction.invoice_id == invoice.id,
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.method != PaymentMethod.SHA,
+        )
+        .scalar()
+    )
+    refunded = (
+        db.session.query(func.coalesce(func.sum(Refund.amount_minor), 0))
+        .filter(Refund.invoice_id == invoice.id, Refund.status == RefundStatus.COMPLETED)
+        .scalar()
+    )
+    return int(paid) - int(refunded)
+
+
+def _refresh_patient_allocation_status(invoice, allocation):
+    paid = patient_paid_minor(invoice)
+    if allocation.amount_minor == 0 and paid <= 0:
+        allocation.status = AllocationStatus.VOIDED
+    elif paid >= allocation.amount_minor:
+        allocation.status = AllocationStatus.PAID
+    else:
+        allocation.status = AllocationStatus.PENDING
+
+
+def _active_patient_allocation(invoice):
+    return next(
+        (
+            item
+            for item in invoice.allocations
+            if item.payer == AllocationPayer.PATIENT and item.status != AllocationStatus.VOIDED
+        ),
+        None,
+    )
+
+
+def apply_patient_money(invoice, transaction=None):
+    """Attribute patient money to the PATIENT allocation and refresh its status.
+
+    Links ``transaction`` (a non-SHA payment) to the invoice's active patient
+    allocation, if the invoice has one, so outstanding co-pay can be
+    reported. Also call after refunds. No-op for invoices without a payer
+    split.
+    """
+    allocation = _active_patient_allocation(invoice)
+    if allocation is None:
+        return None
+    if transaction is not None and transaction.method != PaymentMethod.SHA:
+        transaction.allocation_id = allocation.id
+    db.session.flush()
+    _refresh_patient_allocation_status(invoice, allocation)
+    return allocation
+
+
 def add_allocation(invoice, data, actor):
+    invoice = lock_invoice(invoice)
     if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
         raise conflict("Cannot allocate a voided or refunded invoice")
     allocated = sum(
@@ -322,6 +679,7 @@ def record_payment(invoice, data, actor):
         raise bad_request("Use the SHA claims workflow for SHA payments")
     if method == PaymentMethod.MPESA:
         raise bad_request("Use the M-Pesa payment-intent workflow")
+    invoice = lock_invoice(invoice)
     if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
         raise conflict("Invoice cannot receive payment in its current state")
     if invoice.balance_minor <= 0:
@@ -357,6 +715,7 @@ def record_payment(invoice, data, actor):
     db.session.add(transaction)
     db.session.flush()
     recompute_invoice(invoice)
+    apply_patient_money(invoice, transaction)
     enqueue_event(
         "payment.received",
         "transaction",
@@ -403,7 +762,9 @@ def recompute_invoice(invoice):
     invoice.balance_minor = invoice.total_minor - net
     if invoice.status == InvoiceStatus.VOIDED:
         return invoice
-    if net <= 0:
+    if invoice.total_minor == 0 and net == 0:
+        invoice.status = InvoiceStatus.PAID  # fully discounted: nothing to collect
+    elif net <= 0:
         invoice.status = InvoiceStatus.REFUNDED if refunded > 0 else InvoiceStatus.ISSUED
     elif net >= invoice.total_minor:
         invoice.status = InvoiceStatus.PAID
@@ -413,11 +774,17 @@ def recompute_invoice(invoice):
 
 
 def create_payment_intent(invoice, data, actor, idempotency_key=None):
+    invoice = lock_invoice(invoice)
     if invoice.balance_minor <= 0:
         raise conflict("Invoice is already settled")
     amount = int(data["amount_minor"])
     if amount > invoice.balance_minor:
         raise bad_request("Payment exceeds the outstanding balance")
+    if amount % MINOR_UNITS_PER_SHILLING:
+        raise bad_request(
+            "M-Pesa payments must be in whole shillings",
+            {"amount_minor": ["Must be a multiple of 100"]},
+        )
     gateway = get_mpesa_gateway()
     result = gateway.stk_push(
         data["phone"],
@@ -461,6 +828,25 @@ def create_payment_intent(invoice, data, actor, idempotency_key=None):
     return intent
 
 
+def _callback_amount_minor(metadata, intent):
+    """Amount reported by the Daraja callback, converted from shillings to minor units."""
+    reported = metadata.get("Amount")
+    return shillings_to_minor(reported) if reported is not None else int(intent.amount_minor)
+
+
+def _callback_problem(intent, invoice, amount):
+    """Why a successful M-Pesa callback cannot be applied automatically, if at all."""
+    if invoice is None:
+        return "invoice not found"
+    if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
+        return f"invoice is {invoice.status.value.lower()}"
+    if amount != int(intent.amount_minor):
+        return f"amount {amount} does not match requested {intent.amount_minor}"
+    if amount > invoice.balance_minor:
+        return "amount exceeds outstanding balance"
+    return None
+
+
 def handle_mpesa_callback(payload):
     callback = (payload or {}).get("Body", {}).get("stkCallback", {}) or {}
     checkout_id = callback.get("CheckoutRequestID")
@@ -478,41 +864,60 @@ def handle_mpesa_callback(payload):
     }
     if result_code == 0:
         receipt = metadata.get("MpesaReceiptNumber") or f"MPESA-{uuid.uuid4().hex[:12]}"
-        existing = Transaction.query.filter_by(reference=receipt).first()
-        if existing is None:
+        amount = _callback_amount_minor(metadata, intent)
+        invoice = invoice_lock_query(intent.invoice_id).first()
+        problem = _callback_problem(intent, invoice, amount)
+        transaction = Transaction.query.filter_by(reference=receipt).first()
+        if transaction is None:
             transaction = Transaction(
                 invoice_id=intent.invoice_id,
                 payment_intent_id=intent.id,
                 method=PaymentMethod.MPESA,
-                amount_minor=int(metadata.get("Amount") or intent.amount_minor),
-                status=TransactionStatus.SUCCESS,
+                amount_minor=amount,
+                # Money that cannot be applied safely is kept, but parked
+                # for manual reconciliation instead of settling the invoice.
+                status=TransactionStatus.UNCONFIRMED if problem else TransactionStatus.SUCCESS,
                 reference=receipt,
                 provider_reference=receipt,
                 paid_at=utcnow(),
-                notes="Matched from M-Pesa Daraja callback",
+                notes=(
+                    f"Needs reconciliation: {problem}"
+                    if problem
+                    else "Matched from M-Pesa Daraja callback"
+                ),
             )
             db.session.add(transaction)
-        intent.status = PaymentIntentStatus.SUCCESS
-        invoice = Invoice.query.get(intent.invoice_id)
-        if invoice is not None:
+        if problem:
+            intent.status = PaymentIntentStatus.UNCONFIRMED
+            alert_admins(
+                "mpesa_failed_alert",
+                {
+                    "checkout_id": checkout_id or "",
+                    "invoice_id": str(intent.invoice_id),
+                    "status": f"{intent.status.value} ({problem})",
+                },
+            )
+        else:
+            intent.status = PaymentIntentStatus.SUCCESS
             invoice.primary_method = PaymentMethod.MPESA
             db.session.flush()
             recompute_invoice(invoice)
-        enqueue_event(
-            "payment.received",
-            "payment_intent",
-            intent.id,
-            {
-                "payment_intent_id": str(intent.id),
-                "invoice_id": str(intent.invoice_id),
-                "patient_id": str(invoice.patient_id) if invoice else None,
-                "amount_minor": int(metadata.get("Amount") or intent.amount_minor),
-                "reference": receipt,
-            },
-        )
+            apply_patient_money(invoice, transaction)
+            enqueue_event(
+                "payment.received",
+                "payment_intent",
+                intent.id,
+                {
+                    "payment_intent_id": str(intent.id),
+                    "invoice_id": str(intent.invoice_id),
+                    "patient_id": str(invoice.patient_id),
+                    "amount_minor": amount,
+                    "reference": receipt,
+                },
+            )
     elif result_code in {1032, 1037, 2001}:
         intent.status = PaymentIntentStatus.UNCONFIRMED
-        _alert_admins(
+        alert_admins(
             "mpesa_failed_alert",
             {
                 "checkout_id": checkout_id or "",
@@ -522,7 +927,7 @@ def handle_mpesa_callback(payload):
         )
     else:
         intent.status = PaymentIntentStatus.FAILED
-        _alert_admins(
+        alert_admins(
             "mpesa_failed_alert",
             {
                 "checkout_id": checkout_id or "",
@@ -540,6 +945,36 @@ def handle_mpesa_callback(payload):
     return {"ResultCode": 0, "ResultDesc": "Accepted"}
 
 
+OPEN_CLAIM_STATUSES = (
+    ClaimStatus.DRAFT,
+    ClaimStatus.SUBMITTED,
+    ClaimStatus.UNDER_REVIEW,
+    ClaimStatus.APPROVED,
+)
+
+
+def ensure_invoice_voidable(invoice):
+    """An invoice may only be voided once no money or payer claim is attached.
+
+    Collected money must be refunded (or the transaction reversed) and open SHA
+    claims cancelled first, otherwise the money or claim would be stranded on a
+    dead invoice.
+    """
+    from app.claims.models import Claim  # local: claims imports billing
+
+    open_claims = Claim.query.filter(
+        Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+    ).all()
+    if invoice.amount_paid_minor > 0 or open_claims:
+        raise conflict(
+            "Refund collected payments and cancel open claims before voiding this invoice",
+            {
+                "net_paid_minor": invoice.amount_paid_minor,
+                "open_claim_ids": [str(claim.id) for claim in open_claims],
+            },
+        )
+
+
 def create_void_request(data, actor):
     if not data.get("invoice_id") and not data.get("transaction_id"):
         raise bad_request("invoice_id or transaction_id is required")
@@ -549,6 +984,7 @@ def create_void_request(data, actor):
         invoice = get_invoice_or_404(data["invoice_id"])
         if invoice.status == InvoiceStatus.VOIDED:
             raise conflict("Invoice is already voided")
+        ensure_invoice_voidable(invoice)
     if data.get("transaction_id"):
         transaction = Transaction.query.get(data["transaction_id"])
         if transaction is None:
@@ -582,13 +1018,17 @@ def decide_void(request_id, data, actor):
         raise conflict("Void request has already been decided")
     if item.requested_by_id == actor.id:
         raise conflict("The requester cannot approve their own void request")
+    invoice = None
+    if data["approve"] and item.invoice_id:
+        # Re-check under the lock: money may have arrived since the request.
+        invoice = lock_invoice(item.invoice_id)
+        ensure_invoice_voidable(invoice)
     item.status = VoidRequestStatus.APPROVED if data["approve"] else VoidRequestStatus.REJECTED
     item.reviewed_by_id = actor.id
     item.decision_reason = data.get("reason")
     item.decided_at = utcnow()
     if data["approve"]:
-        if item.invoice_id:
-            invoice = get_invoice_or_404(item.invoice_id)
+        if invoice is not None:
             invoice.status = InvoiceStatus.VOIDED
             invoice.void_reason = item.reason
             for allocation in invoice.allocations:
@@ -596,8 +1036,10 @@ def decide_void(request_id, data, actor):
         elif item.transaction_id:
             transaction = Transaction.query.get(item.transaction_id)
             if transaction is not None:
+                invoice = lock_invoice(transaction.invoice_id)
                 transaction.status = TransactionStatus.REVERSED
-                recompute_invoice(get_invoice_or_404(transaction.invoice_id))
+                recompute_invoice(invoice)
+                apply_patient_money(invoice)
     record_audit(
         "void.decision",
         "void_request",
@@ -657,9 +1099,10 @@ def decide_refund(refund_id, data, actor):
     refund.approved_by_id = actor.id
     refund.decided_at = utcnow()
     if data["approve"]:
-        invoice = get_invoice_or_404(refund.invoice_id)
+        invoice = lock_invoice(refund.invoice_id)
         db.session.flush()
         recompute_invoice(invoice)
+        apply_patient_money(invoice)
     record_audit(
         "refund.decision",
         "refund",
@@ -682,11 +1125,15 @@ def reconciliation_queue():
 
 
 def resolve_transaction(transaction, data, actor):
+    invoice = lock_invoice(transaction.invoice_id)
     if data["resolution"] == "SUCCESS":
         transaction.status = TransactionStatus.SUCCESS
     else:
         transaction.status = TransactionStatus.FAILED
-    recompute_invoice(get_invoice_or_404(transaction.invoice_id))
+    recompute_invoice(invoice)
+    apply_patient_money(
+        invoice, transaction if transaction.status == TransactionStatus.SUCCESS else None
+    )
     record_audit(
         "payment.reconcile",
         "transaction",
@@ -702,8 +1149,7 @@ def resolve_transaction(transaction, data, actor):
 
 
 def cash_expected_for(business_date):
-    start = datetime.combine(business_date, time.min, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
+    start, end = hospital_day_bounds(business_date)
     total = (
         db.session.query(func.coalesce(func.sum(Transaction.amount_minor), 0))
         .filter(
@@ -742,7 +1188,7 @@ def cash_reconciliation(data, actor):
         after={"expected": expected, "counted": counted, "variance": variance},
     )
     if variance != 0:
-        _alert_admins(
+        alert_admins(
             "cash_variance_alert",
             {
                 "business_date": business_date.isoformat(),
@@ -753,7 +1199,9 @@ def cash_reconciliation(data, actor):
     return item
 
 
-def _alert_admins(template_key, payload):
+def alert_admins(template_key, payload):
+    """Queue an in-app notification for every active admin."""
+
     from app.auth.models import User
     from app.common.enums import NotificationChannel, Role, UserStatus
     from app.notifications.models import Notification
@@ -771,8 +1219,7 @@ def _alert_admins(template_key, payload):
 
 
 def cash_summary(business_date):
-    start = datetime.combine(business_date, time.min, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
+    start, end = hospital_day_bounds(business_date)
     rows = (
         db.session.query(
             Transaction.method,

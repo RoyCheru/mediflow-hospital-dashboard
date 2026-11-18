@@ -69,6 +69,17 @@ DEFAULT_TEMPLATES = [
         "M-Pesa payment needs attention",
         "M-Pesa payment {checkout_id} for invoice {invoice_id} is {status}.",
     ),
+    (
+        "discount_approval_alert",
+        "Discount waiting for approval",
+        "A discount of KES {amount} on invoice {invoice_number} needs approval: {reason}",
+    ),
+    (
+        "claim_patient_share_alert",
+        "Patient balance increased after SHA decision",
+        "Claim {claim_id} is {status}; the patient now owes KES {patient_share} "
+        "on invoice {invoice_number}.",
+    ),
 ]
 
 
@@ -174,19 +185,25 @@ def queue_event_notifications(event):
         from app.scheduling.models import Appointment
 
         appointment = Appointment.query.get(_uuid(payload.get("appointment_id")))
+        if (
+            appointment is None
+            or appointment.source.value == "WALK_IN"
+            or appointment.status.value != "SCHEDULED"
+            or appointment.scheduled_start is None
+        ):
+            return []
         context = {
             "patient_name": patient.first_name,
             "doctor_name": "your doctor",
-            "scheduled_start": appointment.scheduled_start.isoformat() if appointment else "",
+            "scheduled_start": appointment.scheduled_start.isoformat(),
         }
         for channel in channels:
             created.append(_create(patient, channel, "booking_confirmation", context))
-        if appointment is not None:
-            for hours, key in ((24, "appointment_reminder_24h"), (2, "appointment_reminder_2h")):
-                when = appointment.scheduled_start - timedelta(hours=hours)
-                if when > utcnow():
-                    for channel in channels:
-                        created.append(_create(patient, channel, key, context, when))
+        for hours, key in ((24, "appointment_reminder_24h"), (2, "appointment_reminder_2h")):
+            when = appointment.scheduled_start - timedelta(hours=hours)
+            if when > utcnow():
+                for channel in channels:
+                    created.append(_create(patient, channel, key, context, when))
     elif event.event_type == "appointment.status_changed":
         context = {
             "patient_name": patient.first_name,

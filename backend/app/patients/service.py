@@ -135,7 +135,7 @@ def create_patient_profile(user, data, actor=None, create_consents=True):
     return profile
 
 
-def register_patient(data, actor=None, source="RECEPTION"):
+def register_patient(data, actor=None, source="RECEPTION", commit=True):
     if data.get("email"):
         existing = PatientProfile.query.filter_by(email=data["email"].lower()).first()
         if existing:
@@ -157,7 +157,10 @@ def register_patient(data, actor=None, source="RECEPTION"):
         actor=actor,
         after={"patient_number": profile.patient_number},
     )
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return profile, duplicates
 
 
@@ -221,7 +224,8 @@ def search_patients(query_text, doctor=None, limit=50):
             .subquery()
         )
         query = query.filter(PatientProfile.id.in_(db.select(patient_ids.c.patient_id)))
-    return query.order_by(PatientProfile.last_name, PatientProfile.first_name).limit(limit)
+    query = query.order_by(PatientProfile.last_name, PatientProfile.first_name)
+    return query if limit is None else query.limit(limit)
 
 
 def duplicate_candidates(first_name, last_name, date_of_birth, phone):

@@ -1,14 +1,16 @@
-from datetime import date
+from datetime import date, timedelta
 
 from flask import Blueprint, Response, request
+from sqlalchemy import or_
 
 from app.billing import service
-from app.billing.models import Invoice, Transaction
+from app.billing.models import CashReconciliation, Invoice, Refund, Transaction, VoidRequest
 from app.billing.schemas import (
     AllocationSchema,
     CashPaymentSchema,
     CashReconciliationSchema,
     DecisionSchema,
+    DiscountRequestSchema,
     InvoiceCreateSchema,
     PaymentIntentSchema,
     ReconciliationResolveSchema,
@@ -17,12 +19,13 @@ from app.billing.schemas import (
 )
 from app.clinical_records.service import get_visit_or_404
 from app.common.decorators import auth_required, current_user
-from app.common.enums import Role
+from app.common.enums import PaymentMethod, RefundStatus, Role, TransactionStatus, VoidRequestStatus
 from app.common.errors import forbidden, not_found, unauthorized
 from app.common.idempotency import begin, complete
 from app.common.pagination import paginated
 from app.common.permissions import patient_profile_for_user
 from app.common.responses import created, ok
+from app.common.time import hospital_day_bounds, hospital_today
 from app.extensions import db
 from app.integrations.documents import get_document_renderer
 from app.integrations.mpesa import get_mpesa_gateway
@@ -43,9 +46,46 @@ def create_invoice(visit_id):
     return created(service.serialize_invoice(invoice))
 
 
+def _date_bound(name, end_of_day=False):
+    value = request.args.get(name)
+    if not value:
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        from app.common.errors import bad_request
+
+        raise bad_request(f"Invalid {name} date") from exc
+    # Hospital business day: [local midnight, next local midnight).
+    start, end = hospital_day_bounds(parsed)
+    return end - timedelta(microseconds=1) if end_of_day else start
+
+
+def _sorted(query, default="-created_at"):
+    from app.common.errors import bad_request
+
+    raw = request.args.get("sort") or default
+    descending = raw.startswith("-")
+    field = raw.lstrip("-")
+    columns = {
+        "created_at": Invoice.created_at,
+        "issued_at": Invoice.issued_at,
+        "total_minor": Invoice.total_minor,
+        "balance_minor": Invoice.balance_minor,
+        "invoice_number": Invoice.invoice_number,
+        "status": Invoice.status,
+    }
+    if field not in columns:
+        raise bad_request("Invalid sort field")
+    column = columns[field]
+    return query.order_by(column.desc() if descending else column.asc())
+
+
 @bp.get("/invoices")
 @auth_required(Role.PATIENT, *BILLING)
 def list_invoices():
+    from app.patients.models import PatientProfile
+
     user = current_user()
     query = Invoice.query
     if user.role == Role.PATIENT:
@@ -59,7 +99,32 @@ def list_invoices():
         from uuid import UUID
 
         query = query.filter_by(patient_id=UUID(request.args["patient_id"]))
-    query = query.order_by(Invoice.created_at.desc())
+    if request.args.get("method"):
+        query = query.filter(Invoice.primary_method == PaymentMethod(request.args["method"]))
+    if request.args.get("department_id"):
+        from uuid import UUID
+
+        query = query.filter(Invoice.department_id == UUID(request.args["department_id"]))
+    if request.args.get("date_from"):
+        query = query.filter(Invoice.created_at >= _date_bound("date_from"))
+    if request.args.get("date_to"):
+        query = query.filter(Invoice.created_at <= _date_bound("date_to", end_of_day=True))
+    if request.args.get("q"):
+        like = f"%{request.args['q'].strip()}%"
+        query = query.filter(
+            or_(
+                Invoice.invoice_number.ilike(like),
+                Invoice.patient.has(
+                    or_(
+                        PatientProfile.first_name.ilike(like),
+                        PatientProfile.last_name.ilike(like),
+                        PatientProfile.patient_number.ilike(like),
+                        PatientProfile.phone.ilike(like),
+                    )
+                ),
+            )
+        )
+    query = _sorted(query)
     return ok(paginated(query, service.serialize_invoice))
 
 
@@ -71,6 +136,30 @@ def get_invoice(invoice_id):
         profile = patient_profile_for_user(current_user())
         if profile is None or invoice.patient_id != profile.id:
             raise forbidden()
+    return ok(service.serialize_invoice(invoice))
+
+
+@bp.get("/billing/ready-to-bill")
+@auth_required(*BILLING)
+def ready_to_bill():
+    return ok(paginated(service.ready_to_bill_query(), service.serialize_ready_to_bill))
+
+
+@bp.post("/invoices/<uuid:invoice_id>/discount")
+@auth_required(*BILLING)
+def request_discount(invoice_id):
+    invoice = service.get_invoice_or_404(invoice_id)
+    data = DiscountRequestSchema().load(request.get_json(silent=True) or {})
+    invoice = service.request_discount(invoice, data, current_user())
+    return ok(service.serialize_invoice(invoice))
+
+
+@bp.post("/invoices/<uuid:invoice_id>/discount/decision")
+@auth_required(Role.ADMIN)
+def decide_discount(invoice_id):
+    invoice = service.get_invoice_or_404(invoice_id)
+    data = DecisionSchema().load(request.get_json(silent=True) or {})
+    invoice = service.decide_discount(invoice, data, current_user())
     return ok(service.serialize_invoice(invoice))
 
 
@@ -95,8 +184,20 @@ def create_allocation(invoice_id):
 def record_payment(invoice_id):
     invoice = service.get_invoice_or_404(invoice_id)
     data = CashPaymentSchema().load(request.get_json(silent=True) or {})
+    # Same Idempotency-Key contract as payment intents: a retried or
+    # double-submitted payment returns the original transaction.
+    key = request.headers.get("Idempotency-Key")
+    record = None
+    if key:
+        record, cached = begin(f"payment.record:{invoice.id}", key, data)
+        if cached is not None:
+            return ok(cached["body"], cached["code"])
     transaction = service.record_payment(invoice, data, current_user())
-    return created(service.serialize_transaction(transaction))
+    payload = service.serialize_transaction(transaction)
+    if record is not None:
+        complete(record, 201, payload)
+        db.session.commit()
+    return created(payload)
 
 
 @bp.post("/invoices/<uuid:invoice_id>/payment-intents")
@@ -109,7 +210,7 @@ def create_payment_intent(invoice_id):
     if key:
         record, cached = begin("mpesa.payment_intent", key, data)
         if cached is not None:
-            return cached["body"], cached["code"]
+            return ok(cached["body"], cached["code"])
     intent = service.create_payment_intent(invoice, data, current_user(), key)
     payload = service.serialize_intent(intent)
     if record is not None:
@@ -189,7 +290,9 @@ def resolve_transaction(transaction_id):
 @bp.get("/billing/cash-summary")
 @auth_required(*BILLING)
 def cash_summary():
-    target = date.fromisoformat(request.args["date"]) if request.args.get("date") else date.today()
+    target = (
+        date.fromisoformat(request.args["date"]) if request.args.get("date") else hospital_today()
+    )
     return ok(service.cash_summary(target))
 
 
@@ -199,6 +302,70 @@ def cash_reconciliation():
     data = CashReconciliationSchema().load(request.get_json(silent=True) or {})
     item = service.cash_reconciliation(data, current_user())
     return created(service.serialize_cash_reconciliation(item))
+
+
+@bp.get("/billing/void-requests")
+@auth_required(*BILLING)
+def list_void_requests():
+    query = VoidRequest.query
+    if request.args.get("status"):
+        query = query.filter(VoidRequest.status == VoidRequestStatus(request.args["status"]))
+    if request.args.get("invoice_id"):
+        from uuid import UUID
+
+        query = query.filter(VoidRequest.invoice_id == UUID(request.args["invoice_id"]))
+    query = query.order_by(VoidRequest.created_at.desc())
+    return ok(paginated(query, service.serialize_void_request))
+
+
+@bp.get("/billing/refunds")
+@auth_required(*BILLING)
+def list_refunds():
+    query = Refund.query
+    if request.args.get("status"):
+        query = query.filter(Refund.status == RefundStatus(request.args["status"]))
+    if request.args.get("invoice_id"):
+        from uuid import UUID
+
+        query = query.filter(Refund.invoice_id == UUID(request.args["invoice_id"]))
+    query = query.order_by(Refund.created_at.desc())
+    return ok(paginated(query, service.serialize_refund))
+
+
+@bp.get("/billing/transactions")
+@auth_required(*BILLING)
+def list_transactions():
+    query = Transaction.query
+    if request.args.get("status"):
+        query = query.filter(Transaction.status == TransactionStatus(request.args["status"]))
+    if request.args.get("method"):
+        query = query.filter(Transaction.method == PaymentMethod(request.args["method"]))
+    if request.args.get("invoice_id"):
+        from uuid import UUID
+
+        query = query.filter(Transaction.invoice_id == UUID(request.args["invoice_id"]))
+    if request.args.get("date_from"):
+        query = query.filter(Transaction.paid_at >= _date_bound("date_from"))
+    if request.args.get("date_to"):
+        query = query.filter(Transaction.paid_at <= _date_bound("date_to", end_of_day=True))
+    if request.args.get("q"):
+        like = f"%{request.args['q'].strip()}%"
+        query = query.filter(
+            or_(
+                Transaction.reference.ilike(like),
+                Transaction.provider_reference.ilike(like),
+                Transaction.invoice.has(Invoice.invoice_number.ilike(like)),
+            )
+        )
+    query = query.order_by(Transaction.created_at.desc())
+    return ok(paginated(query, service.serialize_transaction))
+
+
+@bp.get("/billing/cash-reconciliations")
+@auth_required(*BILLING)
+def list_cash_reconciliations():
+    query = CashReconciliation.query.order_by(CashReconciliation.business_date.desc())
+    return ok(paginated(query, service.serialize_cash_reconciliation))
 
 
 @bp.get("/invoices/<uuid:invoice_id>/pdf")

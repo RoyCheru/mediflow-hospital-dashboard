@@ -5,6 +5,7 @@ from app.common.enums import (
     AllocationPayer,
     AllocationStatus,
     CashReconciliationStatus,
+    DiscountStatus,
     InvoiceStatus,
     PaymentIntentStatus,
     PaymentMethod,
@@ -51,9 +52,27 @@ class Invoice(BaseModel, TimestampMixin):
     )
     primary_method = db.Column(db.Enum(PaymentMethod, native_enum=False, length=16), nullable=True)
     void_reason = db.Column(db.Text, nullable=True)
+    # Discount workflow: discount_minor is only what is applied. A discount
+    # above the approval threshold waits in discount_requested_minor until an
+    # admin other than the requester decides.
+    discount_reason = db.Column(db.Text, nullable=True)
+    discount_status = db.Column(
+        db.Enum(DiscountStatus, native_enum=False, length=24), nullable=True
+    )
+    discount_requested_minor = db.Column(db.BigInteger, nullable=True)
+    discount_requested_by_id = db.Column(
+        db.Uuid(as_uuid=True), db.ForeignKey("users.id"), nullable=True
+    )
+    discount_decided_by_id = db.Column(
+        db.Uuid(as_uuid=True), db.ForeignKey("users.id"), nullable=True
+    )
+    discount_decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
     issued_at = db.Column(db.DateTime(timezone=True), nullable=True)
     due_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+    patient = db.relationship("PatientProfile", lazy="joined")
+    department = db.relationship("Department", lazy="joined")
+    visit = db.relationship("Visit", lazy="joined")
     lines = db.relationship(
         "InvoiceLine", back_populates="invoice", cascade="all, delete-orphan", lazy="selectin"
     )
@@ -210,6 +229,10 @@ class VoidRequest(BaseModel, TimestampMixin):
     decision_reason = db.Column(db.Text, nullable=True)
     decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+    invoice = db.relationship("Invoice", lazy="joined")
+    requested_by = db.relationship("User", foreign_keys=[requested_by_id], lazy="joined")
+    reviewed_by = db.relationship("User", foreign_keys=[reviewed_by_id], lazy="joined")
+
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())
         super().__init__(**kwargs)
@@ -240,6 +263,13 @@ class Refund(BaseModel, TimestampMixin):
         default=RefundStatus.PENDING,
     )
     decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    invoice = db.relationship("Invoice", lazy="joined")
+    original_transaction = db.relationship(
+        "Transaction", foreign_keys=[original_transaction_id], lazy="joined"
+    )
+    requested_by = db.relationship("User", foreign_keys=[requested_by_id], lazy="joined")
+    approved_by = db.relationship("User", foreign_keys=[approved_by_id], lazy="joined")
 
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())

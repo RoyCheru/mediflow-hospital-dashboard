@@ -169,6 +169,17 @@ def register_cli(app):
         db.session.add(appointment)
         db.session.commit()
 
+        from app.demo_seed import seed_demo_activity
+
+        seed_demo_activity(
+            admin=User.query.filter_by(email="admin@mediflow.test").first(),
+            doctor_user=doctor_user,
+            doctor=doctor,
+            departments=departments,
+            services=services,
+            main_patient=patient,
+        )
+
         click.echo("Demo users created:")
         click.echo("  admin@mediflow.test / Admin12345!")
         click.echo("  doctor@mediflow.test / Doctor12345!")

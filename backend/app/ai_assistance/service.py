@@ -161,9 +161,13 @@ def report_query(query, actor):
 
 
 def no_show_score(patient_id):
+    from app.common.enums import AppointmentSource
     from app.scheduling.models import Appointment
 
-    appointments = Appointment.query.filter_by(patient_id=patient_id).all()
+    appointments = Appointment.query.filter(
+        Appointment.patient_id == patient_id,
+        Appointment.source != AppointmentSource.WALK_IN,
+    ).all()
     total = len(appointments)
     no_shows = sum(1 for item in appointments if item.status.value == "NO_SHOW")
     if total == 0:

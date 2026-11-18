@@ -93,6 +93,29 @@ def create_export():
     )
 
 
+@bp.get("/reports/exports")
+@auth_required(Role.ADMIN)
+def list_exports():
+    from app.common.pagination import paginated
+
+    query = ReportExport.query.order_by(ReportExport.created_at.desc())
+    return ok(
+        paginated(
+            query,
+            lambda item: {
+                "id": str(item.id),
+                "report_key": item.report_key,
+                "format": item.report_format.value,
+                "status": item.status.value,
+                "parameters": item.parameters,
+                "error_message": item.error_message,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+            },
+        )
+    )
+
+
 @bp.get("/reports/exports/<uuid:export_id>")
 @auth_required(Role.ADMIN)
 def get_export(export_id):

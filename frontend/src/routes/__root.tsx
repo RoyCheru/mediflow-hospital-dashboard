@@ -12,7 +12,7 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { AppShell } from "../components/AppShell";
+import { AuthProvider } from "../lib/auth";
 import { Toaster } from "../components/ui/sonner";
 
 function NotFoundComponent() {
@@ -83,7 +83,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { title: "MediFlow — Hospital Management" },
       {
         name: "description",
-        content: "MediFlow hospital admin: patients, appointments, billing, SHA claims and audit.",
+        content:
+          "MediFlow hospital platform: role-based dashboards for patients, doctors, reception, cashiers and admins.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -126,11 +127,11 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <AppShell>
+      <AuthProvider>
+        {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
         <Outlet />
-      </AppShell>
-      <Toaster position="top-right" />
+        <Toaster position="top-right" />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

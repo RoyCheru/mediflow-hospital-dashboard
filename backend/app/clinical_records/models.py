@@ -48,6 +48,9 @@ class Visit(BaseModel, TimestampMixin):
     started_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
     completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+    patient = db.relationship("PatientProfile", lazy="joined")
+    doctor = db.relationship("DoctorProfile", lazy="joined")
+    department = db.relationship("Department", lazy="joined")
     prescriptions = db.relationship("Prescription", back_populates="visit", lazy="dynamic")
     attachments = db.relationship("Attachment", back_populates="visit", lazy="dynamic")
 

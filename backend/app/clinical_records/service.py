@@ -28,12 +28,22 @@ def _iso(value):
 
 
 def serialize_visit(visit, include_clinical=True):
+    patient = getattr(visit, "patient", None)
+    doctor = getattr(visit, "doctor", None)
+    doctor_user = getattr(doctor, "user", None) if doctor is not None else None
+    department = getattr(visit, "department", None)
     payload = {
         "id": str(visit.id),
         "appointment_id": str(visit.appointment_id) if visit.appointment_id else None,
         "patient_id": str(visit.patient_id),
+        "patient_name": " ".join(part for part in (patient.first_name, patient.last_name) if part)
+        if patient is not None
+        else None,
+        "patient_number": getattr(patient, "patient_number", None),
         "doctor_id": str(visit.doctor_id),
+        "doctor_name": doctor_user.full_name if doctor_user is not None else None,
         "department_id": str(visit.department_id) if visit.department_id else None,
+        "department_name": getattr(department, "name", None),
         "vitals": visit.vitals or {},
         "follow_up_date": visit.follow_up_date.isoformat() if visit.follow_up_date else None,
         "ai_summary_approved": visit.ai_summary_approved,
@@ -182,13 +192,33 @@ def update_visit(visit, data, doctor_user):
     ):
         if field in data:
             setattr(visit, field, data[field])
-    record_audit(
-        "visit.update",
-        "visit",
-        visit.id,
-        actor=doctor_user,
-        after={"fields": sorted(data.keys())},
-    )
+    if visit.completed_at is None:
+        record_audit(
+            "visit.update",
+            "visit",
+            visit.id,
+            actor=doctor_user,
+            after={"fields": sorted(data.keys())},
+        )
+    else:
+        # Amending a completed (possibly billed or claimed) visit is allowed,
+        # but recorded distinctly. Only field names are logged, never the
+        # clinical text. Charges are not affected by clinical amendments.
+        from app.billing.models import Invoice
+
+        invoice = Invoice.query.filter_by(visit_id=visit.id).first()
+        record_audit(
+            "visit.amend_after_completion",
+            "visit",
+            visit.id,
+            actor=doctor_user,
+            before={"completed_at": visit.completed_at.isoformat()},
+            after={
+                "fields": sorted(data.keys()),
+                "invoice_id": str(invoice.id) if invoice else None,
+                "invoice_status": invoice.status.value if invoice else None,
+            },
+        )
     db.session.commit()
     return visit
 

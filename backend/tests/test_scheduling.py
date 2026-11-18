@@ -18,19 +18,20 @@ def test_booking_prevents_double_booking(client, tokens, ids):
 def test_queue_check_in_and_visit(client, tokens, ids):
     appointment = book_appointment(client, tokens, ids)
 
-    queue = client.get(
-        f"/api/v1/queue?doctor_id={ids['doctor_id']}&date=2030-01-07",
-        headers=auth(tokens["reception"]),
-    )
-    assert queue.status_code == 200
-    assert any(item["id"] == appointment["id"] for item in queue.get_json()["data"]["items"])
-
     checked_in = client.post(
         f"/api/v1/appointments/{appointment['id']}/check-in",
         headers=auth(tokens["reception"]),
     )
     assert checked_in.status_code == 200
     assert checked_in.get_json()["data"]["status"] == "CHECKED_IN"
+    assert checked_in.get_json()["data"]["arrived_at"] is not None
+
+    queue = client.get(
+        f"/api/v1/queue?doctor_id={ids['doctor_id']}&date=2030-01-07",
+        headers=auth(tokens["reception"]),
+    )
+    assert queue.status_code == 200
+    assert any(item["id"] == appointment["id"] for item in queue.get_json()["data"]["items"])
 
     visit = client.post(
         f"/api/v1/appointments/{appointment['id']}/visits",

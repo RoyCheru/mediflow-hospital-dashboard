@@ -28,6 +28,8 @@ class AuditLog(BaseModel):
     user_agent = db.Column(db.String(512), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow, index=True)
 
+    actor = db.relationship("User", lazy="joined")
+
     def __init__(self, **kwargs):
         kwargs.setdefault("id", uuid4())
         super().__init__(**kwargs)

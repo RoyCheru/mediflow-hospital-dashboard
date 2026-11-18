@@ -1036,7 +1036,7 @@ export const people: Person[] = [
 
 export type AppointmentStatus =
   "SCHEDULED" | "CHECKED_IN" | "IN_CONSULTATION" | "COMPLETED" | "NO_SHOW" | "CANCELLED";
-export type AppointmentSource = "ONLINE" | "RECEPTION" | "WALK_IN";
+export type AppointmentSource = "ONLINE" | "RECEPTION" | "WALK_IN" | "FOLLOW_UP";
 export type Urgency = "ROUTINE" | "URGENT" | "EMERGENCY";
 
 export type Appointment = {

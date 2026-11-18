@@ -1,5 +1,11 @@
-from app.billing.models import Invoice, InvoiceAllocation, Transaction
-from app.billing.service import recompute_invoice
+from app.billing.models import InvoiceAllocation, Transaction
+from app.billing.service import (
+    OPEN_CLAIM_STATUSES,
+    alert_admins,
+    lock_invoice,
+    rebalance_patient_share,
+    recompute_invoice,
+)
 from app.claims.models import Claim, ClaimStatusHistory, EligibilityCheck
 from app.common.audit import record_audit
 from app.common.base import as_utc, utcnow
@@ -49,6 +55,9 @@ def serialize_eligibility(check):
         "status": check.status.value,
         "coverage_limit_minor": check.coverage_limit_minor,
         "consumed_minor": check.consumed_minor,
+        "remaining_coverage_minor": remaining_coverage(check),
+        # BIL-8: the UI prompts for another payment method when SHA cannot pay.
+        "next_action": "create_claim" if is_claimable(check) else "choose_payment_method",
         "provider": check.provider,
         "provider_reference": check.provider_reference,
         "checked_at": _iso(check.checked_at),
@@ -56,9 +65,18 @@ def serialize_eligibility(check):
 
 
 def serialize_claim(claim):
+    patient = getattr(claim, "patient", None)
+    invoice = getattr(claim, "invoice", None)
+    department = getattr(invoice, "department", None) if invoice is not None else None
     return {
         "id": str(claim.id),
         "invoice_id": str(claim.invoice_id),
+        "invoice_number": getattr(invoice, "invoice_number", None),
+        "patient_name": " ".join(part for part in (patient.first_name, patient.last_name) if part)
+        if patient is not None
+        else None,
+        "patient_number": getattr(patient, "patient_number", None),
+        "department_name": getattr(department, "name", None),
         "allocation_id": str(claim.allocation_id) if claim.allocation_id else None,
         "patient_id": str(claim.patient_id),
         "eligibility_check_id": str(claim.eligibility_check_id)
@@ -134,8 +152,85 @@ def run_eligibility_check(invoice, member_reference, actor):
         actor=actor,
         after={"status": check.status.value},
     )
+    db.session.flush()
+    if not is_claimable(check):
+        convert_to_self_pay(invoice, check, actor)
     db.session.commit()
     return check
+
+
+def remaining_coverage(check):
+    """Unused SHA cover from an eligibility check; None means no stated limit."""
+    if check.coverage_limit_minor is None:
+        return None
+    return max(int(check.coverage_limit_minor) - int(check.consumed_minor or 0), 0)
+
+
+def is_claimable(check):
+    return check.status == EligibilityStatus.ACTIVE and remaining_coverage(check) != 0
+
+
+def convert_to_self_pay(invoice, check, actor):
+    """BIL-8: SHA cannot pay, so the outstanding amount becomes the patient's.
+
+    Voids pending SHA allocations that no open claim is using, marks the
+    invoice self-pay and moves the share to the PATIENT allocation. The
+    caller commits.
+    """
+    invoice = lock_invoice(invoice)
+    claimed_allocation_ids = {
+        claim.allocation_id
+        for claim in Claim.query.filter(
+            Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+        )
+    }
+    voided = []
+    for allocation in invoice.allocations:
+        if (
+            allocation.payer == AllocationPayer.SHA
+            and allocation.status == AllocationStatus.PENDING
+            and allocation.id not in claimed_allocation_ids
+        ):
+            allocation.status = AllocationStatus.VOIDED
+            voided.append(str(allocation.id))
+    if invoice.status not in {InvoiceStatus.PAID, InvoiceStatus.VOIDED}:
+        invoice.primary_method = PaymentMethod.SELF_PAY
+    patient_allocation = rebalance_patient_share(invoice)
+    record_audit(
+        "invoice.self_pay_conversion",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        after={
+            "eligibility_check_id": str(check.id),
+            "eligibility_status": check.status.value,
+            "voided_sha_allocation_ids": voided,
+            "patient_share_minor": patient_allocation.amount_minor if patient_allocation else 0,
+        },
+    )
+    return invoice
+
+
+def _ensure_no_open_claim(invoice):
+    open_claim = Claim.query.filter(
+        Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+    ).first()
+    if open_claim is not None:
+        raise conflict(
+            "This invoice already has an open SHA claim",
+            {"claim_id": str(open_claim.id), "status": open_claim.status.value},
+        )
+
+
+def _validate_claim_amount(invoice, amount):
+    """A claim may cover at most what is still owed on the invoice."""
+    if amount <= 0:
+        raise bad_request("Claim amount must be greater than zero")
+    if amount > invoice.balance_minor:
+        raise bad_request(
+            "Claim amount exceeds the outstanding balance",
+            {"balance_minor": invoice.balance_minor},
+        )
 
 
 def create_claim(invoice, data, actor):
@@ -151,17 +246,27 @@ def create_claim(invoice, data, actor):
             raise not_found("Eligibility check not found")
         if check.invoice_id != invoice.id:
             raise bad_request("Eligibility check belongs to a different invoice")
+        if not is_claimable(check):
+            convert_to_self_pay(invoice, check, actor)
+            db.session.commit()
     if check is None:
         check = run_eligibility_check(invoice, data.get("member_reference"), actor)
-    if check.status != EligibilityStatus.ACTIVE:
+    if not is_claimable(check):
+        # The conversion to self-pay is already committed; the error tells the
+        # UI to collect the patient share by another method (BIL-8).
         raise conflict(
-            "SHA member is not eligible for a claim",
+            "SHA cannot cover this invoice; collect payment by another method",
             {
                 "eligibility_check_id": str(check.id),
                 "status": check.status.value,
+                "remaining_coverage_minor": remaining_coverage(check),
+                "next_action": "choose_payment_method",
             },
         )
 
+    # Eligibility checks commit, so take the lock only after them.
+    invoice = lock_invoice(invoice)
+    _ensure_no_open_claim(invoice)
     amount = data.get("amount_minor")
     if amount is None:
         sha_allocation = next(
@@ -173,10 +278,11 @@ def create_claim(invoice, data, actor):
             None,
         )
         amount = sha_allocation.amount_minor if sha_allocation else invoice.balance_minor
-    if amount <= 0:
-        raise bad_request("Claim amount must be greater than zero")
-    if amount > invoice.total_minor:
-        raise bad_request("Claim amount exceeds invoice total")
+    cover = remaining_coverage(check)
+    if cover is not None and amount > cover:
+        # BIL-7: SHA pays up to the remaining cover; the rest is the patient's co-pay.
+        amount = cover
+    _validate_claim_amount(invoice, amount)
 
     allocation = next(
         (
@@ -192,8 +298,13 @@ def create_claim(invoice, data, actor):
             payer=AllocationPayer.SHA,
             amount_minor=amount,
         )
+        invoice.allocations.append(allocation)
         db.session.add(allocation)
         db.session.flush()
+    else:
+        allocation.amount_minor = amount
+        allocation.status = AllocationStatus.PENDING
+    rebalance_patient_share(invoice)
 
     gateway = get_sha_gateway()
     result = gateway.submit_claim(
@@ -250,6 +361,7 @@ def create_claim(invoice, data, actor):
 
 
 def _settle_claim(claim, actor, external_reference=None):
+    invoice = lock_invoice(claim.invoice_id)
     existing = Transaction.query.filter_by(
         reference=claim.external_reference or f"CLAIM-{claim.id}"
     ).first()
@@ -271,10 +383,62 @@ def _settle_claim(claim, actor, external_reference=None):
         allocation = InvoiceAllocation.query.get(claim.allocation_id)
         if allocation is not None:
             allocation.status = AllocationStatus.PAID
-    invoice = Invoice.query.get(claim.invoice_id)
-    if invoice is not None:
-        db.session.flush()
-        recompute_invoice(invoice)
+    db.session.flush()
+    recompute_invoice(invoice)
+
+
+def _apply_claim_outcome(claim, actor):
+    """Move whatever SHA will not pay onto the patient's share.
+
+    Rejected or cancelled claims release the SHA allocation; an approval or
+    payment below the claimed amount shrinks it to the approved amount. The
+    patient allocation is rebalanced and billing is alerted when the
+    patient now owes more.
+    """
+    if claim.allocation_id is None:
+        return
+    invoice = lock_invoice(claim.invoice_id)
+    allocation = InvoiceAllocation.query.get(claim.allocation_id)
+    if allocation is None:
+        return
+    if claim.status in {ClaimStatus.REJECTED, ClaimStatus.CANCELLED}:
+        allocation.status = AllocationStatus.VOIDED
+    elif claim.status in {ClaimStatus.APPROVED, ClaimStatus.PAID}:
+        allocation.amount_minor = claim.approved_amount_minor
+    else:
+        return
+    before = next(
+        (
+            item.amount_minor
+            for item in invoice.allocations
+            if item.payer == AllocationPayer.PATIENT and item.status != AllocationStatus.VOIDED
+        ),
+        0,
+    )
+    patient_allocation = rebalance_patient_share(invoice)
+    after = patient_allocation.amount_minor if patient_allocation else 0
+    if after > before:
+        alert_admins(
+            "claim_patient_share_alert",
+            {
+                "claim_id": str(claim.id),
+                "status": claim.status.value,
+                "invoice_number": invoice.invoice_number,
+                "patient_share": f"{after / 100:.2f}",
+            },
+        )
+        record_audit(
+            "invoice.patient_share_increase",
+            "invoice",
+            invoice.id,
+            actor=actor,
+            before={"patient_share_minor": before},
+            after={
+                "patient_share_minor": after,
+                "claim_id": str(claim.id),
+                "claim_status": claim.status.value,
+            },
+        )
 
 
 def transition_claim(claim, data, actor):
@@ -286,11 +450,14 @@ def transition_claim(claim, data, actor):
     previous = claim.status
     claim.status = new_status
     if new_status == ClaimStatus.APPROVED:
-        claim.approved_amount_minor = (
+        approved = (
             data.get("approved_amount_minor")
             if data.get("approved_amount_minor") is not None
             else claim.claimed_amount_minor
         )
+        if approved > claim.claimed_amount_minor:
+            raise bad_request("Approved amount cannot exceed the claimed amount")
+        claim.approved_amount_minor = approved
         claim.decided_at = utcnow()
     if new_status == ClaimStatus.REJECTED:
         claim.rejection_reason = data.get("rejection_reason") or data.get("note")
@@ -300,6 +467,7 @@ def transition_claim(claim, data, actor):
         if claim.approved_amount_minor is None:
             claim.approved_amount_minor = claim.claimed_amount_minor
         _settle_claim(claim, actor, data.get("external_reference"))
+    _apply_claim_outcome(claim, actor)
     if data.get("external_reference"):
         claim.external_reference = data["external_reference"]
     db.session.add(
@@ -326,10 +494,12 @@ def transition_claim(claim, data, actor):
 def resubmit_claim(claim, data, actor):
     if claim.status != ClaimStatus.REJECTED:
         raise conflict("Only rejected claims can be resubmitted")
-    invoice = Invoice.query.get(claim.invoice_id)
-    if invoice is None:
-        raise not_found("Invoice not found")
+    invoice = lock_invoice(claim.invoice_id)
+    if invoice.status == InvoiceStatus.VOIDED:
+        raise conflict("Cannot resubmit a claim for a voided invoice")
+    _ensure_no_open_claim(invoice)
     amount = data.get("amount_minor") or claim.claimed_amount_minor
+    _validate_claim_amount(invoice, amount)
     gateway = get_sha_gateway()
     result = gateway.submit_claim(
         {
@@ -340,6 +510,12 @@ def resubmit_claim(claim, data, actor):
             "resubmission": True,
         }
     )
+    if claim.allocation_id:
+        allocation = InvoiceAllocation.query.get(claim.allocation_id)
+        if allocation is not None:
+            allocation.amount_minor = amount
+            allocation.status = AllocationStatus.PENDING
+            rebalance_patient_share(invoice)
     replacement = Claim(
         invoice_id=claim.invoice_id,
         allocation_id=claim.allocation_id,
@@ -391,7 +567,7 @@ def aging_report():
     ).all()
     buckets = {"current": [], "14_days": [], "30_days": [], "60_days": []}
     for claim in open_claims:
-        age = (now - claim.submitted_at).days if claim.submitted_at else 0
+        age = (now - as_utc(claim.submitted_at)).days if claim.submitted_at else 0
         if age >= 60:
             buckets["60_days"].append((claim, age))
         elif age >= 30:

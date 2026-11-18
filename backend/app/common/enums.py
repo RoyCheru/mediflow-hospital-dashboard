@@ -54,6 +54,7 @@ class AppointmentSource(str, Enum):
     ONLINE = "ONLINE"
     RECEPTION = "RECEPTION"
     WALK_IN = "WALK_IN"
+    FOLLOW_UP = "FOLLOW_UP"
 
 
 class Urgency(str, Enum):
@@ -87,6 +88,12 @@ class InvoiceStatus(str, Enum):
     PAID = "PAID"
     VOIDED = "VOIDED"
     REFUNDED = "REFUNDED"
+
+
+class DiscountStatus(str, Enum):
+    APPLIED = "APPLIED"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    REJECTED = "REJECTED"
 
 
 class PaymentMethod(str, Enum):

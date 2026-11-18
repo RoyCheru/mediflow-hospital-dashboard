@@ -280,7 +280,7 @@ docker compose up --build
 This starts the API, worker, frontend, PostgreSQL and Redis. Then seed demo data:
 
 ```bash
-docker compose exec backend flask seed-demo
+docker compose exec backend flask seed
 ```
 
 ### 3. Or run locally
@@ -294,7 +294,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 flask db upgrade                 # create tables
-flask seed-demo                  # load demo data
+flask seed                       # load demo data
 flask run                        # http://localhost:5000
 ```
 
@@ -309,8 +309,9 @@ celery -A app.celery_app worker --loglevel=info
 
 ```bash
 cd frontend
+cp .env.example .env             # set VITE_API_URL=http://localhost:5000/api/v1
 npm install
-npm run dev                      # http://localhost:3000
+npm run dev                      # http://localhost:8080
 ```
 
 ### 4. Test M-Pesa callbacks locally
@@ -342,25 +343,26 @@ Copy `.env.example` to `.env`. Never commit real secrets.
 | `TWILIO_WHATSAPP_FROM` | Approved WhatsApp sender |
 | `EMAIL_API_KEY` / `EMAIL_FROM` | Transactional email provider key and sender address |
 | `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_ENDPOINT` | Object storage for lab reports and PDFs |
-| `FRONTEND_URL` | Allowed CORS origin |
-| `NEXT_PUBLIC_API_URL` | API base URL used by the frontend |
+| `CORS_ORIGINS` | Explicit frontend origin allowed by Flask-CORS (comma-separated in production) |
+| `VITE_API_URL` | API base URL used by the frontend (`frontend/.env`) |
 
 ## Demo Accounts
 
-`flask seed-demo` creates sample hospital data (departments, doctors, patients, appointments, invoices, claims and transactions) and one account per role.
+`flask seed` creates sample hospital data (departments, doctors, patients, appointments, invoices, claims and transactions) and one account per role.
 
 | Role | Email | Password |
 |---|---|---|
-| Admin | admin@mediflow.demo | `ChangeMe123!` |
-| Doctor | doctor@mediflow.demo | `ChangeMe123!` |
-| Receptionist | reception@mediflow.demo | `ChangeMe123!` |
-| Patient | patient@mediflow.demo | `ChangeMe123!` |
+| Admin | admin@mediflow.test | `Admin12345!` |
+| Doctor | doctor@mediflow.test | `Doctor12345!` |
+| Receptionist | reception@mediflow.test | `Reception12345!` |
+| Cashier | cashier@mediflow.test | `Cashier12345!` |
+| Patient | patient@mediflow.test | `Patient12345!` |
 
 > These credentials are for local development and the public demo only. All data is fictional. Never seed or reuse them in a real deployment.
 
 ## API Overview
 
-Interactive OpenAPI documentation is served at `/api/docs` when the backend is running. Main resource groups:
+The API is mounted under `/api/v1`. The admin integration contract and discovery notes live in `docs/integration/`. Main resource groups:
 
 | Area | Example endpoints |
 |---|---|
@@ -385,11 +387,14 @@ Every endpoint declares the roles allowed to call it, and access checks run on t
 cd backend
 pytest --cov=app
 
-# Frontend unit tests
+# Frontend unit tests, lint, type-check and build
 cd frontend
 npm test
+npm run lint
+npx tsc --noEmit
+npm run build
 
-# End-to-end tests for critical flows
+# End-to-end tests for critical flows (starts a seeded SQLite backend)
 npm run test:e2e
 ```
 

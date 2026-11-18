@@ -36,8 +36,15 @@ def create_visit_flow(client, tokens, ids):
     return appointment, response.get_json()["data"]
 
 
+def complete_visit(client, tokens, visit_id):
+    response = client.post(f"/api/v1/visits/{visit_id}/complete", headers=auth(tokens["doctor"]))
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()["data"]
+
+
 def create_invoice_flow(client, tokens, ids):
     appointment, visit = create_visit_flow(client, tokens, ids)
+    complete_visit(client, tokens, visit["id"])
     response = client.post(
         f"/api/v1/visits/{visit['id']}/invoices",
         json={},

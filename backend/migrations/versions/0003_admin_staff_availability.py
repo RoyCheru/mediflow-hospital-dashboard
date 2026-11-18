@@ -1,0 +1,167 @@
+"""Admin staff availability ownership and appointment filter indexes.
+
+Revision ID: 0003_admin_staff_availability
+Revises: 0002_walk_in_appointment_model
+Create Date: 2026-11-16
+
+The initial revision builds from current metadata, so a fresh database already
+has these columns/constraints. This migration is idempotent for older databases.
+
+Repaired on 2026-11-17 (before merge): the first draft added ``user_id``
+without its foreign key to ``users`` and without the single-column
+``ix_availability_*_user_id`` indexes declared on the model. Every step checks
+the live schema first, so re-running the upgrade on a database that applied the
+first draft only adds what is missing.
+"""
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "0003_admin_staff_availability"
+down_revision = "0002_walk_in_appointment_model"
+branch_labels = None
+depends_on = None
+
+RULE_OWNER_CHECK = (
+    "(doctor_id IS NOT NULL AND user_id IS NULL) OR (doctor_id IS NULL AND user_id IS NOT NULL)"
+)
+EXCEPTION_OWNER_CHECK = RULE_OWNER_CHECK
+
+
+def _columns(bind, table):
+    return {column["name"]: column for column in sa.inspect(bind).get_columns(table)}
+
+
+def _checks(bind, table):
+    return {constraint["name"] for constraint in sa.inspect(bind).get_check_constraints(table)}
+
+
+def _indexes(bind, table):
+    return {index["name"] for index in sa.inspect(bind).get_indexes(table)}
+
+
+def _user_fks(bind, table):
+    return [
+        fk
+        for fk in sa.inspect(bind).get_foreign_keys(table)
+        if fk.get("referred_table") == "users" and fk.get("constrained_columns") == ["user_id"]
+    ]
+
+
+def _fk_name(table):
+    return f"fk_{table}_user_id_users"
+
+
+def upgrade():
+    bind = op.get_bind()
+
+    for table, check_name, check_sql, index_name in (
+        (
+            "availability_rules",
+            "ck_availability_rules_owner",
+            RULE_OWNER_CHECK,
+            "ix_availability_rules_user_weekday",
+        ),
+        (
+            "availability_exceptions",
+            "ck_availability_exceptions_owner",
+            EXCEPTION_OWNER_CHECK,
+            "ix_availability_exceptions_user_start",
+        ),
+    ):
+        columns = _columns(bind, table)
+        checks = _checks(bind, table)
+        with op.batch_alter_table(table) as batch:
+            if "user_id" not in columns:
+                batch.add_column(sa.Column("user_id", sa.Uuid(as_uuid=True), nullable=True))
+            if columns["doctor_id"].get("nullable") is False:
+                batch.alter_column(
+                    "doctor_id",
+                    existing_type=sa.Uuid(as_uuid=True),
+                    nullable=True,
+                )
+            if check_name not in checks:
+                batch.create_check_constraint(check_name, check_sql)
+
+        if not _user_fks(bind, table):
+            with op.batch_alter_table(table) as batch:
+                batch.create_foreign_key(_fk_name(table), "users", ["user_id"], ["id"])
+
+        indexes = _indexes(bind, table)
+        if f"ix_{table}_user_id" not in indexes:
+            op.create_index(f"ix_{table}_user_id", table, ["user_id"])
+        if index_name not in indexes:
+            if table == "availability_rules":
+                op.create_index(index_name, table, ["user_id", "weekday"])
+            else:
+                op.create_index(index_name, table, ["user_id", "start_at"])
+
+    appointment_indexes = _indexes(bind, "appointments")
+    if "ix_appointments_department_date" not in appointment_indexes:
+        op.create_index(
+            "ix_appointments_department_date",
+            "appointments",
+            ["department_id", "scheduled_start"],
+        )
+    if "ix_appointments_source_created" not in appointment_indexes:
+        op.create_index(
+            "ix_appointments_source_created",
+            "appointments",
+            ["source", "created_at"],
+        )
+
+
+def downgrade():
+    bind = op.get_bind()
+
+    for table in ("availability_rules", "availability_exceptions"):
+        columns = _columns(bind, table)
+        if "user_id" in columns:
+            count = bind.execute(
+                sa.text(f"SELECT count(*) FROM {table} WHERE user_id IS NOT NULL")
+            ).scalar()
+            if count:
+                raise RuntimeError(
+                    f"Cannot downgrade: {count} {table} rows belong to non-doctor "
+                    "staff. Remove or migrate those working-hours records first."
+                )
+
+    for table, check_name, index_name in (
+        (
+            "availability_rules",
+            "ck_availability_rules_owner",
+            "ix_availability_rules_user_weekday",
+        ),
+        (
+            "availability_exceptions",
+            "ck_availability_exceptions_owner",
+            "ix_availability_exceptions_user_start",
+        ),
+    ):
+        columns = _columns(bind, table)
+        checks = _checks(bind, table)
+        indexes = _indexes(bind, table)
+        if index_name in indexes:
+            op.drop_index(index_name, table_name=table)
+        if f"ix_{table}_user_id" in indexes:
+            op.drop_index(f"ix_{table}_user_id", table_name=table)
+        named_fks = [fk["name"] for fk in _user_fks(bind, table) if fk.get("name")]
+        with op.batch_alter_table(table) as batch:
+            for fk_name in named_fks:
+                batch.drop_constraint(fk_name, type_="foreignkey")
+            if check_name in checks:
+                batch.drop_constraint(check_name, type_="check")
+            if "user_id" in columns:
+                batch.drop_column("user_id")
+            if columns["doctor_id"].get("nullable") is True:
+                batch.alter_column(
+                    "doctor_id",
+                    existing_type=sa.Uuid(as_uuid=True),
+                    nullable=False,
+                )
+
+    appointment_indexes = _indexes(bind, "appointments")
+    if "ix_appointments_department_date" in appointment_indexes:
+        op.drop_index("ix_appointments_department_date", table_name="appointments")
+    if "ix_appointments_source_created" in appointment_indexes:
+        op.drop_index("ix_appointments_source_created", table_name="appointments")
