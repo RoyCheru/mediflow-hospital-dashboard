@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { AuthField, AuthPanel } from "@/components/AuthPanel";
 import { useAuth } from "@/lib/auth";
 import { errorMessage } from "@/lib/api/client";
+import { homeForRole } from "@/lib/roleGuard";
 
 export const Route = createFileRoute("/auth/login")({
   head: () => ({ meta: [{ title: "Sign in — MediFlow" }] }),
@@ -21,7 +22,7 @@ function LoginPage() {
   useEffect(() => {
     if (!user) return;
     navigate({
-      to: user.role === "ADMIN" ? "/admin" : "/unauthorized",
+      to: homeForRole(user.role),
       replace: true,
     });
   }, [navigate, user]);
@@ -33,7 +34,7 @@ function LoginPage() {
     try {
       const loggedIn = await login(email.trim(), password);
       navigate({
-        to: loggedIn.role === "ADMIN" ? "/admin" : "/unauthorized",
+        to: homeForRole(loggedIn.role),
         replace: true,
       });
     } catch (submitError) {
