@@ -673,7 +673,7 @@ def handle_mpesa_callback(payload):
             )
         if problem:
             intent.status = PaymentIntentStatus.UNCONFIRMED
-            _alert_admins(
+            alert_admins(
                 "mpesa_failed_alert",
                 {
                     "checkout_id": checkout_id or "",
@@ -700,7 +700,7 @@ def handle_mpesa_callback(payload):
             )
     elif result_code in {1032, 1037, 2001}:
         intent.status = PaymentIntentStatus.UNCONFIRMED
-        _alert_admins(
+        alert_admins(
             "mpesa_failed_alert",
             {
                 "checkout_id": checkout_id or "",
@@ -710,7 +710,7 @@ def handle_mpesa_callback(payload):
         )
     else:
         intent.status = PaymentIntentStatus.FAILED
-        _alert_admins(
+        alert_admins(
             "mpesa_failed_alert",
             {
                 "checkout_id": checkout_id or "",
@@ -966,7 +966,7 @@ def cash_reconciliation(data, actor):
         after={"expected": expected, "counted": counted, "variance": variance},
     )
     if variance != 0:
-        _alert_admins(
+        alert_admins(
             "cash_variance_alert",
             {
                 "business_date": business_date.isoformat(),
@@ -977,7 +977,9 @@ def cash_reconciliation(data, actor):
     return item
 
 
-def _alert_admins(template_key, payload):
+def alert_admins(template_key, payload):
+    """Queue an in-app notification for every active admin."""
+
     from app.auth.models import User
     from app.common.enums import NotificationChannel, Role, UserStatus
     from app.notifications.models import Notification

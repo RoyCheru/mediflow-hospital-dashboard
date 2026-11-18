@@ -69,6 +69,12 @@ DEFAULT_TEMPLATES = [
         "M-Pesa payment needs attention",
         "M-Pesa payment {checkout_id} for invoice {invoice_id} is {status}.",
     ),
+    (
+        "claim_patient_share_alert",
+        "Patient balance increased after SHA decision",
+        "Claim {claim_id} is {status}; the patient now owes KES {patient_share} "
+        "on invoice {invoice_number}.",
+    ),
 ]
 
 

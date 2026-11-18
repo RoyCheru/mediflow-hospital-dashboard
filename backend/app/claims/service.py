@@ -1,6 +1,7 @@
 from app.billing.models import InvoiceAllocation, Transaction
 from app.billing.service import (
     OPEN_CLAIM_STATUSES,
+    alert_admins,
     lock_invoice,
     rebalance_patient_share,
     recompute_invoice,
@@ -386,6 +387,60 @@ def _settle_claim(claim, actor, external_reference=None):
     recompute_invoice(invoice)
 
 
+def _apply_claim_outcome(claim, actor):
+    """Move whatever SHA will not pay onto the patient's share.
+
+    Rejected or cancelled claims release the SHA allocation; an approval or
+    payment below the claimed amount shrinks it to the approved amount. The
+    patient allocation is rebalanced and billing is alerted when the
+    patient now owes more.
+    """
+    if claim.allocation_id is None:
+        return
+    invoice = lock_invoice(claim.invoice_id)
+    allocation = InvoiceAllocation.query.get(claim.allocation_id)
+    if allocation is None:
+        return
+    if claim.status in {ClaimStatus.REJECTED, ClaimStatus.CANCELLED}:
+        allocation.status = AllocationStatus.VOIDED
+    elif claim.status in {ClaimStatus.APPROVED, ClaimStatus.PAID}:
+        allocation.amount_minor = claim.approved_amount_minor
+    else:
+        return
+    before = next(
+        (
+            item.amount_minor
+            for item in invoice.allocations
+            if item.payer == AllocationPayer.PATIENT and item.status != AllocationStatus.VOIDED
+        ),
+        0,
+    )
+    patient_allocation = rebalance_patient_share(invoice)
+    after = patient_allocation.amount_minor if patient_allocation else 0
+    if after > before:
+        alert_admins(
+            "claim_patient_share_alert",
+            {
+                "claim_id": str(claim.id),
+                "status": claim.status.value,
+                "invoice_number": invoice.invoice_number,
+                "patient_share": f"{after / 100:.2f}",
+            },
+        )
+        record_audit(
+            "invoice.patient_share_increase",
+            "invoice",
+            invoice.id,
+            actor=actor,
+            before={"patient_share_minor": before},
+            after={
+                "patient_share_minor": after,
+                "claim_id": str(claim.id),
+                "claim_status": claim.status.value,
+            },
+        )
+
+
 def transition_claim(claim, data, actor):
     new_status = data["status"]
     if new_status == claim.status:
@@ -395,11 +450,14 @@ def transition_claim(claim, data, actor):
     previous = claim.status
     claim.status = new_status
     if new_status == ClaimStatus.APPROVED:
-        claim.approved_amount_minor = (
+        approved = (
             data.get("approved_amount_minor")
             if data.get("approved_amount_minor") is not None
             else claim.claimed_amount_minor
         )
+        if approved > claim.claimed_amount_minor:
+            raise bad_request("Approved amount cannot exceed the claimed amount")
+        claim.approved_amount_minor = approved
         claim.decided_at = utcnow()
     if new_status == ClaimStatus.REJECTED:
         claim.rejection_reason = data.get("rejection_reason") or data.get("note")
@@ -409,6 +467,7 @@ def transition_claim(claim, data, actor):
         if claim.approved_amount_minor is None:
             claim.approved_amount_minor = claim.claimed_amount_minor
         _settle_claim(claim, actor, data.get("external_reference"))
+    _apply_claim_outcome(claim, actor)
     if data.get("external_reference"):
         claim.external_reference = data["external_reference"]
     db.session.add(
@@ -451,6 +510,12 @@ def resubmit_claim(claim, data, actor):
             "resubmission": True,
         }
     )
+    if claim.allocation_id:
+        allocation = InvoiceAllocation.query.get(claim.allocation_id)
+        if allocation is not None:
+            allocation.amount_minor = amount
+            allocation.status = AllocationStatus.PENDING
+            rebalance_patient_share(invoice)
     replacement = Claim(
         invoice_id=claim.invoice_id,
         allocation_id=claim.allocation_id,

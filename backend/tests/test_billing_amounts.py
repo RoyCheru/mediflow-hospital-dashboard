@@ -189,3 +189,91 @@ def test_partial_claim_assigns_the_remainder_to_the_patient(client, tokens, ids)
     assert active["SHA"]["amount_minor"] == 300000
     assert active["PATIENT"]["amount_minor"] == invoice["total_minor"] - 300000
     assert active["PATIENT"]["status"] == "PENDING"
+
+
+def _submit_claim(client, tokens, invoice_id, amount=None):
+    body = {"member_reference": "SHA-DEMO-ACTIVE"}
+    if amount is not None:
+        body["amount_minor"] = amount
+    response = client.post(
+        f"/api/v1/invoices/{invoice_id}/claims", json=body, headers=auth(tokens["reception"])
+    )
+    assert response.status_code == 201, response.get_json()
+    return response.get_json()["data"]
+
+
+def _move_claim(client, tokens, claim_id, status, **extra):
+    return client.post(
+        f"/api/v1/claims/{claim_id}/status",
+        json={"status": status, **extra},
+        headers=auth(tokens["admin"]),
+    )
+
+
+def test_rejected_claim_moves_the_whole_amount_to_the_patient(client, tokens, ids):
+    from app.audit.models import AuditLog
+    from app.notifications.models import Notification
+
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    claim = _submit_claim(client, tokens, invoice["id"])
+    rejected = _move_claim(client, tokens, claim["id"], "REJECTED", rejection_reason="Not covered")
+    assert rejected.status_code == 200, rejected.get_json()
+
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert set(active) == {"PATIENT"}
+    assert active["PATIENT"]["amount_minor"] == invoice["total_minor"]
+    assert Notification.query.filter_by(template_key="claim_patient_share_alert").count() >= 1
+    assert AuditLog.query.filter_by(action="invoice.patient_share_increase").count() == 1
+
+
+def test_partial_approval_shortfall_is_owed_by_the_patient_until_paid(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    total = invoice["total_minor"]
+    claim = _submit_claim(client, tokens, invoice["id"])
+    assert _move_claim(client, tokens, claim["id"], "UNDER_REVIEW").status_code == 200
+    approved = _move_claim(
+        client, tokens, claim["id"], "APPROVED", approved_amount_minor=total - 100000
+    )
+    assert approved.status_code == 200, approved.get_json()
+
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert active["SHA"]["amount_minor"] == total - 100000
+    assert active["PATIENT"]["amount_minor"] == 100000
+
+    assert _move_claim(client, tokens, claim["id"], "PAID").status_code == 200
+    updated, active = _allocations(client, tokens, invoice["id"])
+    assert updated["status"] == "PARTIALLY_PAID"
+    assert updated["balance_minor"] == 100000
+    assert active["SHA"]["status"] == "PAID"
+    assert active["PATIENT"]["status"] == "PENDING"
+
+    paid = client.post(
+        f"/api/v1/invoices/{invoice['id']}/transactions",
+        json={"method": "CASH", "amount_minor": 100000},
+        headers=auth(tokens["cashier"]),
+    )
+    assert paid.status_code == 201, paid.get_json()
+    updated, _ = _allocations(client, tokens, invoice["id"])
+    assert updated["status"] == "PAID"
+
+
+def test_approved_amount_cannot_exceed_claimed(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    claim = _submit_claim(client, tokens, invoice["id"], amount=200000)
+    response = _move_claim(client, tokens, claim["id"], "APPROVED", approved_amount_minor=300000)
+    assert response.status_code == 400
+
+
+def test_resubmitted_claim_takes_the_share_back_from_the_patient(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    claim = _submit_claim(client, tokens, invoice["id"])
+    _move_claim(client, tokens, claim["id"], "REJECTED", rejection_reason="Missing documents")
+    resubmitted = client.post(
+        f"/api/v1/claims/{claim['id']}/resubmissions",
+        json={"note": "Documents attached"},
+        headers=auth(tokens["admin"]),
+    )
+    assert resubmitted.status_code == 201, resubmitted.get_json()
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert set(active) == {"SHA"}
+    assert active["SHA"]["amount_minor"] == invoice["total_minor"]
