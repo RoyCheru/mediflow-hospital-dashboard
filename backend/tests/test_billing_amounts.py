@@ -85,3 +85,66 @@ def test_amending_a_completed_visit_is_allowed_and_audited(client, tokens, ids):
         f"/api/v1/invoices/{invoice['id']}", headers=auth(tokens["cashier"])
     ).get_json()["data"]
     assert unchanged["total_minor"] == invoice["total_minor"]
+
+
+def _eligibility(client, tokens, invoice_id, member):
+    return client.post(
+        f"/api/v1/invoices/{invoice_id}/claims/eligibility-check",
+        json={"member_reference": member},
+        headers=auth(tokens["reception"]),
+    )
+
+
+def _allocations(client, tokens, invoice_id):
+    invoice = client.get(
+        f"/api/v1/invoices/{invoice_id}", headers=auth(tokens["cashier"])
+    ).get_json()["data"]
+    return invoice, {
+        item["payer"]: item for item in invoice["allocations"] if item["status"] != "VOIDED"
+    }
+
+
+def test_inactive_sha_converts_the_invoice_to_self_pay(client, tokens, ids):
+    from app.audit.models import AuditLog
+
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    check = _eligibility(client, tokens, invoice["id"], "SHA-DEMO-INACTIVE")
+    assert check.status_code == 201
+    assert check.get_json()["data"]["next_action"] == "choose_payment_method"
+
+    updated, active = _allocations(client, tokens, invoice["id"])
+    assert updated["primary_method"] == "SELF_PAY"
+    assert set(active) == {"PATIENT"}
+    assert active["PATIENT"]["amount_minor"] == invoice["total_minor"]
+    assert AuditLog.query.filter_by(action="invoice.self_pay_conversion").count() == 1
+
+
+def test_claim_on_exhausted_cover_returns_next_action_and_keeps_conversion(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    response = client.post(
+        f"/api/v1/invoices/{invoice['id']}/claims",
+        json={"member_reference": "SHA-DEMO-EXHAUSTED"},
+        headers=auth(tokens["reception"]),
+    )
+    assert response.status_code == 409
+    details = response.get_json()["error"]["details"]
+    assert details["next_action"] == "choose_payment_method"
+    assert details["status"] == "LIMIT_EXHAUSTED"
+    # The conversion was committed even though the request failed.
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert active["PATIENT"]["amount_minor"] == invoice["total_minor"]
+
+
+def test_active_cover_claims_the_balance_with_no_patient_share(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    check = _eligibility(client, tokens, invoice["id"], "SHA-DEMO-ACTIVE").get_json()["data"]
+    assert check["next_action"] == "create_claim"
+    claim = client.post(
+        f"/api/v1/invoices/{invoice['id']}/claims",
+        json={"eligibility_check_id": check["id"]},
+        headers=auth(tokens["reception"]),
+    )
+    assert claim.status_code == 201, claim.get_json()
+    assert claim.get_json()["data"]["claimed_amount_minor"] == invoice["total_minor"]
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert set(active) == {"SHA"}

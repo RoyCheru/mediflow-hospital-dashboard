@@ -1,5 +1,10 @@
 from app.billing.models import InvoiceAllocation, Transaction
-from app.billing.service import OPEN_CLAIM_STATUSES, lock_invoice, recompute_invoice
+from app.billing.service import (
+    OPEN_CLAIM_STATUSES,
+    lock_invoice,
+    rebalance_patient_share,
+    recompute_invoice,
+)
 from app.claims.models import Claim, ClaimStatusHistory, EligibilityCheck
 from app.common.audit import record_audit
 from app.common.base import as_utc, utcnow
@@ -49,6 +54,9 @@ def serialize_eligibility(check):
         "status": check.status.value,
         "coverage_limit_minor": check.coverage_limit_minor,
         "consumed_minor": check.consumed_minor,
+        "remaining_coverage_minor": remaining_coverage(check),
+        # BIL-8: the UI prompts for another payment method when SHA cannot pay.
+        "next_action": "create_claim" if is_claimable(check) else "choose_payment_method",
         "provider": check.provider,
         "provider_reference": check.provider_reference,
         "checked_at": _iso(check.checked_at),
@@ -143,8 +151,63 @@ def run_eligibility_check(invoice, member_reference, actor):
         actor=actor,
         after={"status": check.status.value},
     )
+    db.session.flush()
+    if not is_claimable(check):
+        convert_to_self_pay(invoice, check, actor)
     db.session.commit()
     return check
+
+
+def remaining_coverage(check):
+    """Unused SHA cover from an eligibility check; None means no stated limit."""
+    if check.coverage_limit_minor is None:
+        return None
+    return max(int(check.coverage_limit_minor) - int(check.consumed_minor or 0), 0)
+
+
+def is_claimable(check):
+    return check.status == EligibilityStatus.ACTIVE and remaining_coverage(check) != 0
+
+
+def convert_to_self_pay(invoice, check, actor):
+    """BIL-8: SHA cannot pay, so the outstanding amount becomes the patient's.
+
+    Voids pending SHA allocations that no open claim is using, marks the
+    invoice self-pay and moves the share to the PATIENT allocation. The
+    caller commits.
+    """
+    invoice = lock_invoice(invoice)
+    claimed_allocation_ids = {
+        claim.allocation_id
+        for claim in Claim.query.filter(
+            Claim.invoice_id == invoice.id, Claim.status.in_(OPEN_CLAIM_STATUSES)
+        )
+    }
+    voided = []
+    for allocation in invoice.allocations:
+        if (
+            allocation.payer == AllocationPayer.SHA
+            and allocation.status == AllocationStatus.PENDING
+            and allocation.id not in claimed_allocation_ids
+        ):
+            allocation.status = AllocationStatus.VOIDED
+            voided.append(str(allocation.id))
+    if invoice.status not in {InvoiceStatus.PAID, InvoiceStatus.VOIDED}:
+        invoice.primary_method = PaymentMethod.SELF_PAY
+    patient_allocation = rebalance_patient_share(invoice)
+    record_audit(
+        "invoice.self_pay_conversion",
+        "invoice",
+        invoice.id,
+        actor=actor,
+        after={
+            "eligibility_check_id": str(check.id),
+            "eligibility_status": check.status.value,
+            "voided_sha_allocation_ids": voided,
+            "patient_share_minor": patient_allocation.amount_minor if patient_allocation else 0,
+        },
+    )
+    return invoice
 
 
 def _ensure_no_open_claim(invoice):
@@ -182,14 +245,21 @@ def create_claim(invoice, data, actor):
             raise not_found("Eligibility check not found")
         if check.invoice_id != invoice.id:
             raise bad_request("Eligibility check belongs to a different invoice")
+        if not is_claimable(check):
+            convert_to_self_pay(invoice, check, actor)
+            db.session.commit()
     if check is None:
         check = run_eligibility_check(invoice, data.get("member_reference"), actor)
-    if check.status != EligibilityStatus.ACTIVE:
+    if not is_claimable(check):
+        # The conversion to self-pay is already committed; the error tells the
+        # UI to collect the patient share by another method (BIL-8).
         raise conflict(
-            "SHA member is not eligible for a claim",
+            "SHA cannot cover this invoice; collect payment by another method",
             {
                 "eligibility_check_id": str(check.id),
                 "status": check.status.value,
+                "remaining_coverage_minor": remaining_coverage(check),
+                "next_action": "choose_payment_method",
             },
         )
 

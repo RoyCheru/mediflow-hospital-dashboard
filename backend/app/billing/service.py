@@ -17,6 +17,7 @@ from app.billing.models import (
 from app.common.audit import record_audit
 from app.common.base import utcnow
 from app.common.enums import (
+    AllocationPayer,
     AllocationStatus,
     CashReconciliationStatus,
     ClaimStatus,
@@ -370,6 +371,65 @@ def create_invoice(visit, data, actor):
     )
     db.session.commit()
     return invoice
+
+
+def rebalance_patient_share(invoice):
+    """Keep the PATIENT allocation equal to what third-party payers do not cover.
+
+    Invariant: patient share = invoice total - active (non-voided) SHA and
+    insurance allocations. Call after any payer-mix change (self-pay
+    conversion, claim creation, rejection, partial approval, resubmission).
+    The caller holds the invoice lock and commits.
+    """
+    active = [item for item in invoice.allocations if item.status != AllocationStatus.VOIDED]
+    third_party = sum(item.amount_minor for item in active if item.payer != AllocationPayer.PATIENT)
+    target = max(invoice.total_minor - third_party, 0)
+    patient_allocations = [item for item in active if item.payer == AllocationPayer.PATIENT]
+    allocation = patient_allocations[0] if patient_allocations else None
+    for duplicate in patient_allocations[1:]:
+        duplicate.status = AllocationStatus.VOIDED
+
+    if allocation is None:
+        if target == 0:
+            return None
+        allocation = InvoiceAllocation(
+            invoice_id=invoice.id, payer=AllocationPayer.PATIENT, amount_minor=target
+        )
+        invoice.allocations.append(allocation)
+        db.session.add(allocation)
+        db.session.flush()
+    allocation.amount_minor = target
+    _refresh_patient_allocation_status(invoice, allocation)
+    return allocation
+
+
+def patient_paid_minor(invoice):
+    """Money the patient has paid on the invoice: non-SHA payments less refunds."""
+    paid = (
+        db.session.query(func.coalesce(func.sum(Transaction.amount_minor), 0))
+        .filter(
+            Transaction.invoice_id == invoice.id,
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.method != PaymentMethod.SHA,
+        )
+        .scalar()
+    )
+    refunded = (
+        db.session.query(func.coalesce(func.sum(Refund.amount_minor), 0))
+        .filter(Refund.invoice_id == invoice.id, Refund.status == RefundStatus.COMPLETED)
+        .scalar()
+    )
+    return int(paid) - int(refunded)
+
+
+def _refresh_patient_allocation_status(invoice, allocation):
+    paid = patient_paid_minor(invoice)
+    if allocation.amount_minor == 0 and paid <= 0:
+        allocation.status = AllocationStatus.VOIDED
+    elif paid >= allocation.amount_minor:
+        allocation.status = AllocationStatus.PAID
+    else:
+        allocation.status = AllocationStatus.PENDING
 
 
 def add_allocation(invoice, data, actor):
