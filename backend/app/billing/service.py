@@ -270,6 +270,11 @@ def _default_consultation_line(visit):
 
 
 def create_invoice(visit, data, actor):
+    if visit.completed_at is None:
+        raise conflict(
+            "Complete the visit before invoicing it",
+            {"visit_id": str(visit.id)},
+        )
     existing = (
         Invoice.query.filter_by(visit_id=visit.id)
         .filter(Invoice.status != InvoiceStatus.VOIDED)
