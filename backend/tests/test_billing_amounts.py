@@ -148,3 +148,44 @@ def test_active_cover_claims_the_balance_with_no_patient_share(client, tokens, i
     assert claim.get_json()["data"]["claimed_amount_minor"] == invoice["total_minor"]
     _, active = _allocations(client, tokens, invoice["id"])
     assert set(active) == {"SHA"}
+
+
+def test_claim_is_capped_at_remaining_cover_and_rest_becomes_co_pay(
+    client, tokens, ids, monkeypatch
+):
+    from app.claims import service as claims_service
+    from app.integrations.sha import SimulatedShaGateway
+
+    class LimitedCover(SimulatedShaGateway):
+        def verify_member(self, member_reference, patient_context=None):
+            result = super().verify_member(member_reference, patient_context)
+            return {**result, "coverage_limit_minor": 350000, "consumed_minor": 150000}
+
+    monkeypatch.setattr(claims_service, "get_sha_gateway", lambda: LimitedCover())
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    claim = client.post(
+        f"/api/v1/invoices/{invoice['id']}/claims",
+        json={"member_reference": "SHA-DEMO-ACTIVE"},
+        headers=auth(tokens["reception"]),
+    )
+    assert claim.status_code == 201, claim.get_json()
+    assert claim.get_json()["data"]["claimed_amount_minor"] == 200000  # 350000 - 150000
+
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert active["SHA"]["amount_minor"] == 200000
+    assert active["PATIENT"]["amount_minor"] == invoice["total_minor"] - 200000
+    assert sum(item["amount_minor"] for item in active.values()) == invoice["total_minor"]
+
+
+def test_partial_claim_assigns_the_remainder_to_the_patient(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    claim = client.post(
+        f"/api/v1/invoices/{invoice['id']}/claims",
+        json={"member_reference": "SHA-DEMO-ACTIVE", "amount_minor": 300000},
+        headers=auth(tokens["reception"]),
+    )
+    assert claim.status_code == 201, claim.get_json()
+    _, active = _allocations(client, tokens, invoice["id"])
+    assert active["SHA"]["amount_minor"] == 300000
+    assert active["PATIENT"]["amount_minor"] == invoice["total_minor"] - 300000
+    assert active["PATIENT"]["status"] == "PENDING"

@@ -277,6 +277,10 @@ def create_claim(invoice, data, actor):
             None,
         )
         amount = sha_allocation.amount_minor if sha_allocation else invoice.balance_minor
+    cover = remaining_coverage(check)
+    if cover is not None and amount > cover:
+        # BIL-7: SHA pays up to the remaining cover; the rest is the patient's co-pay.
+        amount = cover
     _validate_claim_amount(invoice, amount)
 
     allocation = next(
@@ -293,8 +297,13 @@ def create_claim(invoice, data, actor):
             payer=AllocationPayer.SHA,
             amount_minor=amount,
         )
+        invoice.allocations.append(allocation)
         db.session.add(allocation)
         db.session.flush()
+    else:
+        allocation.amount_minor = amount
+        allocation.status = AllocationStatus.PENDING
+    rebalance_patient_share(invoice)
 
     gateway = get_sha_gateway()
     result = gateway.submit_claim(
