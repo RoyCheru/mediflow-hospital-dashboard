@@ -53,13 +53,13 @@ def _doctor_user(doctor):
     return getattr(doctor, "user", None)
 
 
-def serialize_admin_appointment(appointment):
+def serialize_admin_appointment(appointment, payer=None):
     patient = getattr(appointment, "patient", None)
     doctor = getattr(appointment, "doctor", None)
     doctor_user = _doctor_user(doctor)
     department = getattr(appointment, "department", None)
     service = getattr(appointment, "service", None)
-    return {
+    data = {
         "id": str(appointment.id),
         "patient": {
             "id": str(appointment.patient_id),
@@ -93,6 +93,10 @@ def serialize_admin_appointment(appointment):
         "completed_at": _iso(_aware(appointment.completed_at)),
         "created_at": _iso(_aware(appointment.created_at)),
     }
+    if payer is not None:
+        data["payer"] = payer
+        data["copay_due_minor"] = payer.get("copay_due_minor", 0)
+    return data
 
 
 def _parse_enum(value, enum_class, name):
@@ -217,8 +221,14 @@ def admin_appointments(
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     pages = (total + page_size - 1) // page_size if total else 0
+
+    from app.claims.service import payer_summaries_for_appointments
+
+    payers = payer_summaries_for_appointments(items)
     return {
-        "data": [serialize_admin_appointment(item) for item in items],
+        "data": [
+            serialize_admin_appointment(item, payer=payers.get(str(item.id))) for item in items
+        ],
         "meta": {"page": page, "page_size": page_size, "total": total, "pages": pages},
     }
 
@@ -244,8 +254,8 @@ def _waiting_minutes(appointment, now):
     return 0
 
 
-def _queue_entry(appointment, position, now):
-    return {
+def _queue_entry(appointment, position, now, payer=None):
+    data = {
         "position": position,
         "appointment_id": str(appointment.id),
         "patient": {
@@ -266,6 +276,10 @@ def _queue_entry(appointment, position, now):
         "waiting_minutes": _waiting_minutes(appointment, now),
         "slot": _iso(_aware(appointment.scheduled_start)),
     }
+    if payer is not None:
+        data["payer"] = payer
+        data["copay_due_minor"] = payer.get("copay_due_minor", 0)
+    return data
 
 
 def admin_queue(doctor_id=None, department_id=None):
@@ -278,6 +292,10 @@ def admin_queue(doctor_id=None, department_id=None):
     now = utcnow()
     threshold = current_app.config.get("QUEUE_WAITING_THRESHOLD_MINUTES", 30)
     start, end = hospital_day_bounds(target_date)
+
+    from app.claims.service import payer_summaries_for_appointments
+
+    payers = payer_summaries_for_appointments(items)
 
     doctor_ids = {item.doctor_id for item in items}
     completed_counts = {}
@@ -326,7 +344,7 @@ def admin_queue(doctor_id=None, department_id=None):
             order.append(key)
         bucket = grouped[key]
         position = len(bucket["entries"]) + 1
-        bucket["entries"].append(_queue_entry(item, position, now))
+        bucket["entries"].append(_queue_entry(item, position, now, payer=payers.get(str(item.id))))
         if item.status == AppointmentStatus.CHECKED_IN:
             bucket["counts"]["waiting"] += 1
         elif item.status == AppointmentStatus.IN_CONSULTATION:

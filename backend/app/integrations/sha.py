@@ -4,7 +4,7 @@ import requests
 from flask import current_app
 
 from app.common.enums import ClaimStatus, EligibilityStatus
-from app.integrations.base import ProviderRejected, ProviderUnavailable
+from app.integrations.base import ProviderRejected, ProviderTimeout, ProviderUnavailable
 
 
 class ShaGateway:
@@ -70,15 +70,20 @@ class HttpShaGateway(ShaGateway):
         base = current_app.config.get("SHA_BASE_URL")
         if not base:
             raise ProviderUnavailable("SHA integration is not configured")
-        response = requests.post(
-            f"{base.rstrip('/')}/members/verify",
-            json={
-                "member_reference": member_reference,
-                "patient_context": patient_context or {},
-            },
-            headers=self._headers(),
-            timeout=(5, 20),
-        )
+        try:
+            response = requests.post(
+                f"{base.rstrip('/')}/members/verify",
+                json={
+                    "member_reference": member_reference,
+                    "patient_context": patient_context or {},
+                },
+                headers=self._headers(),
+                timeout=(5, 20),
+            )
+        except requests.Timeout as exc:
+            raise ProviderTimeout("SHA verification timed out") from exc
+        except requests.RequestException as exc:
+            raise ProviderUnavailable("SHA verification is unavailable") from exc
         if response.status_code >= 400:
             raise ProviderRejected("SHA verification failed")
         body = response.json()
