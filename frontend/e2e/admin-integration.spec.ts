@@ -35,7 +35,9 @@ test("admin session loads live dashboard data", async ({ page, request }) => {
   test.setTimeout(180_000);
   await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
   await expect(page).toHaveURL(/\/admin$/);
-  await expect(page.getByText("Total Patients")).toBeVisible();
+  // First test on a cold Vite dev server: the initial transform of the admin
+  // bundle takes ~30 s (measured), longer than the default expect timeout.
+  await expect(page.getByText("Total Patients")).toBeVisible({ timeout: 90_000 });
   await expect(page.getByText("Pending SHA Claims")).toBeVisible();
   await expect(page.getByText("Patients & staff")).toBeVisible();
   await expect(page.getByText("Could not load this data")).toHaveCount(0);
