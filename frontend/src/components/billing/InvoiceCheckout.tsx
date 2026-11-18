@@ -39,6 +39,7 @@ type Panel = "none" | "payment" | "sha" | "discount";
 type DeskMethod = Extract<PaymentMethod, "CASH" | "CARD" | "BANK" | "MPESA">;
 
 const deskMethods: DeskMethod[] = ["CASH", "MPESA", "CARD", "BANK"];
+const payerLabel = { PATIENT: "Patient", SHA: "SHA", INSURANCE: "Insurance" } as const;
 
 function allocationTone(status: string): "success" | "warning" | "muted" {
   if (status === "PAID") return "success";
@@ -327,7 +328,7 @@ export function InvoiceCheckout({
               .filter((item) => item.status !== "VOIDED")
               .map((item) => (
                 <Badge key={item.id} tone={allocationTone(item.status)}>
-                  {`${item.payer === "PATIENT" ? "Patient share" : `${titleize(item.payer)} share`} ${formatKshMinor(item.amount_minor)} · ${titleize(item.status)}`}
+                  {`${payerLabel[item.payer]} share ${formatKshMinor(item.amount_minor)} · ${titleize(item.status)}`}
                 </Badge>
               ))}
             <span className="text-xs text-muted-foreground">
