@@ -59,7 +59,7 @@ def _stk_callback(client, intent, amount, receipt):
                 "ResultDesc": "Success",
                 "CallbackMetadata": {
                     "Item": [
-                        {"Name": "Amount", "Value": amount},
+                        {"Name": "Amount", "Value": amount // 100},  # Daraja reports KES
                         {"Name": "MpesaReceiptNumber", "Value": receipt},
                     ]
                 },

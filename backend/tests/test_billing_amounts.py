@@ -313,7 +313,7 @@ def test_co_pay_payments_are_linked_to_the_patient_allocation(client, tokens, id
                     "ResultCode": 0,
                     "CallbackMetadata": {
                         "Item": [
-                            {"Name": "Amount", "Value": 50000},
+                            {"Name": "Amount", "Value": 500},  # KES
                             {"Name": "MpesaReceiptNumber", "Value": "QKCOPAY01"},
                         ]
                     },

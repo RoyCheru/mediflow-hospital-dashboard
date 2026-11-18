@@ -3,11 +3,27 @@ import hashlib
 import hmac
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 import requests
 from flask import current_app
 
 from app.integrations.base import ProviderRejected, ProviderUnavailable
+
+MINOR_UNITS_PER_SHILLING = 100
+
+
+def minor_to_shillings(amount_minor) -> int:
+    """Daraja amounts are whole Kenya shillings; MediFlow stores minor units."""
+    amount_minor = int(amount_minor)
+    if amount_minor % MINOR_UNITS_PER_SHILLING:
+        raise ValueError("M-Pesa amounts must be whole shillings")
+    return amount_minor // MINOR_UNITS_PER_SHILLING
+
+
+def shillings_to_minor(value) -> int:
+    """Convert a Daraja callback ``Amount`` (KES, possibly "5000.00") to minor units."""
+    return int((Decimal(str(value)) * MINOR_UNITS_PER_SHILLING).to_integral_value())
 
 
 def normalize_phone(phone: str) -> str:
@@ -73,7 +89,7 @@ class DarajaMpesaGateway(MpesaGateway):
             "Password": password,
             "Timestamp": timestamp,
             "TransactionType": "CustomerPayBillOnline",
-            "Amount": int(amount_minor),
+            "Amount": minor_to_shillings(amount_minor),
             "PartyA": normalize_phone(phone),
             "PartyB": shortcode,
             "PhoneNumber": normalize_phone(phone),

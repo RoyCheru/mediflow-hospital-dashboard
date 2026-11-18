@@ -35,7 +35,12 @@ from app.common.outbox import enqueue_event
 from app.common.sequences import next_sequence_value
 from app.common.time import hospital_day_bounds
 from app.extensions import db
-from app.integrations.mpesa import get_mpesa_gateway, normalize_phone
+from app.integrations.mpesa import (
+    MINOR_UNITS_PER_SHILLING,
+    get_mpesa_gateway,
+    normalize_phone,
+    shillings_to_minor,
+)
 
 
 def _iso(value):
@@ -732,6 +737,11 @@ def create_payment_intent(invoice, data, actor, idempotency_key=None):
     amount = int(data["amount_minor"])
     if amount > invoice.balance_minor:
         raise bad_request("Payment exceeds the outstanding balance")
+    if amount % MINOR_UNITS_PER_SHILLING:
+        raise bad_request(
+            "M-Pesa payments must be in whole shillings",
+            {"amount_minor": ["Must be a multiple of 100"]},
+        )
     gateway = get_mpesa_gateway()
     result = gateway.stk_push(
         data["phone"],
@@ -776,13 +786,9 @@ def create_payment_intent(invoice, data, actor, idempotency_key=None):
 
 
 def _callback_amount_minor(metadata, intent):
-    """Amount reported by the callback, in the same units the STK push sent.
-
-    Single conversion point: if the gateway ever sends whole shillings to
-    Daraja, convert here and nowhere else.
-    """
+    """Amount reported by the Daraja callback, converted from shillings to minor units."""
     reported = metadata.get("Amount")
-    return int(reported) if reported is not None else int(intent.amount_minor)
+    return shillings_to_minor(reported) if reported is not None else int(intent.amount_minor)
 
 
 def _callback_problem(intent, invoice, amount):
