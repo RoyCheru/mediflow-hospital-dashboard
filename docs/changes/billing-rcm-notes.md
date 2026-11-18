@@ -214,7 +214,7 @@ validates this before sending. Tests that fake Daraja callbacks now report KES.
 | D1 `invoices.appointment_id`, nullable `invoice_number`, `finalized_at`, `eligibility_checks.appointment_id`; migration `0005` with `finalized_at` backfill | `0475857` | `test_billing_phase_d_migration.py` |
 | D2 Draft encounter bill at check-in/walk-in; line add/remove only while `DRAFT`; `POST /invoices/:id/finalize` assigns the number, sets `finalized_at` and recalculates totals | `47bd88f` | `test_billing_phase_d.py` |
 | D3 Eligibility runs at check-in (including walk-ins); failure/timeout stores `UNKNOWN` and never blocks check-in; payer badge and co-pay on queue/check-in payloads | `55b381f` | `test_billing_eligibility_check_in.py` |
-| D4 Desk action is now “Finalize draft”; legacy create-invoice endpoint is deprecated but still works | this branch | `e2e/billing-desk.spec.ts` |
+| D4 Desk action is now “Finalize draft”; legacy create-invoice endpoint is deprecated but still works | `afa9655` | `e2e/billing-desk.spec.ts` |
 
 ### Encounter bill lifecycle
 
@@ -267,10 +267,14 @@ the discount payload, then finalizes it and returns `201` like before.
 
 ### Verification
 
-- Backend: full pytest suite, ruff check/format; migration `0005` tested upgrade →
-  downgrade → upgrade.
-- Frontend: tsc, eslint (0 errors, same 9 pre-existing warnings), production build,
-  vitest, and updated E2E assertions for “Finalize draft”.
+- Backend: **141 passed, 1 skipped** (the opt-in Postgres locking test), ruff
+  check/format clean; migration `0005` tested upgrade → downgrade → upgrade.
+- Frontend: tsc clean, eslint 0 errors (same 9 pre-existing warnings), production
+  build OK, vitest **24 passed**.
+- Playwright: the suite was started but did not complete cleanly on this machine.
+  Tests stalled in page hydration/cold-start (the known dev-server issue from
+  Phase B/C), not in assertions; re-run `npx playwright test` on an idle machine
+  before merging. The billing-desk spec labels were updated for “Finalize draft”.
 
 ### Known gaps
 
