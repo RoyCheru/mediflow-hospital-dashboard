@@ -5,6 +5,7 @@ from app.common.enums import (
     AllocationPayer,
     AllocationStatus,
     CashReconciliationStatus,
+    DiscountStatus,
     InvoiceStatus,
     PaymentIntentStatus,
     PaymentMethod,
@@ -51,6 +52,21 @@ class Invoice(BaseModel, TimestampMixin):
     )
     primary_method = db.Column(db.Enum(PaymentMethod, native_enum=False, length=16), nullable=True)
     void_reason = db.Column(db.Text, nullable=True)
+    # Discount workflow: discount_minor is only what is applied. A discount
+    # above the approval threshold waits in discount_requested_minor until an
+    # admin other than the requester decides.
+    discount_reason = db.Column(db.Text, nullable=True)
+    discount_status = db.Column(
+        db.Enum(DiscountStatus, native_enum=False, length=24), nullable=True
+    )
+    discount_requested_minor = db.Column(db.BigInteger, nullable=True)
+    discount_requested_by_id = db.Column(
+        db.Uuid(as_uuid=True), db.ForeignKey("users.id"), nullable=True
+    )
+    discount_decided_by_id = db.Column(
+        db.Uuid(as_uuid=True), db.ForeignKey("users.id"), nullable=True
+    )
+    discount_decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
     issued_at = db.Column(db.DateTime(timezone=True), nullable=True)
     due_at = db.Column(db.DateTime(timezone=True), nullable=True)
 

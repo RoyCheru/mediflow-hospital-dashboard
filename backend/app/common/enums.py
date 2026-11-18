@@ -90,6 +90,12 @@ class InvoiceStatus(str, Enum):
     REFUNDED = "REFUNDED"
 
 
+class DiscountStatus(str, Enum):
+    APPLIED = "APPLIED"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    REJECTED = "REJECTED"
+
+
 class PaymentMethod(str, Enum):
     SHA = "SHA"
     MPESA = "MPESA"
