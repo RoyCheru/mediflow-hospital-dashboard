@@ -141,14 +141,74 @@ This is a dev-server cost, not an app error: no console or page errors were seen
   server tracebacks in the last run. The one SQLite `database is locked` error came from the 16-minute
   run. **Re-run `npx playwright test` on an idle machine before merging.**
 
+Update: on 2026-11-18 the full suite passed **17/17** on a quiet machine during phase C
+(13 existing tests + 4 new desk tests; 2.8 min; no server tracebacks). That run covers the
+phase B code.
+
+## M-Pesa amount units (approved 2026-11-18, done)
+
+`3cd2eaf`: Daraja's `Amount` is whole shillings. The STK push converts with
+`minor_to_shillings`, and callbacks convert back with `shillings_to_minor` (which accepts
+values like `"5000.00"`). Payment intents that are not whole shillings return 400, and the desk UI
+validates this before sending. Tests that fake Daraja callbacks now report KES.
+`test_mpesa_units.py` asserts the outgoing Daraja payload.
+
+## Phase C: Reception and cashier UI (done)
+
+| Item | Commit(s) | Tests |
+|---|---|---|
+| C0 `GET /billing/ready-to-bill`: completed visits without an active invoice (a voided invoice puts the visit back) | `a6d3580` | `test_billing_worklist.py` |
+| C1 API clients: `createInvoice`, `addAllocation`, `requestDiscount`, `decideDiscount`, `listReadyToBill`, `api.postIdempotent`; types | `b1308ff` | tsc |
+| C2 Receptionist and cashier areas gated (`requireRole` + `RoleGate`); sign-in routes by role | `42a17e6` | E2E sign-in and keep-out test |
+| C3 Shared `components/billing/*` (checkout, work-list, invoice list) and the receptionist desk | `0a3bca7`, `947dc0d`, `b2e1b8c` | `billingShares.test.ts`, E2E desk flows |
+| C4 Cashier invoices and payments pages | `34f94b3` | E2E cashier payments |
+| C5 E2E `e2e/billing-desk.spec.ts` | `8bfe0df` | 4 tests |
+
+### Desk flow (receptionist `/receptionist/billing`, cashier `/cashier/invoices`)
+
+1. **Ready to bill** lists completed visits with the charge a default invoice will carry.
+   **Create invoice** takes an optional discount and reason, then opens checkout.
+2. **Checkout** shows total, paid, **SHA pending** and **Patient due**, the lines (with any discount),
+   and badges for each payer share and the discount state.
+3. **Pay via SHA**: *Verify SHA* (member number, or blank to use the profile), then
+   *Submit SHA claim* (amount optional; the server caps it at the remaining cover). The patient
+   co-pay appears as the patient share.
+4. If SHA cannot pay (BIL-8), an alert says the invoice was converted to self-pay and offers
+   **Pay by M-Pesa** or **Pay cash** with the patient due pre-filled.
+5. **Collect payment**: cash shows the change; card and bank take a reference. Each attempt sends
+   an `Idempotency-Key` (a new key when method or amount changes), so a double submit records
+   once. M-Pesa sends an STK push and requires whole shillings.
+6. **Discount** asks for an amount and reason; above the threshold it shows "awaiting approval".
+
+### Decisions
+
+- **Sign-in routing:** receptionists go to `/receptionist`, cashiers to `/cashier`, admins to
+  `/admin`. Doctors and patients still go to `/unauthorized`, because their areas are out of scope.
+- **Role gate:** each area admits its own role only. The API still enforces roles server-side.
+- **Admin billing page left unchanged.** The new components are separate, so the existing
+  admin flows are untouched. The admin page still has no create-invoice action; the desks do.
+- **Display-only maths:** "SHA pending" and "Patient due" are computed in the browser from the
+  server's allocations, only to choose what to show and pre-fill. The server validates every amount.
+
+### Verification after phase C (2026-11-18)
+
+- pytest 126 passed, 1 skipped; ruff clean
+- Frontend lint 0 errors (same 9 pre-existing warnings); tsc clean; build OK; vitest 24 passed
+- Playwright 17/17 passed with no server tracebacks
+
+### Known gaps
+
+- The receptionist and cashier dashboards, the queue, and the other pages in those areas are still
+  placeholders (out of scope).
+- Admins approve discounts through the API (`POST /invoices/:id/discount/decision`). There is no
+  admin UI yet for pending discounts.
+- The ready-to-bill list computes each row's expected charge with a few queries per row (bounded by
+  page size).
+- E2E tests that sign in through the form wait for `networkidle`. Submitting before hydration falls
+  back to a native GET.
+
 ## Open items
 
-- **M-Pesa amount units (needs a decision).** `DarajaMpesaGateway.stk_push` sends
-  `Amount: int(amount_minor)` (cents), but Daraja expects whole shillings. With
-  the real gateway, a KES 5,000 bill would request KES 500,000. The simulated gateway hides
-  this. Callback amounts are now read through one helper
-  (`_callback_amount_minor`), so a units fix changes the push and that helper only.
-  Not changed yet because it is outside the approved plan.
 - `tests/test_billing_postgres_locking.py` needs a disposable migrated and seeded
   Postgres database or schema. The scratch schema `migcheck` in the dev database was
   rebuilt with the fixed seed for this purpose.
