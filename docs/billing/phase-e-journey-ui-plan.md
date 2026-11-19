@@ -1,6 +1,6 @@
 # Phase E plan: the patient journey in the UI
 
-**Status:** plan only, not approved, no code written.
+**Status:** approved 2026-11-19 with all recommended decisions (see below). Not started.
 **Written:** 2026-11-19, after phase D (`feature/billing-phase-d`, `d82243e`).
 **Goal:** a receptionist, a doctor and a cashier can take a patient from arrival to a
 paid invoice in their own screens, with no API calls made by hand.
@@ -53,8 +53,8 @@ Each item is one or more small commits, pushed as it lands.
 - `GET /queue` uses `hospital_today()` and rejects a bad `date` with 400.
 - Queue and appointment rows include `visit_id` (and `visit_completed_at`) when a
   visit exists.
-- Decision 1 applied: either run `ensure_check_in_eligibility` inside `create_visit`
-  when it checks the patient in, or refuse to start a `SCHEDULED` appointment.
+- Decision 1: `create_visit` runs `ensure_check_in_eligibility` when it checks the
+  patient in itself. A failed or timed-out check never blocks the consultation.
 - Tests: hospital-day queue across midnight, `visit_id` in the payload, and the
   chosen decision-1 behaviour.
 
@@ -94,7 +94,8 @@ are not copied.
 - `/doctor/consultations`: today's and recent visits for this doctor, linking to
   the workspace. This needs a doctor-scoped visit list: either
   `GET /visits?doctor=me` (new) or reuse of the admin list with a doctor filter.
-- Doctor dashboard: decision 2.
+- Doctor dashboard: the static sample data is replaced with live counts (today's
+  queue, open visits, completed today). Charts stay for later.
 
 ### E5. Draft line editing at the billing desk
 
@@ -133,15 +134,18 @@ later step can then be checked with the real flow.
 1. **Doctor starts a booked appointment that reception never checked in.** The
    backend allows it today. Options: allow it and run the SHA check at that point
    (recommended: patients do walk straight in), or refuse it until reception checks
-   them in.
+   them in. **Decided: allow it and run the SHA check.**
 2. **Doctor dashboard.** It shows static sample data. Replace it with live
    data in this phase (today's queue count, open visits, completed today), or
    leave it for later? Recommended: replace the counts, leave charts for later.
+   **Decided: live counts now, charts later.**
 3. **Other placeholders.** The receptionist and cashier dashboards, the
    receptionist claims page, and the doctor appointments, patients, availability,
    reports and AI pages are not in this plan. Confirm that they stay out.
+   **Decided: they stay out.**
 4. **Branching.** Start phase E from `main` after the phase D pull request is
    merged (recommended), or stack it on `feature/billing-phase-d`.
+   **Decided: branch from `main` after the phase D merge.**
 
 ## Not in scope
 

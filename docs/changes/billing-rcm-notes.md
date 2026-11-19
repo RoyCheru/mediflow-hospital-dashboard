@@ -5,7 +5,7 @@
   billing, admin and walk-in code this builds on).
 - **Source:** `docs/billing/patient-billing-flow-audit.md`.
 - **Approved scope:** phases A–D of the audit plan. E, F and inpatient billing are out of scope.
-- **Next (proposed, not approved):** phase E, the patient journey in the UI. See
+- **Next (approved 2026-11-19, starts after the phase D merge):** phase E, the patient journey in the UI. See
   `docs/billing/phase-e-journey-ui-plan.md`. The audit's old phase E (charge capture and
   coverage model) is renumbered to phase F.
 
