@@ -7,7 +7,6 @@ import {
   DetailRow,
   EmptyState,
   FilterSelect,
-  Field,
   Modal,
   PageHeader,
   Panel,
@@ -19,14 +18,9 @@ import {
   theadRow,
 } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { PatientRegisterDialog } from "@/components/frontdesk/PatientRegisterDialog";
 import { Button } from "@/components/ui/button";
-import {
-  createPatient,
-  getPatient,
-  listPatients,
-  managementKeys,
-  updatePatient,
-} from "@/lib/api/management";
+import { getPatient, listPatients, managementKeys, updatePatient } from "@/lib/api/management";
 import { formatDate, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -45,21 +39,6 @@ export const Route = createFileRoute("/admin/patients")({
   component: Page,
 });
 
-const blankPatient = {
-  first_name: "",
-  last_name: "",
-  date_of_birth: "",
-  sex: "UNKNOWN",
-  phone: "",
-  email: "",
-  allergies: "",
-  chronic_conditions: "",
-  sha_number: "",
-  address: "",
-  whatsapp_consent: true,
-  email_consent: true,
-};
-
 function Page() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState("");
@@ -68,7 +47,6 @@ function Page() {
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState(blankPatient);
 
   const params = {
     page,
@@ -87,30 +65,6 @@ function Page() {
     queryKey: managementKeys.patient(selectedId ?? ""),
     queryFn: () => getPatient(selectedId as string),
     enabled: Boolean(selectedId),
-  });
-
-  const createMutation = useMutation({
-    mutationFn: () => {
-      if (!form.first_name.trim() || !form.last_name.trim() || !form.phone.trim()) {
-        throw new Error("First name, last name and phone are required");
-      }
-      if (!form.date_of_birth) throw new Error("Date of birth is required");
-      return createPatient({
-        ...form,
-        email: form.email || undefined,
-        allergies: form.allergies || undefined,
-        chronic_conditions: form.chronic_conditions || undefined,
-        sha_number: form.sha_number || undefined,
-        address: form.address || undefined,
-      });
-    },
-    onSuccess: () => {
-      toast.success("Patient registered");
-      setCreateOpen(false);
-      setForm(blankPatient);
-      void queryClient.invalidateQueries({ queryKey: ["admin", "patients"] });
-    },
-    onError: (error: Error) => toast.error(error.message),
   });
 
   const activeMutation = useMutation({
@@ -333,122 +287,11 @@ function Page() {
         ) : null}
       </Modal>
 
-      <Modal
+      <PatientRegisterDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        title="Register patient"
-        subtitle="Creates a patient record in the live database."
-        wide
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
-              {createMutation.isPending ? "Saving…" : "Register patient"}
-            </Button>
-          </>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="First name">
-            <input
-              className={inputCls}
-              value={form.first_name}
-              onChange={(event) => setForm({ ...form, first_name: event.target.value })}
-            />
-          </Field>
-          <Field label="Last name">
-            <input
-              className={inputCls}
-              value={form.last_name}
-              onChange={(event) => setForm({ ...form, last_name: event.target.value })}
-            />
-          </Field>
-          <Field label="Date of birth">
-            <input
-              type="date"
-              className={inputCls}
-              value={form.date_of_birth}
-              onChange={(event) => setForm({ ...form, date_of_birth: event.target.value })}
-            />
-          </Field>
-          <Field label="Sex">
-            <select
-              className={inputCls}
-              value={form.sex}
-              onChange={(event) => setForm({ ...form, sex: event.target.value })}
-            >
-              {["UNKNOWN", "MALE", "FEMALE", "OTHER"].map((value) => (
-                <option key={value} value={value}>
-                  {titleize(value)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Phone">
-            <input
-              className={inputCls}
-              value={form.phone}
-              onChange={(event) => setForm({ ...form, phone: event.target.value })}
-            />
-          </Field>
-          <Field label="Email">
-            <input
-              type="email"
-              className={inputCls}
-              value={form.email}
-              onChange={(event) => setForm({ ...form, email: event.target.value })}
-            />
-          </Field>
-          <Field label="Allergies">
-            <input
-              className={inputCls}
-              value={form.allergies}
-              onChange={(event) => setForm({ ...form, allergies: event.target.value })}
-            />
-          </Field>
-          <Field label="Chronic conditions">
-            <input
-              className={inputCls}
-              value={form.chronic_conditions}
-              onChange={(event) => setForm({ ...form, chronic_conditions: event.target.value })}
-            />
-          </Field>
-          <Field label="SHA number">
-            <input
-              className={inputCls}
-              value={form.sha_number}
-              onChange={(event) => setForm({ ...form, sha_number: event.target.value })}
-            />
-          </Field>
-          <Field label="Address">
-            <input
-              className={inputCls}
-              value={form.address}
-              onChange={(event) => setForm({ ...form, address: event.target.value })}
-            />
-          </Field>
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <input
-              type="checkbox"
-              className="h-4 w-4 accent-primary"
-              checked={form.whatsapp_consent}
-              onChange={(event) => setForm({ ...form, whatsapp_consent: event.target.checked })}
-            />
-            WhatsApp consent
-          </label>
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <input
-              type="checkbox"
-              className="h-4 w-4 accent-primary"
-              checked={form.email_consent}
-              onChange={(event) => setForm({ ...form, email_consent: event.target.checked })}
-            />
-            Email consent
-          </label>
-        </div>
-      </Modal>
+        onDone={(patient) => setSelectedId(patient.id)}
+      />
     </div>
   );
 }

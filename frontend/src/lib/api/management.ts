@@ -26,6 +26,18 @@ export function listPatients(params?: ListParams) {
   return api.get<Paginated<PatientBrief>>("/patients", params);
 }
 
+/** Possible existing records for a new registration (name + date of birth, or phone). */
+export function findDuplicatePatients(params: {
+  first_name?: string;
+  last_name?: string;
+  date_of_birth?: string;
+  phone?: string;
+}) {
+  return api.get<{ items: PatientBrief[] }>("/patients/duplicates", params);
+}
+
+export type RegisterPatientResult = Patient & { potential_duplicates: PatientBrief[] };
+
 export function getPatient(id: string) {
   return api.get<Patient>(`/patients/${id}`);
 }
@@ -35,7 +47,7 @@ export function updatePatient(id: string, body: Record<string, unknown>) {
 }
 
 export function createPatient(body: Record<string, unknown>) {
-  return api.post<Patient>("/patients", body);
+  return api.post<RegisterPatientResult>("/patients", body);
 }
 
 export function listUsers(params?: ListParams) {
