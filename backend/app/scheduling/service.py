@@ -109,7 +109,32 @@ def serialize_doctor(doctor):
     }
 
 
-def serialize_appointment(appointment, payer=None):
+def visit_links_for_appointments(appointments):
+    """Map appointment id -> {visit_id, visit_completed_at} in one query.
+
+    Lets the queue tell a doctor which consultations are already open, so a
+    reload can resume the visit instead of trying to create a second one.
+    """
+    from app.clinical_records.models import Visit
+
+    appointment_ids = [item.id for item in appointments]
+    if not appointment_ids:
+        return {}
+    rows = (
+        db.session.query(Visit.appointment_id, Visit.id, Visit.completed_at)
+        .filter(Visit.appointment_id.in_(appointment_ids))
+        .all()
+    )
+    return {
+        str(appointment_id): {
+            "visit_id": str(visit_id),
+            "visit_completed_at": _iso(_aware(completed_at)),
+        }
+        for appointment_id, visit_id, completed_at in rows
+    }
+
+
+def serialize_appointment(appointment, payer=None, visit_links=None):
     patient = getattr(appointment, "patient", None)
     doctor = getattr(appointment, "doctor", None)
     doctor_user = getattr(doctor, "user", None) if doctor is not None else None
@@ -154,6 +179,10 @@ def serialize_appointment(appointment, payer=None):
     if payer is not None:
         data["payer"] = payer
         data["copay_due_minor"] = payer.get("copay_due_minor", 0)
+    if visit_links is not None:
+        link = visit_links.get(str(appointment.id), {})
+        data["visit_id"] = link.get("visit_id")
+        data["visit_completed_at"] = link.get("visit_completed_at")
     return data
 
 

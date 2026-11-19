@@ -346,7 +346,8 @@ def get_appointment(appointment_id):
             raise forbidden()
     if user.role == Role.DOCTOR and appointment.doctor_id != _doctor_for_user(user).id:
         raise forbidden()
-    return ok(service.serialize_appointment(appointment))
+    visit_links = service.visit_links_for_appointments([appointment])
+    return ok(service.serialize_appointment(appointment, visit_links=visit_links))
 
 
 @bp.patch("/appointments/<uuid:appointment_id>")
@@ -452,10 +453,13 @@ def get_queue():
     from app.claims.service import payer_summaries_for_appointments
 
     payers = payer_summaries_for_appointments(items)
+    visit_links = service.visit_links_for_appointments(items)
     return ok(
         {
             "items": [
-                service.serialize_appointment(item, payer=payers.get(str(item.id)))
+                service.serialize_appointment(
+                    item, payer=payers.get(str(item.id)), visit_links=visit_links
+                )
                 for item in items
             ]
         }

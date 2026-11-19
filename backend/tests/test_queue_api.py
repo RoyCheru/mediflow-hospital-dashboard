@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from app.common.enums import AppointmentSource, AppointmentStatus
 from app.common.time import hospital_today
 from app.extensions import db
-from tests.helpers import auth
+from tests.helpers import auth, book_appointment, complete_visit
 from tests.test_admin_views import _create_appointment, _local_datetime
 
 
@@ -49,3 +49,37 @@ def test_queue_explicit_date_and_invalid_date(client, tokens, ids):
     assert str(walk_in.id) in {item["id"] for item in response.get_json()["data"]["items"]}
 
     assert client.get("/api/v1/queue?date=not-a-date", headers=headers).status_code == 400
+
+
+def test_queue_and_appointment_expose_the_open_visit(client, tokens, ids):
+    appointment = book_appointment(client, tokens, ids)
+    client.post(
+        f"/api/v1/appointments/{appointment['id']}/check-in",
+        headers=auth(tokens["reception"]),
+    )
+    queue_url = "/api/v1/queue?date=2030-01-07"
+
+    def queue_row(role):
+        items = client.get(queue_url, headers=auth(tokens[role])).get_json()["data"]["items"]
+        return next(item for item in items if item["id"] == appointment["id"])
+
+    before = queue_row("doctor")
+    assert before["visit_id"] is None
+    assert before["visit_completed_at"] is None
+
+    visit = client.post(
+        f"/api/v1/appointments/{appointment['id']}/visits",
+        json={"presenting_complaint": "Headache"},
+        headers=auth(tokens["doctor"]),
+    ).get_json()["data"]
+
+    # After a reload the doctor can find the open visit instead of creating another.
+    assert queue_row("doctor")["visit_id"] == visit["id"]
+    assert queue_row("reception")["visit_id"] == visit["id"]
+
+    complete_visit(client, tokens, visit["id"])
+    detail = client.get(
+        f"/api/v1/appointments/{appointment['id']}", headers=auth(tokens["doctor"])
+    ).get_json()["data"]
+    assert detail["visit_id"] == visit["id"]
+    assert detail["visit_completed_at"] is not None
