@@ -440,9 +440,13 @@ def get_queue():
     doctor_id = request.args.get("doctor_id")
     if user.role == Role.DOCTOR:
         doctor_id = str(_doctor_for_user(user).id)
-    target_date = (
-        date.fromisoformat(request.args["date"]) if request.args.get("date") else date.today()
-    )
+    target_date = None
+    if request.args.get("date"):
+        try:
+            target_date = date.fromisoformat(request.args["date"])
+        except ValueError as exc:
+            raise bad_request("Invalid date") from exc
+    # No date means today in hospital time (the service default), not the server's date.
     items = service.queue(doctor_id=doctor_id, target_date=target_date)
 
     from app.claims.service import payer_summaries_for_appointments
