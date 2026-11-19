@@ -7,9 +7,7 @@ from tests.helpers import auth
 from tests.test_admin_views import _create_appointment, _local_datetime
 
 
-def test_queue_defaults_to_the_hospital_day_not_the_server_date(
-    client, tokens, ids, monkeypatch
-):
+def test_queue_defaults_to_the_hospital_day_not_the_server_date(client, tokens, ids, monkeypatch):
     # Pretend the hospital is already on a different calendar day than the server.
     hospital_day = date.today() + timedelta(days=3)
     monkeypatch.setattr("app.scheduling.service.hospital_today", lambda: hospital_day)
