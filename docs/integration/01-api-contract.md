@@ -91,12 +91,34 @@ Roles: patient (own), receptionist, cashier, admin.
 Filters: `status`, `method`, `department_id`, `patient_id`, `date_from`, `date_to` (`YYYY-MM-DD`), `q`, `sort` (`created_at`, `issued_at`, `total_minor`, `balance_minor`, `invoice_number`, `status`), pagination.
 Response item:
 ```json
-{"id": "...", "invoice_number": "INV-2026-000001", "patient_id": "...", "patient_name": "Pam Patient", "patient_number": "MF-2026-000001", "visit_id": "...", "doctor_name": "Dr. Dan Doctor", "department_id": "...", "department_name": "General Medicine", "currency": "KES", "subtotal_minor": 500000, "discount_minor": 0, "total_minor": 500000, "amount_paid_minor": 0, "balance_minor": 500000, "status": "ISSUED", "primary_method": null, "issued_at": "...", "due_at": null, "created_at": "...", "lines": [{"id": "...", "service_id": "...", "description": "General consultation", "service_code": "CONS-GEN", "quantity": 1, "unit_price_minor": 250000, "line_total_minor": 250000}], "allocations": [{"id": "...", "payer": "SHA", "amount_minor": 250000, "status": "PENDING", "external_reference": null}]}
+{"id": "...", "invoice_number": null, "patient_id": "...", "patient_name": "Pam Patient", "patient_number": "MF-2026-000001", "appointment_id": "...", "visit_id": null, "doctor_name": "Dr. Dan Doctor", "department_id": "...", "department_name": "General Medicine", "currency": "KES", "subtotal_minor": 500000, "discount_minor": 0, "total_minor": 500000, "amount_paid_minor": 0, "balance_minor": 500000, "status": "DRAFT", "primary_method": null, "issued_at": null, "finalized_at": null, "due_at": null, "created_at": "...", "lines": [{"id": "...", "service_id": "...", "description": "General consultation", "service_code": "CONS-GEN", "quantity": 1, "unit_price_minor": 250000, "line_total_minor": 250000}], "allocations": []}
 ```
+`invoice_number` is `null` until finalize. `issued_at`/`finalized_at` are set at finalize.
+`appointment_id` links the encounter bill to the appointment.
 
 ### GET `/invoices/<id>`
 
 Same shape; patient role may only read its own invoice.
+
+### POST `/invoices/<id>/lines`
+
+Roles: billing. Adds a line while the invoice is `DRAFT`. Request `{"service_id": null, "description": "Dressing", "quantity": 1, "unit_price_minor": 30000}`. Returns the updated invoice (`201`). Non-draft invoices return `409`.
+
+### DELETE `/invoices/<id>/lines/<line_id>`
+
+Roles: billing. Removes a line while the invoice is `DRAFT`. Returns the updated invoice. Non-draft invoices return `409`.
+
+### POST `/invoices/<id>/finalize`
+
+Roles: billing. Finalizes a `DRAFT`: assigns the invoice number, sets `finalized_at`, recalculates subtotal/total (including discounts), rebalances payer shares, and locks line edits. Second finalize returns `409` with the existing number.
+
+### POST `/visits/<id>/invoices/finalize`
+
+Roles: billing. Finalizes the visit's encounter bill. If no draft exists it creates one first. Accepts the same `items`, `discount_minor` and `discount_reason` body as the legacy endpoint and returns `201`.
+
+### POST `/visits/<id>/invoices` (deprecated)
+
+Deprecated compatibility endpoint. Use `/visits/<id>/invoices/finalize`. It still ensures the draft exists, honours explicit items/discount, finalizes it and returns `201`.
 
 ### POST `/invoices/<id>/transactions`
 
@@ -180,11 +202,11 @@ Roles: receptionist, cashier, admin. Only rejected claims. Request `{"amount_min
 
 ### POST `/invoices/<id>/claims/eligibility-check`
 
-Roles: billing. Request `{"member_reference": "SHA-..."}`. Returns eligibility check.
+Roles: billing. Request `{"member_reference": "SHA-..."}`. Returns the eligibility check, including `appointment_id` when the invoice is linked to one. Check-in runs the same check automatically and stores it against the appointment.
 
 ### POST `/invoices/<id>/claims`
 
-Roles: billing. Request `{"eligibility_check_id": "...", "amount_minor": 500000}`.
+Roles: billing. Request `{"eligibility_check_id": "...", "amount_minor": 500000}`. Returns `409` on a `DRAFT`; finalize first.
 
 ## Audit
 
@@ -276,7 +298,13 @@ Admin only; updates status/urgency/notes. Walk-ins cannot transition to `NO_SHOW
 
 ### POST `/appointments/<id>/check-in`, `no-show`, `cancel`, `reschedule`
 
-Check-in sets `arrived_at` and `checked_in_at`. Only booked (`ONLINE`, `RECEPTION`, `FOLLOW_UP`), scheduled appointments can be checked in. Walk-ins already start checked-in and cannot no-show.
+Check-in sets `arrived_at` and `checked_in_at`, creates the encounter `DRAFT` and runs SHA eligibility. Only booked (`ONLINE`, `RECEPTION`, `FOLLOW_UP`), scheduled appointments can be checked in. Walk-ins already start checked-in and cannot no-show.
+
+The check-in/walk-in response adds:
+```json
+{"payer": {"type": "SHA", "label": "SHA · Active", "eligibility_status": "ACTIVE", "eligibility_check_id": "...", "remaining_coverage_minor": 50000000, "estimated_total_minor": 500000, "copay_due_minor": 0}, "copay_due_minor": 0}
+```
+An eligibility provider failure/timeout stores `UNKNOWN`, keeps check-in successful, and shows the status rather than blocking. Payer types are `SHA`, `INSURANCE` (label is the insurer name) and `CASH`.
 
 ### POST `/visits/<id>/follow-up`
 
@@ -284,7 +312,7 @@ Doctor/admin only. Requires a slot. Creates `source=FOLLOW_UP`, `status=SCHEDULE
 
 ### GET `/queue`
 
-Roles: doctor (own), receptionist, admin. Returns today's checked-in/in-consultation appointments. Order is server-owned: urgent first, then effective time (slot for booked, `arrived_at` for walk-ins), ties by arrival then id.
+Roles: doctor (own), receptionist, admin. Returns today's checked-in/in-consultation appointments. Order is server-owned: urgent first, then effective time (slot for booked, `arrived_at` for walk-ins), ties by arrival then id. Each item also includes `payer` and `copay_due_minor` (the same shape as the check-in response). `GET /admin/queue` entries and admin appointment rows include them too.
 
 ### GET `/admin/visits`
 

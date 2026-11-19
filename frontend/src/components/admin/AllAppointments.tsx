@@ -22,7 +22,13 @@ import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
 import { adminViewKeys, listAdminAppointments, listAdminStaff } from "@/lib/api/adminViews";
 import { checkInAppointment, listDepartments, updateAppointment } from "@/lib/api/management";
-import { adminAppointmentTimeLabel, formatDate, formatDateTime, titleize } from "@/lib/format";
+import {
+  adminAppointmentTimeLabel,
+  formatDate,
+  formatDateTime,
+  formatKshMinor,
+  titleize,
+} from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { AdminAppointment, AppointmentStatus, Urgency } from "@/types/api";
@@ -108,8 +114,12 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
 
   const checkInMutation = useMutation({
     mutationFn: (id: string) => checkInAppointment(id),
-    onSuccess: () => {
-      toast.success("Patient checked in");
+    onSuccess: (appointment) => {
+      toast.success(
+        appointment.payer
+          ? `Checked in · ${appointment.payer.label} · Co-pay ${formatKshMinor(appointment.copay_due_minor)}`
+          : "Patient checked in",
+      );
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -310,6 +320,19 @@ export function AllAppointments({ onBook }: { onBook: () => void }) {
                       <p className="text-xs text-muted-foreground">
                         {appointment.patient.number ?? ""}
                       </p>
+                      {appointment.payer && (
+                        <Badge
+                          tone={
+                            appointment.payer.type === "SHA"
+                              ? appointment.payer.eligibility_status === "ACTIVE"
+                                ? "info"
+                                : "warning"
+                              : "muted"
+                          }
+                        >
+                          {appointment.payer.label}
+                        </Badge>
+                      )}
                     </td>
                     <td className={td}>{appointment.doctor.name ?? "—"}</td>
                     <td className={td}>{appointment.department.name ?? "—"}</td>

@@ -18,6 +18,9 @@ class EligibilityCheck(BaseModel, CreatedAtMixin):
     invoice_id = db.Column(
         db.Uuid(as_uuid=True), db.ForeignKey("invoices.id"), nullable=True, index=True
     )
+    appointment_id = db.Column(
+        db.Uuid(as_uuid=True), db.ForeignKey("appointments.id"), nullable=True, index=True
+    )
     sha_member_reference = db.Column(EncryptedText, nullable=False)
     status = db.Column(
         db.Enum(EligibilityStatus, native_enum=False, length=24),

@@ -234,7 +234,15 @@ def create_walk_in():
 
     data = WalkInSchema().load(request.get_json(silent=True) or {})
     appointment, position, duplicates = service.create_walk_in_appointment(data, current_user())
-    payload = service.serialize_appointment(appointment)
+
+    from app.claims.service import (
+        ensure_check_in_eligibility,
+        payer_summaries_for_appointments,
+    )
+
+    ensure_check_in_eligibility(appointment, current_user())
+    payer = payer_summaries_for_appointments([appointment]).get(str(appointment.id))
+    payload = service.serialize_appointment(appointment, payer=payer)
     payload["queue_position"] = position
     payload["potential_duplicates"] = [serialize_patient_brief(item) for item in duplicates]
     return created(payload)
@@ -365,7 +373,17 @@ def check_in(appointment_id):
     if appointment is None:
         raise not_found("Appointment not found")
     appointment = service.transition(appointment, AppointmentStatus.CHECKED_IN, current_user())
-    return ok(service.serialize_appointment(appointment))
+
+    from app.billing.service import ensure_draft_invoice_for_appointment
+    from app.claims.service import (
+        ensure_check_in_eligibility,
+        payer_summaries_for_appointments,
+    )
+
+    ensure_draft_invoice_for_appointment(appointment, current_user())
+    ensure_check_in_eligibility(appointment, current_user())
+    payer = payer_summaries_for_appointments([appointment]).get(str(appointment.id))
+    return ok(service.serialize_appointment(appointment, payer=payer))
 
 
 @bp.post("/appointments/<uuid:appointment_id>/no-show")
@@ -426,4 +444,15 @@ def get_queue():
         date.fromisoformat(request.args["date"]) if request.args.get("date") else date.today()
     )
     items = service.queue(doctor_id=doctor_id, target_date=target_date)
-    return ok({"items": [service.serialize_appointment(item) for item in items]})
+
+    from app.claims.service import payer_summaries_for_appointments
+
+    payers = payer_summaries_for_appointments(items)
+    return ok(
+        {
+            "items": [
+                service.serialize_appointment(item, payer=payers.get(str(item.id)))
+                for item in items
+            ]
+        }
+    )

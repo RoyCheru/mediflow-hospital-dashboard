@@ -79,12 +79,12 @@ async function openNewInvoice(page: Page, patientName: string) {
     timeout: 90_000,
   });
   const row = page.getByRole("row").filter({ hasText: patientName });
-  await row.getByRole("button", { name: "Create invoice" }).click();
+  await row.getByRole("button", { name: "Finalize draft" }).click();
   await page
-    .getByRole("dialog", { name: "Create invoice" })
-    .getByRole("button", { name: "Create invoice" })
+    .getByRole("dialog", { name: "Finalize draft" })
+    .getByRole("button", { name: "Finalize draft" })
     .click();
-  await expect(page.getByText(/Invoice INV-\d{4}-\d+ created/)).toBeVisible();
+  await expect(page.getByText(/Invoice INV-\d{4}-\d+ finalized/)).toBeVisible();
   return page.getByRole("dialog", { name: /^INV-/ });
 }
 
@@ -96,8 +96,18 @@ test("receptionist signs in to the billing desk; other roles are kept out", asyn
   await page.goto("/auth/login");
   // Submitting before hydration would fall back to a native GET form submit.
   await page.waitForLoadState("networkidle");
-  await page.getByLabel("Email").fill("reception@mediflow.test");
-  await page.getByLabel("Password").fill("Reception12345!");
+  // A late hydration re-render can wipe values typed into the cold-started page,
+  // so re-fill until both fields hold their values before submitting.
+  await expect(async () => {
+    await page.getByLabel("Email").fill("reception@mediflow.test");
+    await page.getByLabel("Password").fill("Reception12345!");
+    await expect(page.getByLabel("Email")).toHaveValue("reception@mediflow.test", {
+      timeout: 1_000,
+    });
+    await expect(page.getByLabel("Password")).toHaveValue("Reception12345!", {
+      timeout: 1_000,
+    });
+  }).toPass({ timeout: 60_000 });
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/receptionist$/, { timeout: 90_000 });
 

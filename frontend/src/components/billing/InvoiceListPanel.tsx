@@ -21,7 +21,7 @@ import { formatDate, formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ListPagination } from "./ListPagination";
 
-const statuses = ["ISSUED", "PARTIALLY_PAID", "PAID", "VOIDED", "REFUNDED"];
+const statuses = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOIDED", "REFUNDED"];
 
 /** Searchable invoice list; a row opens checkout via ``onOpen``. */
 export function InvoiceListPanel({
@@ -110,7 +110,7 @@ export function InvoiceListPanel({
                 return (
                   <tr key={invoice.id} className={tbodyRow}>
                     <td className={cn(td, "font-medium")}>
-                      {invoice.invoice_number}
+                      {invoice.invoice_number ?? "Draft"}
                       <p className="text-xs text-muted-foreground">
                         {formatDate(invoice.issued_at ?? invoice.created_at)}
                       </p>

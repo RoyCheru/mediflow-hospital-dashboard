@@ -6,7 +6,7 @@ import { EmptyBlock, ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
 import { adminViewKeys, getAdminQueue, listAdminStaff } from "@/lib/api/adminViews";
 import { listDepartments } from "@/lib/api/management";
-import { formatDate, formatTime, titleize } from "@/lib/format";
+import { formatDate, formatKshMinor, formatTime, titleize } from "@/lib/format";
 import { queueRefetchInterval } from "@/lib/queuePolling";
 import { cn } from "@/lib/utils";
 
@@ -155,6 +155,19 @@ export function LiveQueuePanel() {
                             {titleize(entry.source)}
                           </Badge>
                           {entry.urgent && <Badge tone="danger">Urgent</Badge>}
+                          {entry.payer && (
+                            <Badge
+                              tone={
+                                entry.payer.type === "SHA"
+                                  ? entry.payer.eligibility_status === "ACTIVE"
+                                    ? "info"
+                                    : "warning"
+                                  : "muted"
+                              }
+                            >
+                              {entry.payer.label}
+                            </Badge>
+                          )}
                         </div>
                         <p className="text-xs text-muted-foreground">
                           {[
@@ -163,6 +176,7 @@ export function LiveQueuePanel() {
                             entry.arrived_at
                               ? `Arrived ${formatTime(entry.arrived_at)}`
                               : "Arrival not recorded",
+                            entry.payer ? `Co-pay ${formatKshMinor(entry.copay_due_minor)}` : null,
                           ]
                             .filter(Boolean)
                             .join(" · ")}

@@ -427,7 +427,9 @@ function Page() {
                 ) : (
                   invoicesQuery.data?.items.map((invoice) => (
                     <tr key={invoice.id} className={tbodyRow}>
-                      <td className={cn(td, "font-semibold")}>{invoice.invoice_number}</td>
+                      <td className={cn(td, "font-semibold")}>
+                        {invoice.invoice_number ?? "Draft"}
+                      </td>
                       <td className={td}>{invoice.patient_name ?? "—"}</td>
                       <td className={td}>
                         {invoice.primary_method ? (
