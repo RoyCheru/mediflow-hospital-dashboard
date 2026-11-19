@@ -125,6 +125,13 @@ test("doctor starts, documents and completes a visit from the queue", async ({ p
   await expect(page.getByText(/Visit completed/)).toBeVisible();
   await expect(page.getByText("Completed", { exact: true })).toBeVisible();
 
+  // The consultations list shows it as completed and links back to the visit.
+  await page.goto("/doctor/consultations");
+  const listRow = page.getByRole("row", { name: new RegExp(patient.name) });
+  await expect(listRow.getByText("Completed")).toBeVisible({ timeout: 90_000 });
+  await listRow.getByRole("link", { name: patient.name }).click();
+  await expect(page).toHaveURL(visitUrl);
+
   // The billing desk now sees the visit with its draft bill.
   const readyToBill = await request.get(`${API_URL}/billing/ready-to-bill?page_size=100`, {
     headers: { Authorization: `Bearer ${patient.receptionToken}` },
