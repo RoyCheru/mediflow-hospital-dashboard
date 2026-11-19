@@ -170,3 +170,16 @@ def test_starting_a_checked_in_patient_does_not_repeat_the_sha_check(client, tok
     )
     assert response.status_code == 201
     assert EligibilityCheck.query.filter_by(appointment_id=UUID(appointment["id"])).count() == 1
+
+
+def test_appointment_detail_shows_the_payer_to_staff_only(client, tokens, ids):
+    appointment, _ = _check_in(client, tokens, ids)
+    url = f"/api/v1/appointments/{appointment['id']}"
+
+    detail = client.get(url, headers=auth(tokens["doctor"])).get_json()["data"]
+    assert detail["payer"]["label"] == "SHA · Active"
+    assert detail["copay_due_minor"] == 0
+
+    own = client.get(url, headers=auth(tokens["patient"]))
+    assert own.status_code == 200
+    assert "payer" not in own.get_json()["data"]
