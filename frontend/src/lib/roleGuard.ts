@@ -2,11 +2,12 @@ import { redirect } from "@tanstack/react-router";
 import { getStoredSession } from "@/lib/auth-storage";
 import type { Role } from "@/types/api";
 
-export type RoleHome = "/admin" | "/receptionist" | "/cashier" | "/unauthorized";
+export type RoleHome = "/admin" | "/doctor" | "/receptionist" | "/cashier" | "/unauthorized";
 
 /** Where each role lands after sign-in. Roles without a live area stay on /unauthorized. */
 export function homeForRole(role: Role): RoleHome {
   if (role === "ADMIN") return "/admin";
+  if (role === "DOCTOR") return "/doctor";
   if (role === "RECEPTIONIST") return "/receptionist";
   if (role === "CASHIER") return "/cashier";
   return "/unauthorized";

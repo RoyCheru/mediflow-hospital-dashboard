@@ -12,6 +12,16 @@ export function formatKshMinor(minor: number | null | undefined): string {
   }).format(value);
 }
 
+/** Today's date (YYYY-MM-DD) in the hospital timezone, matching the API's business day. */
+export function hospitalTodayIso(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: HOSPITAL_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
 export function formatMoneyMinor(minor: number | null | undefined): string {
   return (minor ?? 0).toLocaleString("en-KE");
 }

@@ -402,6 +402,9 @@ export type Appointment = {
   queue_position?: number | null;
   payer?: PayerSummary;
   copay_due_minor?: number;
+  /** Present on queue rows and appointment detail: the visit opened for this appointment. */
+  visit_id?: string | null;
+  visit_completed_at?: string | null;
 };
 
 export type Visit = {
@@ -425,6 +428,55 @@ export type Visit = {
   diagnosis?: string | null;
   plan?: string | null;
   ai_summary?: string | null;
+};
+
+export type VisitVitals = {
+  temperature?: number;
+  pulse?: number;
+  respiratory_rate?: number;
+  systolic?: number;
+  diastolic?: number;
+  spo2?: number;
+  weight_kg?: number;
+  height_cm?: number;
+};
+
+export type VisitUpdateInput = {
+  presenting_complaint?: string | null;
+  vitals?: VisitVitals;
+  notes?: string | null;
+  diagnosis?: string | null;
+  plan?: string | null;
+};
+
+export type PrescriptionItem = {
+  id: string;
+  drug_name: string;
+  dose: string;
+  frequency: string;
+  duration: string;
+  route: string | null;
+  instructions: string | null;
+  quantity: number | null;
+};
+
+export type PrescriptionItemInput = Omit<
+  PrescriptionItem,
+  "id" | "route" | "instructions" | "quantity"
+> & {
+  route?: string | null;
+  instructions?: string | null;
+  quantity?: number | null;
+};
+
+export type Prescription = {
+  id: string;
+  visit_id: string;
+  doctor_id: string;
+  status: string;
+  notes: string | null;
+  issued_at: string | null;
+  items: PrescriptionItem[];
 };
 
 export type NotificationChannel = "WHATSAPP" | "EMAIL" | "SMS" | "IN_APP";
