@@ -121,3 +121,52 @@ def test_walk_in_runs_eligibility_and_queue_shows_the_payer(client, tokens, ids)
     )
     assert admin_entry["payer"]["type"] == "SHA"
     assert admin_entry["copay_due_minor"] == 0
+
+
+def _start_without_check_in(client, tokens, ids):
+    appointment = book_appointment(client, tokens, ids)
+    response = client.post(
+        f"/api/v1/appointments/{appointment['id']}/visits",
+        json={"presenting_complaint": "Walked straight in"},
+        headers=auth(tokens["doctor"]),
+    )
+    assert response.status_code == 201, response.get_json()
+    return appointment
+
+
+def test_doctor_starting_a_booked_patient_runs_the_sha_check(client, tokens, ids):
+    appointment = _start_without_check_in(client, tokens, ids)
+
+    check = EligibilityCheck.query.filter_by(appointment_id=UUID(appointment["id"])).one()
+    assert check.status == EligibilityStatus.ACTIVE
+    assert check.invoice_id is not None
+
+    items = client.get(
+        "/api/v1/queue?date=2030-01-07", headers=auth(tokens["reception"])
+    ).get_json()["data"]["items"]
+    row = next(item for item in items if item["id"] == appointment["id"])
+    assert row["status"] == "IN_CONSULTATION"
+    assert row["payer"]["label"] == "SHA · Active"
+
+
+def test_sha_failure_does_not_block_a_doctor_started_visit(client, tokens, ids, monkeypatch):
+    class TimingOutGateway:
+        def verify_member(self, member_reference, patient_context=None):
+            raise ProviderTimeout("SHA timed out")
+
+    monkeypatch.setattr("app.claims.service.get_sha_gateway", lambda: TimingOutGateway())
+    appointment = _start_without_check_in(client, tokens, ids)
+
+    check = EligibilityCheck.query.filter_by(appointment_id=UUID(appointment["id"])).one()
+    assert check.status == EligibilityStatus.UNKNOWN
+
+
+def test_starting_a_checked_in_patient_does_not_repeat_the_sha_check(client, tokens, ids):
+    appointment, _ = _check_in(client, tokens, ids)
+    response = client.post(
+        f"/api/v1/appointments/{appointment['id']}/visits",
+        json={"presenting_complaint": "Checked in first"},
+        headers=auth(tokens["doctor"]),
+    )
+    assert response.status_code == 201
+    assert EligibilityCheck.query.filter_by(appointment_id=UUID(appointment["id"])).count() == 1

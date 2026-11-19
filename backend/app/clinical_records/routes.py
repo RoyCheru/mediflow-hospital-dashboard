@@ -11,7 +11,7 @@ from app.clinical_records.schemas import (
 )
 from app.common.audit import record_audit
 from app.common.decorators import auth_required, current_user
-from app.common.enums import AppointmentSource, AttachmentType, Role
+from app.common.enums import AppointmentSource, AppointmentStatus, AttachmentType, Role
 from app.common.errors import forbidden, not_found
 from app.common.permissions import assert_doctor_owns_visit, patient_profile_for_user
 from app.common.responses import created, ok
@@ -53,7 +53,16 @@ def create_visit(appointment_id):
     if appointment.doctor_id != _doctor(current_user()).id:
         raise forbidden()
     data = VisitCreateSchema().load(request.get_json(silent=True) or {})
+    skipped_check_in = appointment.status == AppointmentStatus.SCHEDULED
     visit = service.create_visit(appointment, data, current_user())
+    if skipped_check_in:
+        # The doctor started a booked patient that reception never checked in. The
+        # draft bill was created on the implicit check-in; run the SHA check now too,
+        # after the visit is committed. A provider failure is stored as UNKNOWN and
+        # never blocks the consultation.
+        from app.claims.service import ensure_check_in_eligibility
+
+        ensure_check_in_eligibility(appointment, current_user())
     return created(service.serialize_visit(visit))
 
 
