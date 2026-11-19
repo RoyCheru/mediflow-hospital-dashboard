@@ -271,10 +271,12 @@ the discount payload, then finalizes it and returns `201` like before.
   check/format clean; migration `0005` tested upgrade → downgrade → upgrade.
 - Frontend: tsc clean, eslint 0 errors (same 9 pre-existing warnings), production
   build OK, vitest **24 passed**.
-- Playwright: the suite was started but did not complete cleanly on this machine.
-  Tests stalled in page hydration/cold-start (the known dev-server issue from
-  Phase B/C), not in assertions; re-run `npx playwright test` on an idle machine
-  before merging. The billing-desk spec labels were updated for “Finalize draft”.
+- Playwright (re-run on an idle machine, 2026-11-19): **17/17 passed**. The billing-desk
+  spec labels were updated for “Finalize draft”. On one cold start the
+  receptionist sign-in test lost the typed email to a late hydration re-render
+  (password kept, email empty, so the submit did nothing). The test now re-fills
+  both fields until they hold their values before submitting. This was a test
+  timing problem, not an app change.
 
 ### Known gaps
 

@@ -96,8 +96,18 @@ test("receptionist signs in to the billing desk; other roles are kept out", asyn
   await page.goto("/auth/login");
   // Submitting before hydration would fall back to a native GET form submit.
   await page.waitForLoadState("networkidle");
-  await page.getByLabel("Email").fill("reception@mediflow.test");
-  await page.getByLabel("Password").fill("Reception12345!");
+  // A late hydration re-render can wipe values typed into the cold-started page,
+  // so re-fill until both fields hold their values before submitting.
+  await expect(async () => {
+    await page.getByLabel("Email").fill("reception@mediflow.test");
+    await page.getByLabel("Password").fill("Reception12345!");
+    await expect(page.getByLabel("Email")).toHaveValue("reception@mediflow.test", {
+      timeout: 1_000,
+    });
+    await expect(page.getByLabel("Password")).toHaveValue("Reception12345!", {
+      timeout: 1_000,
+    });
+  }).toPass({ timeout: 60_000 });
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/receptionist$/, { timeout: 90_000 });
 
