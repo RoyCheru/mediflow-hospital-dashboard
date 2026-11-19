@@ -66,6 +66,13 @@ test("doctor signs in to the doctor area", async ({ page }) => {
     await page.getByRole("button", { name: /sign in/i }).click();
     await expect(page).toHaveURL(/\/doctor$/, { timeout: 15_000 });
   }).toPass({ timeout: 150_000 });
+
+  // The dashboard counts come from the live queue and visit list.
+  await expect(page.getByRole("heading", { name: /Habari, Otieno/ })).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(page.getByText("Waiting now")).toBeVisible();
+  await expect(page.getByText("Completed today")).toBeVisible();
 });
 
 test("doctor starts, documents and completes a visit from the queue", async ({ page, request }) => {
