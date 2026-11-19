@@ -66,6 +66,40 @@ def create_visit(appointment_id):
     return created(service.serialize_visit(visit))
 
 
+@bp.get("/visits/mine")
+@auth_required(Role.DOCTOR)
+def list_my_visits():
+    """The signed-in doctor's visits, newest first, without clinical text.
+
+    Filters: completed=true|false, date=YYYY-MM-DD (hospital day of started_at).
+    """
+    from datetime import date
+
+    from app.clinical_records.models import Visit
+    from app.common.errors import bad_request
+    from app.common.pagination import paginated
+    from app.common.time import hospital_day_bounds
+
+    query = Visit.query.filter(Visit.doctor_id == _doctor(current_user()).id)
+    completed = request.args.get("completed")
+    if completed == "true":
+        query = query.filter(Visit.completed_at.isnot(None))
+    elif completed == "false":
+        query = query.filter(Visit.completed_at.is_(None))
+    elif completed is not None:
+        raise bad_request("completed must be true or false")
+    if request.args.get("date"):
+        try:
+            start, end = hospital_day_bounds(date.fromisoformat(request.args["date"]))
+        except ValueError as exc:
+            raise bad_request("Invalid date") from exc
+        query = query.filter(Visit.started_at >= start, Visit.started_at < end)
+    query = query.order_by(Visit.started_at.desc())
+    return ok(
+        paginated(query, lambda visit: service.serialize_visit(visit, include_clinical=False))
+    )
+
+
 @bp.get("/visits/<uuid:visit_id>")
 @auth_required(Role.DOCTOR, Role.ADMIN, Role.PATIENT)
 def get_visit(visit_id):
