@@ -273,22 +273,25 @@ def list_appointments():
 
         query = query.filter(Appointment.department_id == UUID(request.args["department_id"]))
     if request.args.get("date"):
-        target = date.fromisoformat(request.args["date"])
-        from datetime import datetime, time, timezone
+        from app.common.time import hospital_day_bounds
 
-        start = datetime.combine(target, time.min, tzinfo=timezone.utc)
-        end = start.replace(hour=23, minute=59, second=59)
+        try:
+            target = date.fromisoformat(request.args["date"])
+        except ValueError as exc:
+            raise bad_request("Invalid date") from exc
+        # The hospital business day, not the UTC day (matches the queue).
+        start, end = hospital_day_bounds(target)
         query = query.filter(
             or_(
                 and_(
                     Appointment.source != AppointmentSource.WALK_IN,
                     Appointment.scheduled_start >= start,
-                    Appointment.scheduled_start <= end,
+                    Appointment.scheduled_start < end,
                 ),
                 and_(
                     Appointment.source == AppointmentSource.WALK_IN,
                     Appointment.arrived_at >= start,
-                    Appointment.arrived_at <= end,
+                    Appointment.arrived_at < end,
                 ),
             )
         )

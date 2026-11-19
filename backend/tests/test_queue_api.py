@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 
 from app.common.enums import AppointmentSource, AppointmentStatus
 from app.common.time import hospital_today
@@ -83,3 +83,35 @@ def test_queue_and_appointment_expose_the_open_visit(client, tokens, ids):
     ).get_json()["data"]
     assert detail["visit_id"] == visit["id"]
     assert detail["visit_completed_at"] is not None
+
+
+def test_appointment_list_date_filter_uses_the_hospital_day(client, tokens, ids):
+    today = hospital_today()
+    # Stored in UTC like the app does (SQLite compares as text).
+    # 01:30 in Nairobi is 22:30 UTC the previous day: a UTC-day filter would miss it.
+    early = _create_appointment(
+        ids,
+        scheduled_start=_local_datetime(today, 1, 30).astimezone(timezone.utc),
+        scheduled_end=_local_datetime(today, 2).astimezone(timezone.utc),
+        status=AppointmentStatus.SCHEDULED,
+        source=AppointmentSource.RECEPTION,
+    )
+    previous_evening = _create_appointment(
+        ids,
+        scheduled_start=_local_datetime(today - timedelta(days=1), 23, 30).astimezone(timezone.utc),
+        scheduled_end=_local_datetime(today, 0).astimezone(timezone.utc),
+        status=AppointmentStatus.SCHEDULED,
+        source=AppointmentSource.RECEPTION,
+    )
+    db.session.commit()
+    headers = auth(tokens["reception"])
+
+    response = client.get(
+        f"/api/v1/appointments?date={today.isoformat()}&page_size=100", headers=headers
+    )
+    assert response.status_code == 200
+    returned = {item["id"] for item in response.get_json()["data"]["items"]}
+    assert str(early.id) in returned
+    assert str(previous_evening.id) not in returned
+
+    assert client.get("/api/v1/appointments?date=bad", headers=headers).status_code == 400
