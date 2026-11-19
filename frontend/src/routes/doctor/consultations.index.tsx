@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ClipboardList } from "lucide-react";
 import { placeholderRoute } from "@/components/PlaceholderPage";
 
-export const Route = createFileRoute("/doctor/consultations")({
+export const Route = createFileRoute("/doctor/consultations/")({
   ...placeholderRoute({
     title: "Consultations",
     description: "Visit notes, diagnoses, structured prescriptions and AI-assisted summaries.",
