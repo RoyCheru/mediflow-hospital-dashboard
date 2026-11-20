@@ -9,7 +9,6 @@ import {
   CreditCard,
   Eye,
   FileClock,
-  Plus,
   ShieldCheck,
   Wallet,
 } from "lucide-react";
@@ -33,16 +32,14 @@ import {
 } from "@/components/kit";
 import { DataState, EmptyBlock, ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
+import { CashReconciliationPanel } from "@/components/billing/CashReconciliationPanel";
 import {
   billingKeys,
-  createCashReconciliation,
   createPaymentIntent,
   decideRefund,
   decideVoid,
   getCashSummary,
   getInvoice,
-  getReconciliationQueue,
-  listCashReconciliations,
   listInvoices,
   listRefunds,
   listTransactions,
@@ -117,7 +114,6 @@ function Page() {
     approve: boolean;
   } | null>(null);
   const [decisionReason, setDecisionReason] = useState("");
-  const [reconForm, setReconForm] = useState({ counted: "", notes: "" });
 
   const departmentsQuery = useQuery({
     queryKey: ["admin", "departments"],
@@ -186,19 +182,6 @@ function Page() {
     staleTime: 15_000,
     enabled: tab === "approvals",
   });
-  const queueQuery = useQuery({
-    queryKey: billingKeys.reconciliationQueue,
-    queryFn: getReconciliationQueue,
-    staleTime: 15_000,
-    enabled: tab === "reconciliation",
-  });
-  const reconciliationsQuery = useQuery({
-    queryKey: billingKeys.reconciliations({ page_size: 10 }),
-    queryFn: () => listCashReconciliations({ page_size: 10 }),
-    staleTime: 30_000,
-    enabled: tab === "reconciliation",
-  });
-
   const invalidateBilling = () => queryClient.invalidateQueries({ queryKey: billingKeys.all });
 
   const paymentMutation = useMutation({
@@ -258,27 +241,6 @@ function Page() {
       setDecisionReason("");
       void invalidateBilling();
       void queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const reconMutation = useMutation({
-    mutationFn: async () => {
-      const countedMinor = Math.round(Number(reconForm.counted) * 100);
-      if (!Number.isFinite(countedMinor) || countedMinor < 0) {
-        throw new Error("Enter a valid counted cash amount");
-      }
-      const today = new Date().toISOString().slice(0, 10);
-      return createCashReconciliation({
-        business_date: today,
-        counted_cash_minor: countedMinor,
-        notes: reconForm.notes || undefined,
-      });
-    },
-    onSuccess: () => {
-      toast.success("Cash reconciliation saved");
-      setReconForm({ counted: "", notes: "" });
-      void invalidateBilling();
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -677,150 +639,7 @@ function Page() {
         </div>
       )}
 
-      {tab === "reconciliation" && (
-        <div className="space-y-6">
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Panel title="Cash expected">
-              <p className="text-2xl font-bold">
-                {formatKshMinor(cashQuery.data?.cash_expected_minor ?? 0)}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {cashQuery.data?.business_date ?? new Date().toISOString().slice(0, 10)}
-              </p>
-              <ul className="mt-3 space-y-2">
-                {(cashQuery.data?.methods ?? []).map((item) => (
-                  <li key={item.method} className="flex justify-between text-sm">
-                    <span>{paymentMethodLabel(item.method)}</span>
-                    <span className="font-semibold">{formatKshMinor(item.amount_minor)}</span>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-            <Panel title="Record reconciliation">
-              <div className="space-y-3">
-                <Field label="Counted cash (KES)">
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    className={inputCls}
-                    value={reconForm.counted}
-                    onChange={(event) =>
-                      setReconForm((current) => ({ ...current, counted: event.target.value }))
-                    }
-                  />
-                </Field>
-                <Field label="Notes">
-                  <textarea
-                    className={textareaCls}
-                    value={reconForm.notes}
-                    onChange={(event) =>
-                      setReconForm((current) => ({ ...current, notes: event.target.value }))
-                    }
-                    placeholder="Any variance explanation"
-                  />
-                </Field>
-                <Button
-                  className="w-full"
-                  onClick={() => reconMutation.mutate()}
-                  disabled={reconMutation.isPending}
-                >
-                  <Plus /> {reconMutation.isPending ? "Saving…" : "Save reconciliation"}
-                </Button>
-              </div>
-            </Panel>
-            <Panel title="Reconciliation queue">
-              <DataState
-                isLoading={queueQuery.isLoading}
-                error={queueQuery.error}
-                isEmpty={
-                  (queueQuery.data?.payment_intents.length ?? 0) +
-                    (queueQuery.data?.transactions.length ?? 0) ===
-                  0
-                }
-                loading={<LoadingRows rows={3} />}
-                empty={
-                  <EmptyBlock
-                    title="Queue is clear"
-                    message="No unconfirmed payments need attention."
-                  />
-                }
-              >
-                <ul className="space-y-2 text-sm">
-                  {queueQuery.data?.payment_intents.map((intent) => (
-                    <li
-                      key={intent.id}
-                      className="flex justify-between rounded-lg bg-secondary/50 p-2"
-                    >
-                      <span>M-Pesa intent</span>
-                      <span className="font-semibold">{formatKshMinor(intent.amount_minor)}</span>
-                    </li>
-                  ))}
-                  {queueQuery.data?.transactions.map((transaction) => (
-                    <li
-                      key={transaction.id}
-                      className="flex justify-between rounded-lg bg-secondary/50 p-2"
-                    >
-                      <span>{paymentMethodLabel(transaction.method)}</span>
-                      <span className="font-semibold">
-                        {formatKshMinor(transaction.amount_minor)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </DataState>
-            </Panel>
-          </div>
-
-          <Panel title="Reconciliation history">
-            <DataState
-              isLoading={reconciliationsQuery.isLoading}
-              error={reconciliationsQuery.error}
-              isEmpty={(reconciliationsQuery.data?.items.length ?? 0) === 0}
-              loading={<LoadingRows rows={3} />}
-              empty={
-                <EmptyBlock
-                  title="No reconciliations yet"
-                  message="Saved shifts will appear here."
-                />
-              }
-            >
-              <div className={tableWrap}>
-                <table className="w-full">
-                  <thead>
-                    <tr className={theadRow}>
-                      <th className={th}>Date</th>
-                      <th className={th}>Expected</th>
-                      <th className={th}>Counted</th>
-                      <th className={th}>Variance</th>
-                      <th className={th}>Status</th>
-                      <th className={th}>Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reconciliationsQuery.data?.items.map((item) => (
-                      <tr key={item.id} className={tbodyRow}>
-                        <td className={td}>{formatDate(item.business_date)}</td>
-                        <td className={td}>{formatKshMinor(item.expected_cash_minor)}</td>
-                        <td className={td}>{formatKshMinor(item.counted_cash_minor)}</td>
-                        <td className={cn(td, item.variance_minor !== 0 && "text-destructive")}>
-                          {formatKshMinor(item.variance_minor)}
-                        </td>
-                        <td className={td}>
-                          <Badge>{titleize(item.status)}</Badge>
-                        </td>
-                        <td className={cn(td, "max-w-64 truncate text-muted-foreground")}>
-                          {item.notes ?? "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </DataState>
-          </Panel>
-        </div>
-      )}
+      {tab === "reconciliation" && <CashReconciliationPanel />}
 
       <Modal
         open={Boolean(selectedId)}

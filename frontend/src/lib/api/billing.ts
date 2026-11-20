@@ -161,3 +161,24 @@ export function createCashReconciliation(body: {
 }) {
   return api.post<CashReconciliation>("/billing/cash-reconciliations", body);
 }
+
+/** Settle a parked (UNCONFIRMED) payment. The API refuses SUCCESS when it would overpay. */
+export function resolveTransaction(
+  transactionId: string,
+  body: { resolution: "SUCCESS" | "FAILED"; notes?: string | undefined },
+) {
+  return api.post<Transaction>(`/billing/transactions/${transactionId}/resolve`, body);
+}
+
+/** Ask an admin to refund part or all of a successful payment. */
+export function requestRefund(
+  transactionId: string,
+  body: { amount_minor: number; reason: string },
+) {
+  return api.post<Refund>(`/transactions/${transactionId}/refund-requests`, body);
+}
+
+/** Ask an admin to void an invoice (refused while money or open claims remain). */
+export function requestVoid(invoiceId: string, body: { reason: string }) {
+  return api.post<VoidRequest>(`/invoices/${invoiceId}/void-requests`, body);
+}
