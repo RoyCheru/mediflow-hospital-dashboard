@@ -1,16 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Wallet } from "lucide-react";
-import { placeholderRoute } from "@/components/PlaceholderPage";
+import { PageHeader } from "@/components/kit";
+import { CashReconciliationPanel } from "@/components/billing/CashReconciliationPanel";
 
 export const Route = createFileRoute("/cashier/reconciliation")({
-  ...placeholderRoute({
-    title: "Cash Reconciliation",
-    description: "Reconcile shift cash against system totals and resolve discrepancies.",
-    icon: Wallet,
-    items: [
-      "Opening and closing cash per shift",
-      "Expected vs counted totals with variance",
-      "Unconfirmed transaction resolution queue",
-    ],
-  }),
+  head: () => ({ meta: [{ title: "Cash Reconciliation — MediFlow" }] }),
+  component: Page,
 });
+
+function Page() {
+  return (
+    <div>
+      <PageHeader
+        title="Cash Reconciliation"
+        subtitle="Count the drawer against today's expected cash and settle unconfirmed payments."
+      />
+      <CashReconciliationPanel />
+    </div>
+  );
+}
