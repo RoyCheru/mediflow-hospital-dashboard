@@ -182,3 +182,49 @@ test("cashier sees desk payments on the payments page", async ({ page, request }
   await page.getByLabel("Method").selectOption("CASH");
   await expect(page.locator("tbody tr").first()).toContainText("Cash");
 });
+
+test("desk adds and removes draft lines before finalizing", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  const patient = await completedWalkIn(request, `Neema${Date.now().toString().slice(-5)}`);
+  await seedSession(page, request, "reception@mediflow.test", "Reception12345!");
+  await page.goto("/receptionist/billing");
+  await expect(page.getByRole("heading", { name: "Billing & Payments" })).toBeVisible({
+    timeout: 90_000,
+  });
+  await page
+    .getByRole("row")
+    .filter({ hasText: patient })
+    .getByRole("button", { name: "Finalize draft" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Finalize draft" });
+  const lines = dialog.getByRole("list", { name: "Draft lines" });
+  await expect(lines.getByRole("listitem")).toHaveCount(2); // consultation + subtotal row
+  const subtotal = lines.getByText("Draft subtotal").locator("..");
+  const before = await subtotal.textContent();
+
+  const addLine = dialog.getByRole("form", { name: "Add line" });
+  const cbcLabel = (
+    await addLine
+      .getByLabel("Add service")
+      .locator("option", { hasText: "Complete blood count" })
+      .textContent()
+  )?.trim();
+  expect(cbcLabel).toBeTruthy();
+  await addLine.getByLabel("Add service").selectOption({ label: cbcLabel ?? "" });
+  await addLine.getByRole("button", { name: "Add line" }).click();
+  await expect(lines.getByRole("listitem", { name: /Complete blood count/ })).toBeVisible();
+  await expect(subtotal).not.toHaveText(before ?? "");
+
+  await dialog.getByRole("button", { name: /Remove Complete blood count/ }).click();
+  await expect(lines.getByRole("listitem", { name: /Complete blood count/ })).toHaveCount(0);
+  await expect(subtotal).toHaveText(before ?? "");
+
+  await addLine.getByLabel("Add service").selectOption({ label: cbcLabel ?? "" });
+  await addLine.getByRole("button", { name: "Add line" }).click();
+  await expect(lines.getByRole("listitem", { name: /Complete blood count/ })).toBeVisible();
+  await dialog.getByRole("button", { name: "Finalize draft" }).click();
+  await expect(page.getByText(/Invoice INV-\d{4}-\d+ finalized/)).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: /^INV-/ }).getByText(/Complete blood count/),
+  ).toBeVisible();
+});

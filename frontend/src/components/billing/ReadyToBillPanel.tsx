@@ -23,6 +23,7 @@ import { formatDateTime, formatKshMinor } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { ReadyToBillVisit } from "@/types/api";
+import { DraftLinesEditor } from "./DraftLinesEditor";
 import { ListPagination } from "./ListPagination";
 
 /** Completed visits with an open encounter draft; finalizing opens checkout. */
@@ -122,7 +123,7 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
                     <Button
                       size="sm"
                       onClick={() => setTarget(visit)}
-                      disabled={!visit.expected_line}
+                      disabled={!visit.draft_invoice_id && !visit.expected_line}
                     >
                       <FilePlus2 /> Finalize draft
                     </Button>
@@ -146,6 +147,7 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
         onClose={() => setTarget(null)}
         title="Finalize draft"
         subtitle={target?.patient.name ?? undefined}
+        wide
         footer={
           <>
             <Button variant="outline" onClick={() => setTarget(null)}>
@@ -157,12 +159,18 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
           </>
         }
       >
-        {target?.expected_line && (
+        {target && (target.draft_invoice_id || target.expected_line) && (
           <div className="space-y-3">
-            <DetailRow
-              label={target.expected_line.description}
-              value={formatKshMinor(target.expected_line.unit_price_minor)}
-            />
+            {target.draft_invoice_id ? (
+              <DraftLinesEditor invoiceId={target.draft_invoice_id} />
+            ) : (
+              target.expected_line && (
+                <DetailRow
+                  label={target.expected_line.description}
+                  value={formatKshMinor(target.expected_line.unit_price_minor)}
+                />
+              )
+            )}
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label="Discount (KES, optional)"
