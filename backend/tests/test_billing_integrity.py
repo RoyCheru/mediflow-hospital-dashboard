@@ -412,3 +412,68 @@ def test_claims_aging_handles_stored_submission_times(client, tokens, ids):
     db.session.expire_all()  # force submitted_at to be re-read from the database
     response = client.get("/api/v1/claims/aging", headers=auth(tokens["admin"]))
     assert response.status_code == 200, response.get_json()
+
+
+def _resolve(client, tokens, transaction_id, resolution):
+    return client.post(
+        f"/api/v1/billing/transactions/{transaction_id}/resolve",
+        json={"resolution": resolution, "notes": "Checked against M-Pesa statement"},
+        headers=auth(tokens["cashier"]),
+    )
+
+
+def _parked(client, tokens, reference):
+    return next(
+        item
+        for item in _reconciliation(client, tokens)["transactions"]
+        if item["reference"] == reference
+    )
+
+
+def test_resolve_refuses_to_accept_a_payment_on_a_voided_invoice(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    intent = _stk_intent(client, tokens, invoice, invoice["total_minor"], "resolve-void")
+    assert _void_invoice(client, tokens, invoice["id"]).status_code == 200
+    _stk_callback(client, intent, invoice["total_minor"], "QKRESVOID")
+    parked = _parked(client, tokens, "QKRESVOID")
+
+    refused = _resolve(client, tokens, parked["id"], "SUCCESS")
+    assert refused.status_code == 409
+    assert "voided" in refused.get_json()["error"]["message"]
+    assert _invoice(client, tokens, invoice["id"])["amount_paid_minor"] == 0
+
+    failed = _resolve(client, tokens, parked["id"], "FAILED")
+    assert failed.status_code == 200
+    assert failed.get_json()["data"]["status"] == "FAILED"
+
+
+def test_resolve_refuses_to_accept_an_overpayment(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    total = invoice["total_minor"]
+    first = _stk_intent(client, tokens, invoice, total, "resolve-over-1")
+    second = _stk_intent(client, tokens, invoice, total, "resolve-over-2")
+    _stk_callback(client, first, total, "QKRESOVER1")
+    _stk_callback(client, second, total, "QKRESOVER2")
+    parked = _parked(client, tokens, "QKRESOVER2")
+
+    refused = _resolve(client, tokens, parked["id"], "SUCCESS")
+    assert refused.status_code == 409
+    assert "exceeds the outstanding balance" in refused.get_json()["error"]["message"]
+    updated = _invoice(client, tokens, invoice["id"])
+    assert updated["amount_paid_minor"] == total
+    assert updated["balance_minor"] == 0
+
+
+def test_resolve_accepts_a_parked_payment_that_fits_and_only_once(client, tokens, ids):
+    _, _, invoice = create_invoice_flow(client, tokens, ids)
+    intent = _stk_intent(client, tokens, invoice, 100_000, "resolve-fit")
+    _stk_callback(client, intent, 90_000, "QKRESFIT")  # amount mismatch: parked
+    parked = _parked(client, tokens, "QKRESFIT")
+
+    accepted = _resolve(client, tokens, parked["id"], "SUCCESS")
+    assert accepted.status_code == 200, accepted.get_json()
+    assert _invoice(client, tokens, invoice["id"])["amount_paid_minor"] == 90_000
+
+    again = _resolve(client, tokens, parked["id"], "SUCCESS")
+    assert again.status_code == 409
+    assert _invoice(client, tokens, invoice["id"])["amount_paid_minor"] == 90_000

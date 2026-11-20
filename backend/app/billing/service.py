@@ -1418,8 +1418,39 @@ def reconciliation_queue():
 
 
 def resolve_transaction(transaction, data, actor):
+    """Settle a parked (UNCONFIRMED) payment from the reconciliation queue.
+
+    Accepting it (SUCCESS) is only allowed when it could have been applied in the
+    first place: the invoice is payable and the amount fits the outstanding
+    balance. Otherwise the money must be returned to the payer and the
+    transaction resolved as FAILED, so a click cannot overpay or pay a voided bill.
+    """
     invoice = lock_invoice(transaction.invoice_id)
+    if transaction.status != TransactionStatus.UNCONFIRMED:
+        raise conflict(
+            "Only unconfirmed payments can be resolved",
+            {"transaction_id": str(transaction.id), "status": transaction.status.value},
+        )
     if data["resolution"] == "SUCCESS":
+        if invoice.status in {
+            InvoiceStatus.DRAFT,
+            InvoiceStatus.VOIDED,
+            InvoiceStatus.REFUNDED,
+        }:
+            raise conflict(
+                f"Cannot accept a payment on a {invoice.status.value.lower()} invoice; "
+                "return the money to the payer and resolve it as failed",
+                {"invoice_id": str(invoice.id), "invoice_status": invoice.status.value},
+            )
+        if int(transaction.amount_minor) > int(invoice.balance_minor):
+            raise conflict(
+                "Payment exceeds the outstanding balance; return the money to the payer "
+                "and resolve it as failed",
+                {
+                    "amount_minor": int(transaction.amount_minor),
+                    "balance_minor": int(invoice.balance_minor),
+                },
+            )
         transaction.status = TransactionStatus.SUCCESS
     else:
         transaction.status = TransactionStatus.FAILED
