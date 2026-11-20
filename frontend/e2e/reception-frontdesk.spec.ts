@@ -104,7 +104,10 @@ test("admin register and booking dialogs still work through the shared component
   ).toBeVisible({
     timeout: 90_000,
   });
-  await page.getByRole("button", { name: /Book \/ walk-in/ }).first().click();
+  await page
+    .getByRole("button", { name: /Book \/ walk-in/ })
+    .first()
+    .click();
   const booking = page.getByRole("dialog", { name: "Book appointment" });
   await booking.getByLabel("Find patient").fill("Halima");
   await booking.getByRole("list", { name: "Patient results" }).getByRole("button").first().click();
