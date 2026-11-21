@@ -167,6 +167,9 @@ test("a payment that arrived after a void cannot be accepted, only marked failed
 
 test("cashier requests a refund and a void for admin approval", async ({ page, request }) => {
   test.setTimeout(240_000);
+  const tag = Date.now().toString().slice(-6);
+  const voidReason = `Patient registered twice ${tag}`;
+  const refundReason = `Overcharged by one shilling ${tag}`;
   const { invoice } = await issuedInvoice(request, `Void${Date.now().toString().slice(-5)}`);
   const paid = await issuedInvoice(request, `Paid${Date.now().toString().slice(-5)}`);
   const cash = await request.post(`${API_URL}/invoices/${paid.invoice.id}/transactions`, {
@@ -187,7 +190,7 @@ test("cashier requests a refund and a void for admin approval", async ({ page, r
     .getByRole("button", { name: "Request void" })
     .click();
   const voidDialog = page.getByRole("dialog", { name: "Request void" });
-  await voidDialog.getByLabel("Reason").fill("Patient registered twice");
+  await voidDialog.getByLabel("Reason").fill(voidReason);
   await voidDialog.getByRole("button", { name: "Request void" }).click();
   await expect(page.getByText("Void requested · awaiting admin approval")).toBeVisible();
 
@@ -200,15 +203,15 @@ test("cashier requests a refund and a void for admin approval", async ({ page, r
   await payment.getByRole("button", { name: "Request refund" }).click();
   const refundDialog = page.getByRole("dialog", { name: "Request refund" });
   await refundDialog.getByLabel("Refund amount (KES)").fill("1");
-  await refundDialog.getByLabel("Reason").fill("Overcharged by one shilling");
+  await refundDialog.getByLabel("Reason").fill(refundReason);
   await refundDialog.getByRole("button", { name: "Request refund" }).click();
   await expect(page.getByText("Refund requested · awaiting admin approval")).toBeVisible();
 
   const requests = page.getByRole("table", { name: "Recent requests" });
-  await expect(requests.getByRole("row", { name: /Patient registered twice/ })).toContainText(
+  await expect(requests.getByRole("row", { name: new RegExp(voidReason) })).toContainText(
     "Pending",
   );
-  await expect(requests.getByRole("row", { name: /Overcharged by one shilling/ })).toContainText(
+  await expect(requests.getByRole("row", { name: new RegExp(refundReason) })).toContainText(
     "Pending",
   );
 });
