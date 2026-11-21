@@ -13,9 +13,9 @@ recommended decisions). Branch: `feature/journey-ui-phase-e`, from `main` at
 | E7 Journey test, first version (walk-in by API, doctor in the UI) | done (`e2e/doctor-consultation.spec.ts`) |
 | E2 Shared front-desk components | done |
 | E3 Reception screens | done |
-| E5 Draft line editing at the desk | not started |
-| E6 Cashier reconciliation and refunds | not started |
-| E7 Full journey test (UI only) | not started |
+| E5 Draft line editing at the desk | done |
+| E6 Cashier reconciliation and refunds | done |
+| E7 Full journey test (UI only) | done (`e2e/patient-journey.spec.ts`) |
 
 ## E1: backend prerequisites
 
@@ -85,15 +85,44 @@ Commit `8612c04`:
   → walk-in shows `SHA · Active` and co-pay in the queue; check-in from the
   list; admin booking and registration still work through the shared dialogs.
 
-## Verification (at `8612c04`, 2026-11-20, idle machine)
+## E5: draft line editing
 
-- Backend: full `pytest` **151 passed, 1 skipped** (the opt-in Postgres
-  locking test); ruff check/format clean.
+Commit `92fb3a4`. The Finalize draft dialog lists the draft's lines and
+subtotal; while the invoice is `DRAFT` the desk can add a priced service
+(quantity; the API sets the price from the price list) or remove a line.
+If every line is removed, finalizing re-adds the default consultation line
+(existing backend behaviour); the dialog says so.
+
+## E6: cashier reconciliation and refunds
+
+| Change | Commit |
+|---|---|
+| **Backend guard (found while building the Resolve button):** `resolve_transaction` accepted any transaction as SUCCESS with no checks, which could undo phase A's parking of unsafe M-Pesa callbacks. Now only `UNCONFIRMED` payments can be resolved; accepting is refused (409) on a draft/voided/refunded invoice or above the balance, and the money must be returned and the payment marked failed. A parked payment that fits can still be accepted, once. 3 tests, each failing without the guard. | `b079005` |
+| Shared `CashReconciliationPanel` (expected cash by method, counted cash with live variance; a variance needs a note; zero is a valid count; Accept / Mark failed on parked payments; history). The admin Reconciliation tab now uses it, which fixes its business date (it used the UTC date) and adds the resolve actions it lacked. | `730abe3` |
+| `/cashier/reconciliation` and `/cashier/refunds` (search payments to request a refund, invoices to request a void, recent requests with status). Admin approval unchanged. | `34d72bd`, `642f17a` (test) |
+
+## E7: full journey test
+
+`e2e/patient-journey.spec.ts` (`1963009`), three browser sessions, no API
+shortcuts except sign-in: reception registers a new patient and adds a
+walk-in (payer badge `Cash`) → the doctor starts, documents and completes
+the visit → the desk adds a lab line, finalizes and takes cash (invoice
+`Paid`) → the cashier sees the payment and the day's expected cash includes it.
+
+## Verification (2026-11-21, at `1963009`)
+
+- Backend: **154 passed, 1 skipped** (opt-in Postgres test), run in two halves
+  because the machine was loaded; ruff clean.
 - Frontend: tsc clean, eslint 0 errors (9 pre-existing warnings), vitest
-  **28 passed**, `vite build` OK (at `6209c02`; E2/E3 add no build config).
-- Playwright: **22/22**, run per spec file (admin 13, billing desk 4, doctor 2,
-  reception 3) because long background runs were cut off when the session
-  ended.
+  **28 passed**, `vite build` OK.
+- Playwright: **26/26** (admin 13, billing desk 5, doctor 2, reception 3,
+  cashier 3, journey 1), each file with one worker against servers started
+  by hand (`PW_NO_WEBSERVER=1`), because a system update made the server
+  start exceed Playwright's 120 s limit.
+- The backend log showed SQLite "database is locked" errors only during runs
+  where Playwright used parallel workers: a limit of the SQLite test database
+  (one writer), not the app; single-worker runs logged none. Run the suite
+  with `--workers=1` on SQLite.
 
 E2E timing: the first visit to a new route compiles it on the cold dev server
 (30 s+), so first navigations allow 90 s, and the sign-in test retries the
