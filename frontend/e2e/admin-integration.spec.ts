@@ -263,3 +263,30 @@ test("admin edits existing working hours and the update is audit-logged", async 
       .first(),
   ).toBeVisible();
 });
+
+test("admin creates a new-patient walk-in from appointments", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  await loginViaApi(page, request, "admin@mediflow.test", "Admin12345!");
+  await page.goto("/admin/appointments");
+  await expect(page.getByRole("heading", { name: "Appointments", exact: true })).toBeVisible({
+    timeout: 90_000,
+  });
+
+  await page
+    .getByRole("button", { name: /Book \/ walk-in/ })
+    .first()
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Type").selectOption("walk-in");
+  await dialog.getByLabel("Patient source").selectOption("new");
+  await dialog.getByLabel("First name").fill("Admin");
+  await dialog.getByLabel("Last name").fill("Walkin");
+  await dialog.getByLabel("Date of birth").fill("1990-01-01");
+  await dialog.getByLabel("Sex").selectOption("FEMALE");
+  await dialog.getByLabel("Phone").fill(`07${Date.now().toString().slice(-8)}`);
+  await dialog.getByLabel("Doctor").selectOption({ index: 1 });
+  await dialog.getByRole("button", { name: "Add to queue" }).click();
+
+  await expect(page.getByText(/Walk-in added to queue/)).toBeVisible();
+  await expect(page.getByText(/unexpected error/i)).toHaveCount(0);
+});

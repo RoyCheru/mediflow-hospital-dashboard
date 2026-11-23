@@ -1473,8 +1473,14 @@ def resolve_transaction(transaction, data, actor):
 
 
 def cash_expected_for(business_date):
+    """Net cash expected in the drawer for a hospital business day.
+
+    Successful cash payments increase the expected amount; completed refunds
+    of cash transactions decrease it. Refunds are counted on the day they were
+    approved, not the day the original payment was taken.
+    """
     start, end = hospital_day_bounds(business_date)
-    total = (
+    received = (
         db.session.query(func.coalesce(func.sum(Transaction.amount_minor), 0))
         .filter(
             Transaction.method == PaymentMethod.CASH,
@@ -1484,7 +1490,18 @@ def cash_expected_for(business_date):
         )
         .scalar()
     )
-    return int(total)
+    refunded = (
+        db.session.query(func.coalesce(func.sum(Refund.amount_minor), 0))
+        .join(Transaction, Refund.original_transaction_id == Transaction.id)
+        .filter(
+            Refund.status == RefundStatus.COMPLETED,
+            Transaction.method == PaymentMethod.CASH,
+            Refund.decided_at >= start,
+            Refund.decided_at < end,
+        )
+        .scalar()
+    )
+    return int(received) - int(refunded)
 
 
 def cash_reconciliation(data, actor):

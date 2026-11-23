@@ -20,7 +20,14 @@ from app.billing.schemas import (
 )
 from app.clinical_records.service import get_visit_or_404
 from app.common.decorators import auth_required, current_user
-from app.common.enums import PaymentMethod, RefundStatus, Role, TransactionStatus, VoidRequestStatus
+from app.common.enums import (
+    DiscountStatus,
+    PaymentMethod,
+    RefundStatus,
+    Role,
+    TransactionStatus,
+    VoidRequestStatus,
+)
 from app.common.errors import forbidden, not_found, unauthorized
 from app.common.idempotency import begin, complete
 from app.common.pagination import paginated
@@ -136,6 +143,14 @@ def list_invoices():
         query = query.filter_by(patient_id=UUID(request.args["patient_id"]))
     if request.args.get("method"):
         query = query.filter(Invoice.primary_method == PaymentMethod(request.args["method"]))
+    if request.args.get("discount_status"):
+        try:
+            discount_status = DiscountStatus(request.args["discount_status"])
+        except ValueError as exc:
+            from app.common.errors import bad_request
+
+            raise bad_request("Invalid discount_status") from exc
+        query = query.filter(Invoice.discount_status == discount_status)
     if request.args.get("department_id"):
         from uuid import UUID
 

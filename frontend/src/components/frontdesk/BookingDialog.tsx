@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { errorMessage } from "@/lib/api/client";
 import { Field, Modal, inputCls, textareaCls } from "@/components/kit";
 import { Button } from "@/components/ui/button";
 import {
@@ -132,10 +133,9 @@ export function BookingDialog({
           walkIn.payer ? `co-pay ${formatKshMinor(walkIn.copay_due_minor)}` : null,
         ].filter(Boolean);
         toast.success(`Walk-in added to queue${parts.length ? ` · ${parts.join(" · ")}` : ""}`);
-        if (walkIn.potential_duplicates.length > 0) {
-          toast.warning(
-            `${walkIn.potential_duplicates.length} possible duplicate patient record(s) found`,
-          );
+        const duplicates = walkIn.potential_duplicates?.length ?? 0;
+        if (duplicates > 0) {
+          toast.warning(`${duplicates} possible duplicate patient record(s) found`);
         }
       } else {
         toast.success("Appointment booked");
@@ -145,7 +145,7 @@ export function BookingDialog({
       }
       close();
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: unknown) => toast.error(errorMessage(error)),
   });
 
   const set = <K extends keyof Details>(key: K, value: Details[K]) =>

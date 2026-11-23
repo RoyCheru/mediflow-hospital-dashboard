@@ -25,6 +25,7 @@ export const billingKeys = {
   cashSummary: (params?: ListParams) => ["admin", "billing", "cash-summary", params] as const,
   reconciliationQueue: ["admin", "billing", "reconciliation-queue"] as const,
   readyToBill: (params?: ListParams) => ["admin", "billing", "ready-to-bill", params] as const,
+  discounts: (params?: ListParams) => ["admin", "billing", "discounts", params] as const,
 };
 
 export function listReadyToBill(params?: ListParams) {
@@ -84,12 +85,22 @@ export function requestDiscount(invoiceId: string, body: { amount_minor: number;
   return api.post<Invoice>(`/invoices/${invoiceId}/discount`, body);
 }
 
-export function decideDiscount(invoiceId: string, body: { approve: boolean; reason?: string }) {
+export function decideDiscount(
+  invoiceId: string,
+  body: { approve: boolean; reason?: string | undefined },
+) {
   return api.post<Invoice>(`/invoices/${invoiceId}/discount/decision`, body);
 }
 
 export function listInvoices(params?: ListParams) {
   return api.get<Paginated<Invoice>>("/invoices", params);
+}
+
+export function listDiscountRequests(params?: ListParams) {
+  return api.get<Paginated<Invoice>>("/invoices", {
+    ...params,
+    discount_status: "PENDING_APPROVAL",
+  });
 }
 
 export function getInvoice(id: string) {

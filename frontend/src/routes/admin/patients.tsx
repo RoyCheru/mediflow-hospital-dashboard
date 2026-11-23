@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, Plus, Search, UserRound } from "lucide-react";
+import { CalendarPlus, Eye, Plus, Search, UserPlus, UserRound } from "lucide-react";
 import {
   Badge,
   DetailRow,
@@ -18,12 +18,14 @@ import {
   theadRow,
 } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
+import { BookingDialog, type BookingKind } from "@/components/frontdesk/BookingDialog";
 import { PatientRegisterDialog } from "@/components/frontdesk/PatientRegisterDialog";
 import { Button } from "@/components/ui/button";
 import { getPatient, listPatients, managementKeys, updatePatient } from "@/lib/api/management";
 import { formatDate, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { PatientBrief } from "@/types/api";
 
 export const Route = createFileRoute("/admin/patients")({
   head: () => ({
@@ -47,6 +49,7 @@ function Page() {
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [booking, setBooking] = useState<{ kind: BookingKind; patient: PatientBrief } | null>(null);
 
   const params = {
     page,
@@ -170,9 +173,19 @@ function Page() {
                         <span className="text-muted-foreground">None</span>
                       )}
                     </td>
-                    <td className={td}>
+                    <td className={cn(td, "space-x-2 whitespace-nowrap")}>
                       <Button size="sm" variant="outline" onClick={() => setSelectedId(patient.id)}>
                         <Eye /> View
+                      </Button>
+                      <Button size="sm" onClick={() => setBooking({ kind: "walk-in", patient })}>
+                        <UserPlus /> Walk-in
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setBooking({ kind: "scheduled", patient })}
+                      >
+                        <CalendarPlus /> Book
                       </Button>
                     </td>
                   </tr>
@@ -292,6 +305,16 @@ function Page() {
         onClose={() => setCreateOpen(false)}
         onDone={(patient) => setSelectedId(patient.id)}
       />
+
+      {booking && (
+        <BookingDialog
+          key={`${booking.kind}-${booking.patient.id}`}
+          open
+          initialKind={booking.kind}
+          initialPatient={booking.patient}
+          onClose={() => setBooking(null)}
+        />
+      )}
     </div>
   );
 }

@@ -17,7 +17,11 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-me")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", SECRET_KEY)
     JWT_ALGORITHM = "HS256"
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:8080")
+    CORS_ORIGINS = [
+        origin.strip()
+        for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")
+        if origin.strip()
+    ]
     HOSPITAL_TIMEZONE = os.getenv("HOSPITAL_TIMEZONE", "Africa/Nairobi")
     QUEUE_WAITING_THRESHOLD_MINUTES = int(os.getenv("QUEUE_WAITING_THRESHOLD_MINUTES", "30"))
     # Discounts above either threshold need admin approval (strictly greater).

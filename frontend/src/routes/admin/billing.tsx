@@ -36,10 +36,12 @@ import { CashReconciliationPanel } from "@/components/billing/CashReconciliation
 import {
   billingKeys,
   createPaymentIntent,
+  decideDiscount,
   decideRefund,
   decideVoid,
   getCashSummary,
   getInvoice,
+  listDiscountRequests,
   listInvoices,
   listRefunds,
   listTransactions,
@@ -109,7 +111,7 @@ function Page() {
     notes: "",
   });
   const [decision, setDecision] = useState<{
-    kind: "void" | "refund";
+    kind: "void" | "refund" | "discount";
     id: string;
     approve: boolean;
   } | null>(null);
@@ -182,6 +184,12 @@ function Page() {
     staleTime: 15_000,
     enabled: tab === "approvals",
   });
+  const discountsQuery = useQuery({
+    queryKey: billingKeys.discounts({ page_size: 20 }),
+    queryFn: () => listDiscountRequests({ page_size: 20 }),
+    staleTime: 15_000,
+    enabled: tab === "approvals",
+  });
   const invalidateBilling = () => queryClient.invalidateQueries({ queryKey: billingKeys.all });
 
   const paymentMutation = useMutation({
@@ -231,9 +239,9 @@ function Page() {
     mutationFn: async () => {
       if (!decision) throw new Error("No approval selected");
       const body = { approve: decision.approve, reason: decisionReason || undefined };
-      return decision.kind === "void"
-        ? decideVoid(decision.id, body)
-        : decideRefund(decision.id, body);
+      if (decision.kind === "void") return decideVoid(decision.id, body);
+      if (decision.kind === "discount") return decideDiscount(decision.id, body);
+      return decideRefund(decision.id, body);
     },
     onSuccess: () => {
       toast.success(decision?.approve ? "Approval accepted" : "Request rejected");
@@ -248,7 +256,9 @@ function Page() {
   const totals = totalsQuery.data ?? {};
   const outstanding = Object.values(totals).reduce((sum, item) => sum + item.balance_minor, 0);
   const pendingApprovals =
-    (voidsQuery.data?.meta.total ?? 0) + (refundsQuery.data?.meta.total ?? 0);
+    (voidsQuery.data?.meta.total ?? 0) +
+    (refundsQuery.data?.meta.total ?? 0) +
+    (discountsQuery.data?.meta.total ?? 0);
   const cashCollected =
     cashQuery.data?.methods.reduce((sum, item) => sum + item.amount_minor, 0) ?? 0;
 
@@ -625,6 +635,71 @@ function Page() {
                         variant="outline"
                         onClick={() => {
                           setDecision({ kind: "refund", id: item.id, approve: false });
+                          setDecisionReason("");
+                        }}
+                      >
+                        <Ban /> Reject
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </DataState>
+          </Panel>
+
+          <Panel
+            title="Discount requests"
+            action={
+              <Badge tone="warning">{`${discountsQuery.data?.meta.total ?? 0} pending`}</Badge>
+            }
+            className="xl:col-span-2"
+          >
+            <DataState
+              isLoading={discountsQuery.isLoading}
+              error={discountsQuery.error}
+              isEmpty={(discountsQuery.data?.items.length ?? 0) === 0}
+              loading={<LoadingRows rows={3} />}
+              empty={
+                <EmptyBlock
+                  title="No pending discounts"
+                  message="Discounts above the approval threshold appear here."
+                />
+              }
+            >
+              <ul className="space-y-3">
+                {discountsQuery.data?.items.map((item) => (
+                  <li key={item.id} className="rounded-xl bg-secondary/50 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">
+                          {formatKshMinor(item.discount_requested_minor ?? 0)} ·{" "}
+                          {item.invoice_number ?? "Draft invoice"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {item.patient_name ?? "Patient"} · subtotal{" "}
+                          {formatKshMinor(item.subtotal_minor)}
+                        </p>
+                      </div>
+                      <Badge>{titleize(item.discount_status ?? "PENDING_APPROVAL")}</Badge>
+                    </div>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      {item.discount_reason ?? "No reason supplied"}
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setDecision({ kind: "discount", id: item.id, approve: true });
+                          setDecisionReason("");
+                        }}
+                      >
+                        <CheckCircle2 /> Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setDecision({ kind: "discount", id: item.id, approve: false });
                           setDecisionReason("");
                         }}
                       >

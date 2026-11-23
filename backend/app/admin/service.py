@@ -12,6 +12,8 @@ from app.common.base import as_utc, utcnow
 from app.common.enums import (
     AppointmentSource,
     ClaimStatus,
+    DiscountStatus,
+    InvoiceStatus,
     RefundStatus,
     TransactionStatus,
     VoidRequestStatus,
@@ -274,17 +276,24 @@ def dashboard_summary(today=None):
 def pending_approvals():
     voids = VoidRequest.query.filter(VoidRequest.status == VoidRequestStatus.PENDING).all()
     refunds = Refund.query.filter(Refund.status == RefundStatus.PENDING).all()
-    from app.billing.service import serialize_refund, serialize_void_request
+    discounts = (
+        Invoice.query.filter(Invoice.discount_status == DiscountStatus.PENDING_APPROVAL)
+        .order_by(Invoice.created_at)
+        .all()
+    )
+    from app.billing.service import serialize_invoice, serialize_refund, serialize_void_request
 
     return {
         "void_requests": [serialize_void_request(item) for item in voids],
         "refunds": [serialize_refund(item) for item in refunds],
+        "discount_requests": [serialize_invoice(item) for item in discounts],
     }
 
 
 def invoice_totals():
     rows = (
         db.session.query(Invoice.status, func.count(Invoice.id), func.sum(Invoice.balance_minor))
+        .filter(Invoice.status.in_([InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID]))
         .group_by(Invoice.status)
         .all()
     )
