@@ -445,7 +445,7 @@ function Page() {
               Cancel
             </Button>
             <Button onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
-              <Plus /> {exportMutation.isPending ? "Queuing…" : "Queue export"}
+              <Plus /> {exportMutation.isPending ? "Creating…" : "Create export"}
             </Button>
           </>
         }
