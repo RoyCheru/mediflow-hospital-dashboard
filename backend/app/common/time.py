@@ -27,3 +27,23 @@ def hospital_day_bounds(target_date: date) -> tuple[datetime, datetime]:
 
 def hospital_local_datetime(target_date: date, local_time: time) -> datetime:
     return datetime.combine(target_date, local_time, tzinfo=hospital_tz())
+
+
+def query_date(name: str, default: date | None = None) -> date | None:
+    """A YYYY-MM-DD query parameter as a date; 400 (not 500) when malformed."""
+    from flask import request
+
+    from app.common.errors import bad_request
+
+    value = request.args.get(name)
+    if not value:
+        return default
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise bad_request("Invalid date", {name: ["Use the YYYY-MM-DD format"]}) from exc
+
+
+def hospital_range_bounds(start_date: date, end_date: date) -> tuple[datetime, datetime]:
+    """UTC instants covering whole hospital days start_date..end_date inclusive."""
+    return hospital_day_bounds(start_date)[0], hospital_day_bounds(end_date)[1]

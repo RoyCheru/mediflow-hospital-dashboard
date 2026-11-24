@@ -8,22 +8,22 @@ from app.common.decorators import auth_required, current_user
 from app.common.enums import ReportFormat, Role
 from app.common.errors import not_found
 from app.common.responses import created, ok
+from app.common.time import hospital_today, query_date
 from app.scheduling.models import DoctorProfile
 
 bp = Blueprint("analytics", __name__)
 
 
 def _date(name, default=None):
-    value = request.args.get(name)
-    return date.fromisoformat(value) if value else default
+    return query_date(name, default)
 
 
 def _start():
-    return _date("start_date") or date.today().replace(day=1)
+    return _date("start_date") or hospital_today().replace(day=1)
 
 
 def _end():
-    return _date("end_date") or date.today()
+    return _date("end_date") or hospital_today()
 
 
 @bp.get("/reports/revenue")

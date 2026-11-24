@@ -1,5 +1,3 @@
-from datetime import date
-
 from flask import Blueprint, Response, request
 
 from app.audit import service
@@ -7,6 +5,7 @@ from app.common.decorators import auth_required, current_user
 from app.common.enums import Role
 from app.common.pagination import paginated
 from app.common.responses import ok
+from app.common.time import query_date
 
 bp = Blueprint("audit", __name__)
 
@@ -18,12 +17,8 @@ def _filters():
         "role": request.args.get("role"),
         "entity_type": request.args.get("entity_type"),
         "entity_id": request.args.get("entity_id"),
-        "start_date": date.fromisoformat(request.args["start_date"])
-        if request.args.get("start_date")
-        else None,
-        "end_date": date.fromisoformat(request.args["end_date"])
-        if request.args.get("end_date")
-        else None,
+        "start_date": query_date("start_date"),
+        "end_date": query_date("end_date"),
         "q": request.args.get("q"),
         "sort": request.args.get("sort") or "-created_at",
     }

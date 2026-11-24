@@ -1,11 +1,11 @@
 import csv
 import io
-from datetime import datetime, time, timezone
 
 from sqlalchemy import String, cast, or_
 
 from app.audit.models import AuditLog
 from app.common.audit import record_audit
+from app.common.time import hospital_day_bounds
 from app.extensions import db
 
 
@@ -75,13 +75,9 @@ def filtered_query(
 
         query = query.filter(AuditLog.entity_id == UUID(entity_id))
     if start_date:
-        query = query.filter(
-            AuditLog.created_at >= datetime.combine(start_date, time.min, tzinfo=timezone.utc)
-        )
+        query = query.filter(AuditLog.created_at >= hospital_day_bounds(start_date)[0])
     if end_date:
-        query = query.filter(
-            AuditLog.created_at <= datetime.combine(end_date, time.max, tzinfo=timezone.utc)
-        )
+        query = query.filter(AuditLog.created_at < hospital_day_bounds(end_date)[1])
     descending = sort.startswith("-")
     field = sort.lstrip("-")
     columns = {

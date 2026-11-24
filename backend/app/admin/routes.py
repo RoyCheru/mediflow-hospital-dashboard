@@ -1,5 +1,3 @@
-from datetime import date, datetime, time, timezone
-
 from flask import Blueprint, request
 from sqlalchemy import or_
 
@@ -35,16 +33,14 @@ def list_visits():
             if completed
             else query.filter(Visit.completed_at.is_(None))
         )
-    if request.args.get("date_from"):
-        start = datetime.combine(
-            date.fromisoformat(request.args["date_from"]), time.min, tzinfo=timezone.utc
-        )
-        query = query.filter(Visit.started_at >= start)
-    if request.args.get("date_to"):
-        end = datetime.combine(
-            date.fromisoformat(request.args["date_to"]), time.max, tzinfo=timezone.utc
-        )
-        query = query.filter(Visit.started_at <= end)
+    from app.common.time import hospital_day_bounds, query_date
+
+    date_from = query_date("date_from")
+    date_to = query_date("date_to")
+    if date_from:
+        query = query.filter(Visit.started_at >= hospital_day_bounds(date_from)[0])
+    if date_to:
+        query = query.filter(Visit.started_at < hospital_day_bounds(date_to)[1])
     if request.args.get("q"):
         like = f"%{request.args['q'].strip()}%"
         query = query.filter(

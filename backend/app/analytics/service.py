@@ -1,7 +1,7 @@
 import csv
 import io
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date
 
 from app.analytics.models import ReportExport
 from app.billing.models import Invoice, Transaction
@@ -28,9 +28,10 @@ ALLOWED_REPORTS = {
 
 
 def _range(start_date, end_date):
-    start = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
-    end = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
-    return start, end
+    """Whole hospital days (Africa/Nairobi), not UTC days."""
+    from app.common.time import hospital_range_bounds
+
+    return hospital_range_bounds(start_date, end_date)
 
 
 def _transactions(start_date, end_date):
@@ -92,12 +93,12 @@ def revenue_by_payment_method(start_date, end_date, group_by="method"):
 
 def claims_report(start_date=None, end_date=None):
     query = Claim.query
+    from app.common.time import hospital_day_bounds
+
     if start_date:
-        start = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
-        query = query.filter(Claim.created_at >= start)
+        query = query.filter(Claim.created_at >= hospital_day_bounds(start_date)[0])
     if end_date:
-        end = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
-        query = query.filter(Claim.created_at < end)
+        query = query.filter(Claim.created_at < hospital_day_bounds(end_date)[1])
     claims = query.all()
     by_status = defaultdict(int)
     aging = {"current": 0, "14_days": 0, "30_days": 0, "60_days": 0}
