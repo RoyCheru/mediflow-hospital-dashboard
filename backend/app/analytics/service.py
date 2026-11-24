@@ -244,8 +244,11 @@ def daily_cash_report(target_date):
 
 
 def run_report(report_key, parameters):
-    start_date = _as_date(parameters.get("start_date")) or (date.today().replace(day=1))
-    end_date = _as_date(parameters.get("end_date")) or date.today()
+    from app.common.time import hospital_today
+
+    today = hospital_today()
+    start_date = _as_date(parameters.get("start_date")) or today.replace(day=1)
+    end_date = _as_date(parameters.get("end_date")) or today
     if report_key == "revenue":
         return revenue_by_payment_method(start_date, end_date, parameters.get("group_by", "method"))
     if report_key == "claims_aging":
@@ -255,7 +258,12 @@ def run_report(report_key, parameters):
     if report_key == "no_shows":
         return no_show_report(start_date, end_date)
     if report_key == "daily_cash":
-        return daily_cash_report(_as_date(parameters.get("business_date")) or date.today())
+        # The analytics page sends a date range; the day's cash is its last day.
+        return daily_cash_report(
+            _as_date(parameters.get("business_date"))
+            or _as_date(parameters.get("end_date"))
+            or today
+        )
     raise bad_request("Unknown report")
 
 
@@ -288,53 +296,80 @@ def _safe_csv_value(value):
     return text
 
 
+def _report_sections(result):
+    """Turn a report result into (title, header, rows) tables for CSV/PDF.
+
+    Scalars form one key/value table; a list of records becomes its own table
+    (one row per record); a mapping becomes a key/value table. Nested values are
+    never written as Python reprs.
+    """
+    summary = []
+    sections = []
+    for key, value in result.items():
+        if isinstance(value, list):
+            records = [item for item in value if isinstance(item, dict)]
+            if records:
+                header = list(dict.fromkeys(k for item in records for k in item))
+                rows = [[item.get(column) for column in header] for item in records]
+                sections.append((key, header, rows))
+            elif value:
+                sections.append((key, ["value"], [[item] for item in value]))
+            else:
+                sections.append((key, ["value"], []))
+        elif isinstance(value, dict):
+            sections.append((key, ["key", "value"], [[k, v] for k, v in value.items()]))
+        else:
+            summary.append([key, value])
+    if summary:
+        sections.insert(0, ("summary", ["key", "value"], summary))
+    return sections
+
+
+def _render_csv(sections):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    for index, (title, header, rows) in enumerate(sections):
+        if index:
+            writer.writerow([])
+        if len(sections) > 1:
+            writer.writerow([_safe_csv_value(title)])
+        writer.writerow([_safe_csv_value(column) for column in header])
+        for row in rows:
+            writer.writerow([_safe_csv_value(cell) for cell in row])
+    return buffer.getvalue().encode()
+
+
+def _render_pdf(report_key, sections):
+    from app.integrations.pdf import build_pdf
+
+    lines = ["MediFlow", report_key.replace("_", " ").title(), ""]
+    for title, header, rows in sections:
+        lines.append(str(title).replace("_", " ").title())
+        if header == ["key", "value"]:
+            lines.extend(f"  {str(k).replace('_', ' ').title()}: {v}" for k, v in rows)
+        else:
+            lines.append("  " + " | ".join(str(column) for column in header))
+            for row in rows:
+                lines.append("  " + " | ".join("" if cell is None else str(cell) for cell in row))
+        if not rows:
+            lines.append("  (none)")
+        lines.append("")
+    return build_pdf(lines)
+
+
 def build_export(export):
     from app.integrations.object_storage import get_object_storage
 
     try:
         export.status = ExportStatus.PROCESSING
         db.session.commit()
-        result = run_report(export.report_key, export.parameters)
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
+        sections = _report_sections(run_report(export.report_key, export.parameters))
         if export.report_format == ReportFormat.CSV:
-            if "groups" in result:
-                writer.writerow(["key", "amount_minor", "transaction_count"])
-                for group in result["groups"]:
-                    writer.writerow(
-                        [
-                            _safe_csv_value(group["key"]),
-                            group["amount_minor"],
-                            group["transaction_count"],
-                        ]
-                    )
-            else:
-                writer.writerow(["key", "value"])
-                for key, value in result.items():
-                    writer.writerow([_safe_csv_value(key), _safe_csv_value(value)])
-            content = buffer.getvalue().encode()
+            content = _render_csv(sections)
             content_type = "text/csv"
             extension = "csv"
         else:
-            from app.integrations.pdf import build_pdf
-
-            lines = [
-                "MediFlow",
-                export.report_key.replace("_", " ").title(),
-                "",
-            ]
-            if "groups" in result:
-                lines.append(f"{'Key':30} {'Amount (minor)':>18} {'Transactions':>14}")
-                lines.append("-" * 66)
-                for group in result["groups"]:
-                    lines.append(
-                        f"{str(group['key'])[:30]:30} {group['amount_minor']:>18} "
-                        f"{group['transaction_count']:>14}"
-                    )
-            else:
-                for key, value in result.items():
-                    lines.append(f"{str(key).replace('_', ' ').title()}: {value}")
-            content = build_pdf(lines)
+            content = _render_pdf(export.report_key, sections)
             content_type = "application/pdf"
             extension = "pdf"
         key = f"exports/{export.id}.{extension}"
@@ -344,8 +379,37 @@ def build_export(export):
         export.completed_at = utcnow()
         db.session.commit()
     except Exception as exc:
+        db.session.rollback()
         export.status = ExportStatus.FAILED
         export.error_message = str(exc)[:500]
         db.session.commit()
         raise
+    return export
+
+
+def process_export(export):
+    """Build an export now, or hand it to the Celery worker when configured.
+
+    REPORT_EXPORTS_ASYNC=true sends it to the worker (app.tasks.documents.build_export);
+    if the broker cannot be reached it is built here instead, so a request never
+    leaves an export QUEUED with nothing to pick it up. A failed build is stored
+    as FAILED with its error rather than failing the request.
+    """
+    from flask import current_app
+
+    if current_app.config.get("REPORT_EXPORTS_ASYNC"):
+        try:
+            from celery import Celery
+
+            client = Celery(broker=current_app.config["CELERY_BROKER_URL"])
+            client.conf.broker_connection_retry_on_startup = False
+            client.conf.broker_transport_options = {"max_retries": 1}
+            client.send_task("app.tasks.documents.build_export", args=[str(export.id)])
+            return export
+        except Exception:  # noqa: BLE001 - broker down: build inline instead
+            current_app.logger.warning("Report export broker unavailable; building inline")
+    try:
+        build_export(export)
+    except Exception:  # noqa: BLE001 - recorded on the export as FAILED
+        current_app.logger.exception("Report export %s failed", export.id)
     return export

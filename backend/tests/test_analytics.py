@@ -42,4 +42,5 @@ def test_report_export_creation(client, tokens):
         headers=auth(tokens["admin"]),
     )
     assert response.status_code == 201, response.get_json()
-    assert response.get_json()["data"]["status"] == "QUEUED"
+    # Built in the request by default (REPORT_EXPORTS_ASYNC off): no worker needed.
+    assert response.get_json()["data"]["status"] == "COMPLETED"

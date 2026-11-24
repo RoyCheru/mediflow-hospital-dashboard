@@ -39,6 +39,7 @@ import {
   listReportExports,
 } from "@/lib/api/analytics";
 import { listDoctors, managementKeys } from "@/lib/api/management";
+import { errorMessage } from "@/lib/api/client";
 import { formatDate, formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -135,8 +136,11 @@ function Page() {
           end_date: endDate || undefined,
         },
       }),
-    onSuccess: () => {
-      toast.success("Export queued");
+    onSuccess: (created) => {
+      if (created.status === "COMPLETED") toast.success("Export ready to download");
+      else if (created.status === "FAILED") {
+        toast.error(`Export failed: ${created.error_message ?? "unknown error"}`);
+      } else toast.success("Export queued; it will be ready once the worker builds it");
       setExportOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["admin", "analytics", "exports"] });
     },
@@ -152,8 +156,8 @@ function Page() {
       anchor.download = `${reportKey}.${format.toLowerCase()}`;
       anchor.click();
       URL.revokeObjectURL(url);
-    } catch {
-      toast.error("Unable to download this export");
+    } catch (error) {
+      toast.error(`Unable to download this export: ${errorMessage(error)}`);
     }
   }
 

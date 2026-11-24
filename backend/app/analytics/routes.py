@@ -80,15 +80,32 @@ def create_export():
         from app.common.errors import bad_request
 
         raise bad_request("report_key is required")
-    report_format = ReportFormat(payload.get("format", "CSV"))
-    export = service.create_export(
-        report_key, payload.get("parameters") or {}, report_format, current_user()
-    )
+    try:
+        report_format = ReportFormat(payload.get("format", "CSV"))
+    except ValueError as exc:
+        from app.common.errors import bad_request
+
+        raise bad_request(
+            "Unsupported export format",
+            {"format": [f"Use one of: {', '.join(item.value for item in ReportFormat)}"]},
+        ) from exc
+    parameters = payload.get("parameters") or {}
+    for name in ("start_date", "end_date", "business_date"):
+        if parameters.get(name):
+            try:
+                date.fromisoformat(str(parameters[name])[:10])
+            except ValueError as exc:
+                from app.common.errors import bad_request
+
+                raise bad_request("Invalid date", {name: ["Use the YYYY-MM-DD format"]}) from exc
+    export = service.create_export(report_key, parameters, report_format, current_user())
+    export = service.process_export(export)
     return created(
         {
             "id": str(export.id),
             "status": export.status.value,
             "report_key": export.report_key,
+            "error_message": export.error_message,
         }
     )
 
