@@ -735,6 +735,28 @@ def create_appointment(
     return appointment
 
 
+def _refuse_duplicate_walk_in(patient_id, doctor_id):
+    """A patient already waiting or in consultation with this doctor today is
+    not queued twice (double submit, or two desks adding the same person)."""
+    from uuid import UUID
+
+    if isinstance(doctor_id, str):
+        doctor_id = UUID(doctor_id)
+    active = next(
+        (
+            item
+            for item in queue(doctor_id=doctor_id, target_date=hospital_today())
+            if item.patient_id == patient_id
+        ),
+        None,
+    )
+    if active is not None:
+        raise conflict(
+            "This patient is already in today's queue for this doctor",
+            {"appointment_id": str(active.id), "status": active.status.value},
+        )
+
+
 def create_walk_in_appointment(data, actor):
     """Create a walk-in appointment and its patient in a single transaction."""
     from app.patients import service as patients_service
@@ -753,6 +775,7 @@ def create_walk_in_appointment(data, actor):
             patient = PatientProfile.query.get(patient_id)
             if patient is None:
                 raise not_found("Patient not found")
+            _refuse_duplicate_walk_in(patient.id, data.get("doctor_id"))
         else:
             patient, duplicates = patients_service.register_patient(
                 patient_payload, actor=actor, commit=False
@@ -767,7 +790,7 @@ def create_walk_in_appointment(data, actor):
         )
         queue_items = queue(
             doctor_id=appointment.doctor_id,
-            target_date=utcnow().date(),
+            target_date=hospital_today(),
         )
         position = next(
             (index + 1 for index, item in enumerate(queue_items) if item.id == appointment.id),

@@ -40,11 +40,20 @@ def self_registration():
 @bp.post("/patients")
 @auth_required(Role.RECEPTIONIST, Role.ADMIN)
 def create_patient():
+    from app.common.idempotency import idempotent_create
+
     data = PatientCreateSchema().load(request.get_json(silent=True) or {})
-    profile, duplicates = service.register_patient(data, current_user())
-    payload = service.serialize_patient(profile)
-    payload["potential_duplicates"] = [service.serialize_patient_brief(item) for item in duplicates]
-    return created(payload)
+    user = current_user()
+
+    def produce():
+        profile, duplicates = service.register_patient(data, user)
+        payload = service.serialize_patient(profile)
+        payload["potential_duplicates"] = [
+            service.serialize_patient_brief(item) for item in duplicates
+        ]
+        return payload
+
+    return idempotent_create(f"patients.create:{user.id}", data, produce)
 
 
 @bp.get("/patients")

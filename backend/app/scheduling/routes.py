@@ -7,6 +7,7 @@ from app.common.base import utcnow
 from app.common.decorators import auth_required, current_user
 from app.common.enums import AppointmentSource, AppointmentStatus, Role
 from app.common.errors import bad_request, forbidden, not_found
+from app.common.idempotency import idempotent_create
 from app.common.pagination import paginated
 from app.common.permissions import patient_profile_for_user
 from app.common.responses import created, ok
@@ -234,8 +235,12 @@ def create_appointment():
     data = AppointmentCreateSchema().load(request.get_json(silent=True) or {})
     patient_id = _patient_id_from_request(user, data)
     source = AppointmentSource.ONLINE if user.role == Role.PATIENT else AppointmentSource.RECEPTION
-    appointment = service.create_appointment(data, user, patient_id, source=source)
-    return created(service.serialize_appointment(appointment))
+
+    def produce():
+        appointment = service.create_appointment(data, user, patient_id, source=source)
+        return service.serialize_appointment(appointment)
+
+    return idempotent_create(f"appointments.create:{user.id}", data, produce)
 
 
 @bp.post("/appointments/walk-in")
@@ -244,19 +249,23 @@ def create_walk_in():
     from app.patients.service import serialize_patient_brief
 
     data = WalkInSchema().load(request.get_json(silent=True) or {})
-    appointment, position, duplicates = service.create_walk_in_appointment(data, current_user())
+    user = current_user()
 
     from app.claims.service import (
         ensure_check_in_eligibility,
         payer_summaries_for_appointments,
     )
 
-    ensure_check_in_eligibility(appointment, current_user())
-    payer = payer_summaries_for_appointments([appointment]).get(str(appointment.id))
-    payload = service.serialize_appointment(appointment, payer=payer)
-    payload["queue_position"] = position
-    payload["potential_duplicates"] = [serialize_patient_brief(item) for item in duplicates]
-    return created(payload)
+    def produce():
+        appointment, position, duplicates = service.create_walk_in_appointment(data, user)
+        ensure_check_in_eligibility(appointment, user)
+        payer = payer_summaries_for_appointments([appointment]).get(str(appointment.id))
+        payload = service.serialize_appointment(appointment, payer=payer)
+        payload["queue_position"] = position
+        payload["potential_duplicates"] = [serialize_patient_brief(item) for item in duplicates]
+        return payload
+
+    return idempotent_create(f"appointments.walk_in:{user.id}", data, produce)
 
 
 @bp.get("/appointments")

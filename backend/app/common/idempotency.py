@@ -53,3 +53,28 @@ def complete(record: IdempotencyKey, response_code: int, response_body) -> None:
     record.response_code = response_code
     record.response_body = response_body
     db.session.add(record)
+
+
+def idempotent_create(scope: str, payload, produce):
+    """Run a create endpoint at most once per Idempotency-Key header.
+
+    Without the header the request runs normally. With it, a retried or
+    double-submitted request returns the first response instead of creating a
+    second record; reusing the key with a different body is refused (409).
+    ``produce`` performs the create and returns the JSON-ready payload.
+    """
+    from flask import request
+
+    from app.common.responses import created, ok
+
+    key = request.headers.get("Idempotency-Key")
+    record = None
+    if key:
+        record, cached = begin(scope, key, payload)
+        if cached is not None:
+            return ok(cached["body"], cached["code"])
+    body = produce()
+    if record is not None:
+        complete(record, 201, body)
+        db.session.commit()
+    return created(body)

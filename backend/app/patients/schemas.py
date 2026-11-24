@@ -1,20 +1,49 @@
-from marshmallow import EXCLUDE, Schema, fields, validate
+import re
+from datetime import date
+
+from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate
 
 from app.common.enums import ConsentChannel, Sex
+
+_PHONE_CHARS = re.compile(r"^\+?[0-9][0-9 ()-]*$")
+
+
+def validate_phone(value):
+    """Digits with optional leading +, spaces, dashes or brackets; 7-15 digits."""
+    digits = re.sub(r"\D", "", value or "")
+    if not _PHONE_CHARS.match((value or "").strip()) or not 7 <= len(digits) <= 15:
+        raise ValidationError("Enter a valid phone number (7 to 15 digits).")
+
+
+def validate_date_of_birth(value):
+    today = date.today()
+    if value > today:
+        raise ValidationError("Date of birth cannot be in the future.")
+    if value.year < today.year - 130:
+        raise ValidationError("Date of birth is too far in the past.")
+
+
+def validate_name(value):
+    if not (value or "").strip():
+        raise ValidationError("Cannot be blank.")
 
 
 class PatientCreateSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    first_name = fields.String(required=True, validate=validate.Length(min=1, max=120))
+    first_name = fields.String(
+        required=True, validate=[validate.Length(min=1, max=120), validate_name]
+    )
     middle_name = fields.String(required=False, allow_none=True)
-    last_name = fields.String(required=True, validate=validate.Length(min=1, max=120))
-    date_of_birth = fields.Date(required=True)
+    last_name = fields.String(
+        required=True, validate=[validate.Length(min=1, max=120), validate_name]
+    )
+    date_of_birth = fields.Date(required=True, validate=validate_date_of_birth)
     sex = fields.Enum(Sex, by_value=True, load_default=Sex.UNKNOWN)
     national_id = fields.String(required=False, allow_none=True)
     birth_certificate_number = fields.String(required=False, allow_none=True)
-    phone = fields.String(required=True, validate=validate.Length(min=7, max=32))
+    phone = fields.String(required=True, validate=[validate.Length(min=7, max=32), validate_phone])
     email = fields.Email(required=False, allow_none=True)
     address = fields.String(required=False, allow_none=True)
     next_of_kin_name = fields.String(required=False, allow_none=True)
