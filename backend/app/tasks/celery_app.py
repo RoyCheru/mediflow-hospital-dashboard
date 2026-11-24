@@ -7,6 +7,14 @@ celery = Celery(
     "mediflow",
     broker=flask_app.config["CELERY_BROKER_URL"],
     backend=flask_app.config["CELERY_RESULT_BACKEND"],
+    # Task modules the worker must import; without this it registers no tasks
+    # and rejects every scheduled job as unregistered.
+    include=[
+        "app.tasks.notifications",
+        "app.tasks.outbox",
+        "app.tasks.claims",
+        "app.tasks.documents",
+    ],
 )
 celery.conf.update(
     task_serializer="json",

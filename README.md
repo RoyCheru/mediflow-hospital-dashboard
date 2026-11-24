@@ -298,12 +298,17 @@ flask seed                       # load demo data
 flask run                        # http://localhost:5000
 ```
 
-**Background worker** (separate terminal)
+**Background worker and scheduler** (two more terminals; needs Redis)
 
 ```bash
 cd backend
-celery -A app.celery_app worker --loglevel=info
+celery -A app.tasks.celery_app worker --loglevel=info   # runs queued jobs
+celery -A app.tasks.celery_app beat --loglevel=info     # schedules notifications, outbox, claim aging
 ```
+
+Without the worker and scheduler, notifications stay `QUEUED` and outbox events
+are not processed. Report exports do not need them: they are built in the request
+unless `REPORT_EXPORTS_ASYNC=true`, in which case the worker builds them.
 
 **Frontend** (separate terminal)
 
