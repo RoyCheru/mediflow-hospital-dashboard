@@ -114,8 +114,12 @@ export function downloadInvoicePdf(id: string) {
 export function createPaymentIntent(
   invoiceId: string,
   body: { amount_minor: number; phone: string; account_reference?: string },
+  idempotencyKey?: string,
 ) {
-  return api.post<PaymentIntent>(`/invoices/${invoiceId}/payment-intents`, body);
+  const path = `/invoices/${invoiceId}/payment-intents`;
+  return idempotencyKey
+    ? api.postIdempotent<PaymentIntent>(path, body, idempotencyKey)
+    : api.post<PaymentIntent>(path, body);
 }
 
 export function recordPayment(
@@ -189,11 +193,29 @@ export function resolveTransaction(
 export function requestRefund(
   transactionId: string,
   body: { amount_minor: number; reason: string },
+  idempotencyKey?: string,
 ) {
-  return api.post<Refund>(`/transactions/${transactionId}/refund-requests`, body);
+  const path = `/transactions/${transactionId}/refund-requests`;
+  return idempotencyKey
+    ? api.postIdempotent<Refund>(path, body, idempotencyKey)
+    : api.post<Refund>(path, body);
 }
 
 /** Ask an admin to void an invoice (refused while money or open claims remain). */
-export function requestVoid(invoiceId: string, body: { reason: string }) {
-  return api.post<VoidRequest>(`/invoices/${invoiceId}/void-requests`, body);
+export function requestVoid(invoiceId: string, body: { reason: string }, idempotencyKey?: string) {
+  const path = `/invoices/${invoiceId}/void-requests`;
+  return idempotencyKey
+    ? api.postIdempotent<VoidRequest>(path, body, idempotencyKey)
+    : api.post<VoidRequest>(path, body);
+}
+
+export function resolvePaymentIntent(
+  intentId: string,
+  body: { resolution: "SUCCESS" | "FAILED"; notes?: string | undefined },
+) {
+  return api.post<PaymentIntent>(`/billing/payment-intents/${intentId}/resolve`, body);
+}
+
+export function downloadReceipt(transactionId: string) {
+  return apiBlob(`/transactions/${transactionId}/receipt`);
 }

@@ -4,7 +4,14 @@ from flask import Blueprint, Response, request
 from sqlalchemy import or_
 
 from app.billing import service
-from app.billing.models import CashReconciliation, Invoice, Refund, Transaction, VoidRequest
+from app.billing.models import (
+    CashReconciliation,
+    Invoice,
+    PaymentIntent,
+    Refund,
+    Transaction,
+    VoidRequest,
+)
 from app.billing.schemas import (
     AllocationSchema,
     CashPaymentSchema,
@@ -288,8 +295,18 @@ def create_void_request(invoice_id):
     data = VoidRequestSchema().load(request.get_json(silent=True) or {})
     data["invoice_id"] = invoice_id
     data.pop("transaction_id", None)
+    key = request.headers.get("Idempotency-Key")
+    record = None
+    if key:
+        record, cached = begin(f"void.request:{invoice_id}", key, data)
+        if cached is not None:
+            return ok(cached["body"], cached["code"])
     item = service.create_void_request(data, current_user())
-    return created(service.serialize_void_request(item))
+    payload = service.serialize_void_request(item)
+    if record is not None:
+        complete(record, 201, payload)
+        db.session.commit()
+    return created(payload)
 
 
 @bp.post("/void-requests/<uuid:request_id>/decision")
@@ -306,8 +323,18 @@ def create_refund_request(transaction_id):
     payload = request.get_json(silent=True) or {}
     payload["transaction_id"] = transaction_id
     data = RefundRequestSchema().load(payload)
+    key = request.headers.get("Idempotency-Key")
+    record = None
+    if key:
+        record, cached = begin(f"refund.request:{transaction_id}", key, data)
+        if cached is not None:
+            return ok(cached["body"], cached["code"])
     refund = service.create_refund_request(data, current_user())
-    return created(service.serialize_refund(refund))
+    response = service.serialize_refund(refund)
+    if record is not None:
+        complete(record, 201, response)
+        db.session.commit()
+    return created(response)
 
 
 @bp.post("/refunds/<uuid:refund_id>/decision")
@@ -328,6 +355,17 @@ def reconciliation():
             "transactions": [service.serialize_transaction(item) for item in transactions],
         }
     )
+
+
+@bp.post("/billing/payment-intents/<uuid:intent_id>/resolve")
+@auth_required(*BILLING)
+def resolve_payment_intent(intent_id):
+    intent = PaymentIntent.query.get(intent_id)
+    if intent is None:
+        raise not_found("Payment intent not found")
+    data = ReconciliationResolveSchema().load(request.get_json(silent=True) or {})
+    intent = service.resolve_payment_intent(intent, data, current_user())
+    return ok(service.serialize_intent(intent))
 
 
 @bp.post("/billing/transactions/<uuid:transaction_id>/resolve")
@@ -433,8 +471,8 @@ def invoice_pdf(invoice_id):
     content = get_document_renderer().invoice(invoice)
     return Response(
         content,
-        mimetype="text/html",
-        headers={"Content-Disposition": f'inline; filename="{invoice.invoice_number}.html"'},
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{invoice.invoice_number}.pdf"'},
     )
 
 
@@ -452,6 +490,6 @@ def transaction_receipt(transaction_id):
     content = get_document_renderer().receipt(transaction)
     return Response(
         content,
-        mimetype="text/html",
-        headers={"Content-Disposition": f'inline; filename="receipt-{transaction.id}.html"'},
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="receipt-{transaction.id}.pdf"'},
     )

@@ -61,6 +61,16 @@ class StaffCreateSchema(Schema):
     consultation_fee_minor = fields.Integer(required=False, load_default=0)
 
 
+class SelfProfileUpdateSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    first_name = fields.String(required=False)
+    last_name = fields.String(required=False)
+    phone = fields.String(required=False, allow_none=True)
+    email = fields.Email(required=False, allow_none=True)
+
+
 class UserUpdateSchema(Schema):
     class Meta:
         unknown = EXCLUDE

@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import {
   analyticsKeys,
   createReportExport,
+  downloadReportExport,
   getClaimsReport,
   getDoctorWorkload,
   getNoShows,
@@ -141,6 +142,20 @@ function Page() {
     },
     onError: (error: Error) => toast.error(error.message),
   });
+
+  async function downloadExport(id: string, reportKey: string, format: "CSV" | "PDF") {
+    try {
+      const blob = await downloadReportExport(id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${reportKey}.${format.toLowerCase()}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Unable to download this export");
+    }
+  }
 
   const doctorName = (id: string) =>
     doctorsQuery.data?.items.find((doctor) => doctor.id === id)?.name ?? id.slice(0, 8);
@@ -366,13 +381,13 @@ function Page() {
             <tbody>
               {exportsQuery.isLoading ? (
                 <tr>
-                  <td colSpan={5} className="p-0">
+                  <td colSpan={6} className="p-0">
                     <LoadingRows rows={3} className="p-3" />
                   </td>
                 </tr>
               ) : exportsQuery.error ? (
                 <tr>
-                  <td colSpan={5} className="p-3">
+                  <td colSpan={6} className="p-3">
                     <ErrorBlock
                       error={exportsQuery.error}
                       onRetry={() => void exportsQuery.refetch()}
@@ -381,7 +396,7 @@ function Page() {
                 </tr>
               ) : (exportsQuery.data?.items.length ?? 0) === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
                     No export jobs yet.
                   </td>
                 </tr>
@@ -395,6 +410,19 @@ function Page() {
                     </td>
                     <td className={td}>{formatDate(item.created_at)}</td>
                     <td className={td}>{formatDate(item.completed_at)}</td>
+                    <td className={td}>
+                      {item.status === "COMPLETED" ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline"
+                          onClick={() => void downloadExport(item.id, item.report_key, item.format)}
+                        >
+                          <Download className="h-4 w-4" /> Download
+                        </button>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}

@@ -53,7 +53,6 @@ export type TopBarLinks = {
 export type RoleNavigation = {
   role: Role;
   label: string;
-  user: { name: string; email: string };
   home: string;
   groups: readonly NavGroup[];
   topBar: TopBarLinks;
@@ -62,14 +61,13 @@ export type RoleNavigation = {
 const adminNavigation: RoleNavigation = {
   role: "admin",
   label: "Administrator",
-  user: { name: "Samuel Ndegwa", email: "s.ndegwa@mediflow.co.ke" },
   home: "/admin",
   groups: [
     {
       label: "General",
       items: [
         { to: "/admin", label: "Dashboard", icon: LayoutGrid },
-        { to: "/admin/appointments", label: "Appointments", icon: CalendarDays, badge: 6 },
+        { to: "/admin/appointments", label: "Appointments", icon: CalendarDays },
         { to: "/admin/patients", label: "Patients", icon: Users },
         { to: "/admin/visits", label: "Clinical Visits", icon: ClipboardList },
         { to: "/admin/staff", label: "Doctors & Staff", icon: Stethoscope },
@@ -79,8 +77,8 @@ const adminNavigation: RoleNavigation = {
     {
       label: "Finance & Compliance",
       items: [
-        { to: "/admin/billing", label: "Billing & Payments", icon: Receipt, badge: 5 },
-        { to: "/admin/claims", label: "SHA Claims", icon: ShieldCheck, badge: 4 },
+        { to: "/admin/billing", label: "Billing & Payments", icon: Receipt },
+        { to: "/admin/claims", label: "SHA Claims", icon: ShieldCheck },
         { to: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
         { to: "/admin/analytics", label: "Analytics & Reports", icon: BarChart3 },
       ],
@@ -88,7 +86,7 @@ const adminNavigation: RoleNavigation = {
     {
       label: "System",
       items: [
-        { to: "/admin/notifications", label: "Notifications", icon: Bell, badge: 3 },
+        { to: "/admin/notifications", label: "Notifications", icon: Bell },
         { to: "/admin/ai", label: "AI Assistant", icon: Sparkles },
         { to: "/admin/settings", label: "Settings", icon: Settings },
       ],
@@ -107,14 +105,13 @@ const adminNavigation: RoleNavigation = {
 const doctorNavigation: RoleNavigation = {
   role: "doctor",
   label: "Doctor",
-  user: { name: "Dr. Peter Kiprono", email: "p.kiprono@mediflow.co.ke" },
   home: "/doctor",
   groups: [
     {
       label: "Clinic",
       items: [
         { to: "/doctor", label: "Dashboard", icon: LayoutGrid },
-        { to: "/doctor/queue", label: "Today's Queue", icon: ListOrdered, badge: 8 },
+        { to: "/doctor/queue", label: "Today's Queue", icon: ListOrdered },
         { to: "/doctor/appointments", label: "Appointments", icon: CalendarDays },
         { to: "/doctor/patients", label: "My Patients", icon: Users },
         { to: "/doctor/consultations", label: "Consultations", icon: ClipboardList },
@@ -149,7 +146,6 @@ const doctorNavigation: RoleNavigation = {
 const receptionistNavigation: RoleNavigation = {
   role: "receptionist",
   label: "Receptionist",
-  user: { name: "Joy Wairimu", email: "j.wairimu@mediflow.co.ke" },
   home: "/receptionist",
   groups: [
     {
@@ -158,7 +154,7 @@ const receptionistNavigation: RoleNavigation = {
         { to: "/receptionist", label: "Dashboard", icon: LayoutGrid },
         { to: "/receptionist/patients", label: "Register Patient", icon: UserPlus },
         { to: "/receptionist/appointments", label: "Appointments", icon: CalendarDays },
-        { to: "/receptionist/queue", label: "Queue & Check-in", icon: ListOrdered, badge: 5 },
+        { to: "/receptionist/queue", label: "Queue & Check-in", icon: ListOrdered },
       ],
     },
     {
@@ -189,7 +185,6 @@ const receptionistNavigation: RoleNavigation = {
 const cashierNavigation: RoleNavigation = {
   role: "cashier",
   label: "Cashier",
-  user: { name: "Grace Mutua", email: "g.mutua@mediflow.co.ke" },
   home: "/cashier",
   groups: [
     {
@@ -223,7 +218,6 @@ const cashierNavigation: RoleNavigation = {
 const patientNavigation: RoleNavigation = {
   role: "patient",
   label: "Patient",
-  user: { name: "Amina Yusuf", email: "amina.yusuf@example.com" },
   home: "/patient",
   groups: [
     {

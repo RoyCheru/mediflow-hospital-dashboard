@@ -375,7 +375,7 @@ def create_referral(visit, data, doctor_user):
         visit_id=visit.id,
         destination=data["destination"],
         reason=data["reason"],
-        content=content.decode(errors="replace"),
+        content=f"Referral to {data['destination']}: {data['reason']}",
         storage_key=key,
         generated_by_id=doctor_user.id,
     )

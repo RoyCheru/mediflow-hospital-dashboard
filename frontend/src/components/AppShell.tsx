@@ -120,12 +120,7 @@ export function AppShell({ nav, children }: { nav: RoleNavigation; children: Rea
               />
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
-              <TopBarActions
-                roleLabel={nav.label}
-                links={nav.topBar}
-                userName={nav.user.name}
-                userEmail={nav.user.email}
-              />
+              <TopBarActions roleLabel={nav.label} links={nav.topBar} />
             </div>
           </div>
         </header>

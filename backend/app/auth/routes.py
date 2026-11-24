@@ -6,6 +6,7 @@ from app.auth.schemas import (
     PasswordResetConfirmSchema,
     PasswordResetRequestSchema,
     RefreshSchema,
+    SelfProfileUpdateSchema,
     StaffCreateSchema,
     UserUpdateSchema,
     VerifyTokenSchema,
@@ -88,6 +89,14 @@ def verify():
 @auth_required()
 def me():
     return ok(service.serialize_user(current_user()))
+
+
+@bp.patch("/auth/me")
+@auth_required()
+def update_me():
+    data = _validation(SelfProfileUpdateSchema())
+    user = service.update_self_profile(current_user(), data)
+    return ok(service.serialize_user(user))
 
 
 @bp.post("/admin/users")

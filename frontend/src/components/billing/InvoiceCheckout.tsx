@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BadgePercent, CreditCard, ShieldCheck } from "lucide-react";
+import { AlertTriangle, BadgePercent, CreditCard, Download, ShieldCheck } from "lucide-react";
 import {
   Badge,
   DetailRow,
@@ -15,10 +15,11 @@ import {
 } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
-import { ApiError } from "@/lib/api/client";
+import { ApiError, errorMessage } from "@/lib/api/client";
 import {
   billingKeys,
   createPaymentIntent,
+  downloadInvoicePdf,
   finalizeInvoice,
   getInvoice,
   recordPayment,
@@ -167,7 +168,11 @@ export function InvoiceCheckout({
       if (payment.method === "MPESA") {
         if (amount % 100 !== 0) throw new Error("M-Pesa payments must be whole shillings");
         if (!payment.phone.trim()) throw new Error("Enter the M-Pesa phone number");
-        return createPaymentIntent(invoiceId, { amount_minor: amount, phone: payment.phone });
+        return createPaymentIntent(
+          invoiceId,
+          { amount_minor: amount, phone: payment.phone },
+          payment.key,
+        );
       }
       const tendered = payment.tendered ? kesToMinor(payment.tendered) : undefined;
       if (payment.method === "CASH" && tendered !== undefined && tendered !== null) {
@@ -219,6 +224,21 @@ export function InvoiceCheckout({
     onError: (error: Error) => toast.error(error.message),
   });
 
+  async function downloadPdf() {
+    if (!invoice) return;
+    try {
+      const blob = await downloadInvoicePdf(invoice.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${invoice.invoice_number ?? "invoice"}.pdf`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error: unknown) {
+      toast.error(errorMessage(error));
+    }
+  }
+
   const tendered = kesToMinor(payment.tendered);
   const amountMinor = kesToMinor(payment.amount);
   const change =
@@ -239,6 +259,9 @@ export function InvoiceCheckout({
       wide
       footer={
         <>
+          <Button variant="outline" onClick={() => void downloadPdf()} disabled={!invoice}>
+            <Download /> PDF
+          </Button>
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>

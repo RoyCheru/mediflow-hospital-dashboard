@@ -28,7 +28,7 @@ import {
   requestRefund,
   requestVoid,
 } from "@/lib/api/billing";
-import { kesToMinor } from "@/lib/billingShares";
+import { kesToMinor, newIdempotencyKey } from "@/lib/billingShares";
 import { formatDateTime, formatKshMinor, paymentMethodLabel, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Invoice, Refund, Transaction, VoidRequest } from "@/types/api";
@@ -198,19 +198,26 @@ function RequestDialog({ target, onClose }: { target: NonNullable<Target>; onClo
     target.kind === "refund" ? String(target.transaction.amount_minor / 100) : "",
   );
   const [reason, setReason] = useState("");
+  const [requestKey] = useState(() => newIdempotencyKey());
   const submit = useMutation({
     mutationFn: (): Promise<Refund | VoidRequest> => {
       if (!reason.trim()) throw new Error("A reason is required");
-      if (target.kind === "void") return requestVoid(target.invoice.id, { reason: reason.trim() });
+      if (target.kind === "void") {
+        return requestVoid(target.invoice.id, { reason: reason.trim() }, requestKey);
+      }
       const amountMinor = kesToMinor(amount);
       if (amountMinor === null) throw new Error("Enter a valid refund amount");
       if (amountMinor > target.transaction.amount_minor) {
         throw new Error("A refund cannot exceed the payment");
       }
-      return requestRefund(target.transaction.id, {
-        amount_minor: amountMinor,
-        reason: reason.trim(),
-      });
+      return requestRefund(
+        target.transaction.id,
+        {
+          amount_minor: amountMinor,
+          reason: reason.trim(),
+        },
+        requestKey,
+      );
     },
     onSuccess: () => {
       toast.success(

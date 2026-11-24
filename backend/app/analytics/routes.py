@@ -147,7 +147,7 @@ def download_export(export_id):
     content = get_object_storage().get(export.storage_key)
     return Response(
         content,
-        mimetype="text/csv" if export.report_format == ReportFormat.CSV else "text/html",
+        mimetype="text/csv" if export.report_format == ReportFormat.CSV else "application/pdf",
         headers={
             "Content-Disposition": (
                 f'attachment; filename="{export.report_key}-{export.id}'

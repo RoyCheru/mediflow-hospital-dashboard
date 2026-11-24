@@ -26,6 +26,15 @@ export function me() {
   return api.get<AuthUser>("/auth/me");
 }
 
+export function updateMe(body: {
+  first_name?: string;
+  last_name?: string;
+  phone?: string | null;
+  email?: string | null;
+}) {
+  return api.patch<AuthUser>("/auth/me", body);
+}
+
 export async function logoutAndClear(refreshToken: string | null) {
   try {
     if (refreshToken) await logout(refreshToken);

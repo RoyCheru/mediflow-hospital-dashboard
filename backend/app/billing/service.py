@@ -1417,6 +1417,93 @@ def reconciliation_queue():
     return intents, transactions
 
 
+def resolve_payment_intent(intent, data, actor):
+    invoice = lock_invoice(intent.invoice_id)
+    if intent.status not in {
+        PaymentIntentStatus.PENDING,
+        PaymentIntentStatus.UNCONFIRMED,
+    }:
+        raise conflict(
+            "Only pending or unconfirmed payment intents can be resolved",
+            {"payment_intent_id": str(intent.id), "status": intent.status.value},
+        )
+    transaction = Transaction.query.filter_by(payment_intent_id=intent.id).first()
+    if data["resolution"] == "SUCCESS":
+        if invoice.status in {
+            InvoiceStatus.DRAFT,
+            InvoiceStatus.VOIDED,
+            InvoiceStatus.REFUNDED,
+        }:
+            raise conflict(
+                f"Cannot accept a payment on a {invoice.status.value.lower()} invoice",
+                {"invoice_id": str(invoice.id), "invoice_status": invoice.status.value},
+            )
+        if int(intent.amount_minor) > int(invoice.balance_minor):
+            raise conflict(
+                "Payment exceeds the outstanding balance",
+                {
+                    "amount_minor": int(intent.amount_minor),
+                    "balance_minor": int(invoice.balance_minor),
+                },
+            )
+        reference = (
+            transaction.reference
+            if transaction is not None
+            else (f"MANUAL-{intent.id.hex[:12].upper()}")
+        )
+        if transaction is None:
+            transaction = Transaction(
+                invoice_id=intent.invoice_id,
+                payment_intent_id=intent.id,
+                method=PaymentMethod.MPESA,
+                amount_minor=intent.amount_minor,
+                status=TransactionStatus.SUCCESS,
+                reference=reference,
+                provider_reference=intent.checkout_request_id,
+                paid_at=utcnow(),
+                notes="Manually confirmed from the reconciliation queue",
+            )
+            db.session.add(transaction)
+        else:
+            transaction.status = TransactionStatus.SUCCESS
+            transaction.notes = "Manually accepted at reconciliation"
+        intent.status = PaymentIntentStatus.SUCCESS
+        invoice.primary_method = PaymentMethod.MPESA
+        db.session.flush()
+        recompute_invoice(invoice)
+        apply_patient_money(invoice, transaction)
+        enqueue_event(
+            "payment.received",
+            "payment_intent",
+            intent.id,
+            {
+                "payment_intent_id": str(intent.id),
+                "invoice_id": str(intent.invoice_id),
+                "patient_id": str(invoice.patient_id),
+                "amount_minor": int(intent.amount_minor),
+                "reference": reference,
+            },
+        )
+    else:
+        intent.status = PaymentIntentStatus.FAILED
+        if transaction is not None and transaction.status == TransactionStatus.UNCONFIRMED:
+            transaction.status = TransactionStatus.FAILED
+            transaction.notes = "Marked failed at reconciliation"
+    record_audit(
+        "payment.intent_resolve",
+        "payment_intent",
+        intent.id,
+        actor=actor,
+        after={
+            "resolution": data["resolution"],
+            "status": intent.status.value,
+            "notes": data.get("notes"),
+        },
+    )
+    db.session.commit()
+    return intent
+
+
 def resolve_transaction(transaction, data, actor):
     """Settle a parked (UNCONFIRMED) payment from the reconciliation queue.
 

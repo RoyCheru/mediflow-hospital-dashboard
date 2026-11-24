@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search } from "lucide-react";
+import { toast } from "sonner";
+import { Download, Search } from "lucide-react";
 import {
   Badge,
   EmptyState,
@@ -14,7 +15,7 @@ import {
   theadRow,
 } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
-import { billingKeys, listTransactions } from "@/lib/api/billing";
+import { billingKeys, downloadReceipt, listTransactions } from "@/lib/api/billing";
 import { formatDateTime, formatKshMinor, paymentMethodLabel, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ListPagination } from "./ListPagination";
@@ -41,6 +42,20 @@ export function TransactionListPanel() {
     staleTime: 15_000,
   });
   const rows = query.data?.items ?? [];
+
+  async function receipt(id: string, reference: string | null) {
+    try {
+      const blob = await downloadReceipt(id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `receipt-${reference ?? id}.pdf`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Unable to download this receipt");
+    }
+  }
 
   return (
     <Panel title="Payments">
@@ -87,18 +102,19 @@ export function TransactionListPanel() {
               <th className={th}>Amount</th>
               <th className={th}>Reference</th>
               <th className={th}>Status</th>
+              <th className={th}>Action</th>
             </tr>
           </thead>
           <tbody>
             {query.isLoading ? (
               <tr>
-                <td colSpan={7} className="p-0">
+                <td colSpan={8} className="p-0">
                   <LoadingRows rows={5} className="p-3" />
                 </td>
               </tr>
             ) : query.error ? (
               <tr>
-                <td colSpan={7} className="p-3">
+                <td colSpan={8} className="p-3">
                   <ErrorBlock error={query.error} onRetry={() => void query.refetch()} />
                 </td>
               </tr>

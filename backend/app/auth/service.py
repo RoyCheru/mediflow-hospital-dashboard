@@ -339,6 +339,49 @@ def create_staff(data, actor):
     return user
 
 
+def update_self_profile(user, data):
+    email = (data.get("email") or "").lower() or None
+    phone = data.get("phone")
+    if email and User.query.filter(User.id != user.id, User.email == email).first():
+        raise conflict("An account with this email already exists")
+    if phone and User.query.filter(User.id != user.id, User.phone == phone).first():
+        raise conflict("An account with this phone already exists")
+    before = {
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "phone": user.phone,
+        "email": user.email,
+    }
+    if "first_name" in data:
+        user.first_name = data["first_name"]
+    if "last_name" in data:
+        user.last_name = data["last_name"]
+    if "phone" in data:
+        user.phone = phone
+    if "email" in data:
+        if email != user.email:
+            user.email_verified_at = None
+        user.email = email
+    if user.role == Role.PATIENT:
+        from app.patients.models import PatientProfile
+
+        profile = PatientProfile.query.filter_by(user_id=user.id).first()
+        if profile is not None:
+            for field in ("first_name", "last_name", "phone", "email"):
+                if field in data:
+                    setattr(profile, field, data[field])
+    record_audit(
+        "auth.profile_update",
+        "user",
+        user.id,
+        actor=user,
+        before=before,
+        after={"first_name": user.first_name, "last_name": user.last_name, "phone": user.phone},
+    )
+    db.session.commit()
+    return user
+
+
 def update_staff(user_id, data, actor):
     user = User.query.get(user_id)
     if user is None:

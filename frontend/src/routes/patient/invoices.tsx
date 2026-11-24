@@ -19,6 +19,7 @@ import {
 } from "@/components/kit";
 import { EmptyBlock, ErrorBlock, LoadingRows } from "@/components/DataState";
 import { createPaymentIntent, downloadInvoicePdf, getInvoice } from "@/lib/api/billing";
+import { newIdempotencyKey } from "@/lib/billingShares";
 import { getMyInvoices } from "@/lib/api/patient";
 import { errorMessage } from "@/lib/api/client";
 import { formatDateTime, formatKshMinor, titleize } from "@/lib/format";
@@ -34,6 +35,7 @@ function PatientInvoicesPage() {
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
+  const [paymentKey, setPaymentKey] = useState(() => newIdempotencyKey());
   const invoices = useQuery({
     queryKey: ["patient", "invoices", { page_size: 50 }],
     queryFn: () => getMyInvoices({ page_size: 50 }),
@@ -51,15 +53,20 @@ function PatientInvoicesPage() {
       if (!phone.trim()) throw new Error("Enter the M-Pesa phone number");
       const minor = Math.round(Number(amount) * 100);
       if (!Number.isFinite(minor) || minor <= 0) throw new Error("Enter a valid amount");
-      return createPaymentIntent(detail.data.id, {
-        amount_minor: minor,
-        phone: phone.trim(),
-      });
+      return createPaymentIntent(
+        detail.data.id,
+        {
+          amount_minor: minor,
+          phone: phone.trim(),
+        },
+        paymentKey,
+      );
     },
     onSuccess: () => {
       toast.success("M-Pesa STK push sent. Confirm it on your phone.");
       setPaymentOpen(false);
       setPhone("");
+      setPaymentKey(newIdempotencyKey());
     },
     onError: (error: unknown) => toast.error(errorMessage(error)),
   });
@@ -156,6 +163,7 @@ function PatientInvoicesPage() {
                 className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
                 onClick={() => {
                   setAmount(String(detail.data.balance_minor / 100));
+                  setPaymentKey(newIdempotencyKey());
                   setPaymentOpen(true);
                 }}
               >

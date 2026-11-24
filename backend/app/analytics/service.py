@@ -316,11 +316,27 @@ def build_export(export):
             content_type = "text/csv"
             extension = "csv"
         else:
-            content = (
-                "<html><body><pre>" + _safe_csv_value(result) + "</pre></body></html>"
-            ).encode()
-            content_type = "text/html"
-            extension = "html"
+            from app.integrations.pdf import build_pdf
+
+            lines = [
+                "MediFlow",
+                export.report_key.replace("_", " ").title(),
+                "",
+            ]
+            if "groups" in result:
+                lines.append(f"{'Key':30} {'Amount (minor)':>18} {'Transactions':>14}")
+                lines.append("-" * 66)
+                for group in result["groups"]:
+                    lines.append(
+                        f"{str(group['key'])[:30]:30} {group['amount_minor']:>18} "
+                        f"{group['transaction_count']:>14}"
+                    )
+            else:
+                for key, value in result.items():
+                    lines.append(f"{str(key).replace('_', ' ').title()}: {value}")
+            content = build_pdf(lines)
+            content_type = "application/pdf"
+            extension = "pdf"
         key = f"exports/{export.id}.{extension}"
         get_object_storage().put(key, content, content_type)
         export.status = ExportStatus.COMPLETED

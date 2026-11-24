@@ -22,6 +22,7 @@ import {
   getCashSummary,
   getReconciliationQueue,
   listCashReconciliations,
+  resolvePaymentIntent,
   resolveTransaction,
 } from "@/lib/api/billing";
 import {
@@ -33,7 +34,7 @@ import {
   titleize,
 } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { Transaction } from "@/types/api";
+import type { PaymentIntent, Transaction } from "@/types/api";
 
 /** Counted cash in minor units; zero is a valid count. Null when blank or invalid. */
 function countedMinor(value: string): number | null {
@@ -189,13 +190,7 @@ export function CashReconciliationPanel() {
                 <ParkedPaymentRow key={transaction.id} transaction={transaction} />
               ))}
               {queue.data?.payment_intents.map((intent) => (
-                <li
-                  key={intent.id}
-                  className="flex justify-between rounded-lg bg-secondary/50 p-2 text-muted-foreground"
-                >
-                  <span>M-Pesa request awaiting confirmation</span>
-                  <span className="font-semibold">{formatKshMinor(intent.amount_minor)}</span>
-                </li>
+                <ParkedIntentRow key={intent.id} intent={intent} />
               ))}
             </ul>
           </DataState>
@@ -286,6 +281,60 @@ function ParkedPaymentRow({ transaction }: { transaction: Transaction }) {
         <span className="font-semibold">{formatKshMinor(transaction.amount_minor)}</span>
       </div>
       {transaction.notes && <p className="text-xs text-warning">{transaction.notes}</p>}
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => resolve.mutate("SUCCESS")}
+          disabled={resolve.isPending}
+        >
+          <CheckCircle2 /> Accept
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => resolve.mutate("FAILED")}
+          disabled={resolve.isPending}
+        >
+          <XCircle /> Mark failed
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+function ParkedIntentRow({ intent }: { intent: PaymentIntent }) {
+  const queryClient = useQueryClient();
+  const resolve = useMutation({
+    mutationFn: (resolution: "SUCCESS" | "FAILED") =>
+      resolvePaymentIntent(intent.id, {
+        resolution,
+        notes:
+          resolution === "SUCCESS"
+            ? "Confirmed manually at reconciliation"
+            : "Marked failed at reconciliation; return the money to the payer",
+      }),
+    onSuccess: (_, resolution) => {
+      toast.success(
+        resolution === "SUCCESS"
+          ? "Payment request confirmed and posted"
+          : "Payment request marked failed",
+      );
+      void queryClient.invalidateQueries({ queryKey: billingKeys.all });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  return (
+    <li className="space-y-2 rounded-lg bg-secondary/50 p-2" aria-label={intent.id}>
+      <div className="flex justify-between gap-2">
+        <span>
+          M-Pesa request awaiting confirmation
+          <span className="block text-xs text-muted-foreground">
+            {[intent.phone, formatDateTime(intent.created_at)].filter(Boolean).join(" · ")}
+          </span>
+        </span>
+        <span className="font-semibold">{formatKshMinor(intent.amount_minor)}</span>
+      </div>
       <div className="flex gap-2">
         <Button
           size="sm"

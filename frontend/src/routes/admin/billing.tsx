@@ -39,6 +39,8 @@ import {
   decideDiscount,
   decideRefund,
   decideVoid,
+  downloadInvoicePdf,
+  downloadReceipt,
   getCashSummary,
   getInvoice,
   listDiscountRequests,
@@ -49,6 +51,7 @@ import {
   recordPayment,
 } from "@/lib/api/billing";
 import { getInvoiceTotals } from "@/lib/api/dashboard";
+import { newIdempotencyKey } from "@/lib/billingShares";
 import { listDepartments } from "@/lib/api/management";
 import {
   formatDate,
@@ -109,6 +112,7 @@ function Page() {
     reference: "",
     tendered: "",
     notes: "",
+    key: newIdempotencyKey(),
   });
   const [decision, setDecision] = useState<{
     kind: "void" | "refund" | "discount";
@@ -200,20 +204,28 @@ function Page() {
         throw new Error("Enter a valid payment amount");
       }
       if (paymentForm.method === "MPESA") {
-        return createPaymentIntent(selectedId, {
-          amount_minor: amountMinor,
-          phone: paymentForm.phone,
-        });
+        return createPaymentIntent(
+          selectedId,
+          {
+            amount_minor: amountMinor,
+            phone: paymentForm.phone,
+          },
+          paymentForm.key,
+        );
       }
-      return recordPayment(selectedId, {
-        method: paymentForm.method,
-        amount_minor: amountMinor,
-        tendered_minor: paymentForm.tendered
-          ? Math.round(Number(paymentForm.tendered) * 100)
-          : undefined,
-        reference: paymentForm.reference || undefined,
-        notes: paymentForm.notes || undefined,
-      });
+      return recordPayment(
+        selectedId,
+        {
+          method: paymentForm.method,
+          amount_minor: amountMinor,
+          tendered_minor: paymentForm.tendered
+            ? Math.round(Number(paymentForm.tendered) * 100)
+            : undefined,
+          reference: paymentForm.reference || undefined,
+          notes: paymentForm.notes || undefined,
+        },
+        paymentForm.key,
+      );
     },
     onSuccess: () => {
       toast.success(
@@ -229,6 +241,7 @@ function Page() {
         reference: "",
         tendered: "",
         notes: "",
+        key: newIdempotencyKey(),
       });
       void invalidateBilling();
     },
@@ -261,6 +274,35 @@ function Page() {
     (discountsQuery.data?.meta.total ?? 0);
   const cashCollected =
     cashQuery.data?.methods.reduce((sum, item) => sum + item.amount_minor, 0) ?? 0;
+
+  async function downloadPaymentReceipt(id: string, reference: string | null) {
+    try {
+      const blob = await downloadReceipt(id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `receipt-${reference ?? id}.pdf`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Unable to download this receipt");
+    }
+  }
+
+  async function downloadPdf() {
+    if (!invoiceQuery.data) return;
+    try {
+      const blob = await downloadInvoicePdf(invoiceQuery.data.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${invoiceQuery.data.invoice_number ?? "invoice"}.pdf`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Unable to download this invoice");
+    }
+  }
 
   const resetPage = (fn: () => void) => {
     fn();
@@ -480,6 +522,7 @@ function Page() {
                   <th className={th}>Amount</th>
                   <th className={th}>Status</th>
                   <th className={th}>Paid</th>
+                  <th className={th}>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -489,12 +532,12 @@ function Page() {
                   isEmpty={(transactionsQuery.data?.items.length ?? 0) === 0}
                   loading={
                     <tr>
-                      <td colSpan={7} className="p-0">
+                      <td colSpan={8} className="p-0">
                         <LoadingRows rows={4} className="p-3" />
                       </td>
                     </tr>
                   }
-                  empty={<EmptyState cols={7} message="No transactions match these filters." />}
+                  empty={<EmptyState cols={8} message="No transactions match these filters." />}
                 >
                   {transactionsQuery.data?.items.map((transaction) => (
                     <tr key={transaction.id} className={tbodyRow}>
@@ -510,6 +553,17 @@ function Page() {
                       </td>
                       <td className={cn(td, "text-muted-foreground")}>
                         {formatDateTime(transaction.paid_at)}
+                      </td>
+                      <td className={td}>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline"
+                          onClick={() =>
+                            void downloadPaymentReceipt(transaction.id, transaction.reference)
+                          }
+                        >
+                          Receipt
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -731,6 +785,9 @@ function Page() {
             <Button variant="outline" onClick={() => setSelectedId(null)}>
               Close
             </Button>
+            <Button variant="outline" onClick={() => void downloadPdf()}>
+              <Eye /> Download PDF
+            </Button>
             <Button
               onClick={() => {
                 const balance = invoiceQuery.data?.balance_minor ?? 0;
@@ -741,6 +798,7 @@ function Page() {
                   reference: "",
                   tendered: "",
                   notes: "",
+                  key: newIdempotencyKey(),
                 });
                 setPaymentOpen(true);
               }}

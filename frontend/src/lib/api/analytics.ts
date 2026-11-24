@@ -1,4 +1,4 @@
-import { api } from "@/lib/api/client";
+import { api, apiBlob } from "@/lib/api/client";
 import type {
   ClaimAgingReport,
   ListParams,
@@ -61,4 +61,8 @@ export function createReportExport(body: {
   parameters?: Record<string, unknown>;
 }) {
   return api.post<ReportExport>("/reports/exports", body);
+}
+
+export function downloadReportExport(id: string) {
+  return apiBlob(`/reports/exports/${id}/download`);
 }
