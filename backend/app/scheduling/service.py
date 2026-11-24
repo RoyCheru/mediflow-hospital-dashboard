@@ -13,6 +13,7 @@ from app.common.enums import (
     Urgency,
 )
 from app.common.errors import bad_request, conflict, forbidden, not_found
+from app.common.locking import lock_row
 from app.common.outbox import enqueue_event
 from app.common.time import (
     hospital_day_bounds,
@@ -667,9 +668,7 @@ def create_appointment(
             raise bad_request("Cannot book an appointment in the past")
 
         # Serialize bookings per doctor to protect against concurrent double booking.
-        db.session.execute(
-            db.select(DoctorProfile).where(DoctorProfile.id == doctor.id).with_for_update()
-        )
+        lock_row(DoctorProfile, doctor.id)
         if not _assert_slot_free(doctor.id, start, end):
             raise conflict("That appointment slot is already booked")
         status = AppointmentStatus.SCHEDULED
@@ -850,9 +849,7 @@ def reschedule(appointment, new_start, actor, reason=None):
     if new_start < utcnow():
         raise bad_request("New appointment time is in the past")
     end = new_start + (appointment.scheduled_end - appointment.scheduled_start)
-    db.session.execute(
-        db.select(DoctorProfile).where(DoctorProfile.id == appointment.doctor_id).with_for_update()
-    )
+    lock_row(DoctorProfile, appointment.doctor_id)
     if not _assert_slot_free(appointment.doctor_id, new_start, end, exclude_id=appointment.id):
         raise conflict("That appointment slot is already booked")
     appointment.status = AppointmentStatus.CANCELLED

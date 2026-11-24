@@ -31,6 +31,7 @@ from app.common.enums import (
     VoidRequestStatus,
 )
 from app.common.errors import ApiError, bad_request, conflict, not_found
+from app.common.locking import lock_row
 from app.common.outbox import enqueue_event
 from app.common.sequences import next_sequence_value
 from app.common.time import hospital_day_bounds
@@ -455,9 +456,7 @@ def ensure_draft_invoice_for_appointment(appointment, actor=None, commit=True):
     from app.scheduling.models import Appointment as AppointmentModel
     from app.scheduling.models import DoctorProfile
 
-    db.session.execute(
-        db.select(AppointmentModel).where(AppointmentModel.id == appointment.id).with_for_update()
-    )
+    lock_row(AppointmentModel, appointment.id)
     existing = _find_active_invoice_for_appointment(appointment.id)
     visit = Visit.query.filter_by(appointment_id=appointment.id).first()
     if existing is not None:
