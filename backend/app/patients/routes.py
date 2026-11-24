@@ -83,11 +83,25 @@ def list_patients():
 @bp.get("/patients/duplicates")
 @auth_required(Role.RECEPTIONIST, Role.ADMIN)
 def duplicates():
+    from datetime import date
+
+    from app.common.errors import bad_request
+
+    date_of_birth = None
+    if request.args.get("date_of_birth"):
+        try:
+            # Compare as a date: Postgres will not compare a date column with text.
+            date_of_birth = date.fromisoformat(request.args["date_of_birth"])
+        except ValueError as exc:
+            raise bad_request(
+                "Invalid date of birth",
+                {"date_of_birth": ["Use the YYYY-MM-DD format"]},
+            ) from exc
     items = service.duplicate_candidates(
-        request.args.get("first_name"),
-        request.args.get("last_name"),
-        request.args.get("date_of_birth"),
-        request.args.get("phone"),
+        (request.args.get("first_name") or "").strip() or None,
+        (request.args.get("last_name") or "").strip() or None,
+        date_of_birth,
+        (request.args.get("phone") or "").strip() or None,
     )
     return ok({"items": [service.serialize_patient_brief(item) for item in items]})
 
