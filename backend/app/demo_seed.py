@@ -142,9 +142,8 @@ def _claim(invoice, patient, amount, status, submitted_days_ago, actor):
         invoice_id=invoice.id,
         payer=AllocationPayer.SHA,
         amount_minor=amount,
-        status=AllocationStatus.PAID
-        if status in {ClaimStatus.APPROVED, ClaimStatus.PAID}
-        else AllocationStatus.PENDING,
+        # Only a paid claim has settled its SHA share; an approved one still awaits payment.
+        status=AllocationStatus.PAID if status == ClaimStatus.PAID else AllocationStatus.PENDING,
         external_reference=f"SHA-{uuid4().hex[:10].upper()}",
     )
     db.session.add(allocation)
@@ -175,6 +174,11 @@ def _claim(invoice, patient, amount, status, submitted_days_ago, actor):
     )
     db.session.add(claim)
     db.session.flush()
+    if status == ClaimStatus.REJECTED:
+        # Same as a live rejection: release the SHA share and bill the patient.
+        from app.claims.service import _apply_claim_outcome
+
+        _apply_claim_outcome(claim, actor)
     db.session.add(
         ClaimStatusHistory(
             claim_id=claim.id,
