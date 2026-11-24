@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, time, timedelta, timezone
 
 from sqlalchemy import and_, func, or_
 
@@ -18,6 +18,12 @@ from app.common.enums import (
     TransactionStatus,
     VoidRequestStatus,
 )
+from app.common.time import (
+    hospital_day_bounds,
+    hospital_local_datetime,
+    hospital_today,
+    hospital_tz,
+)
 from app.extensions import db
 from app.patients.models import PatientProfile
 from app.scheduling.models import Appointment
@@ -26,9 +32,14 @@ from app.scheduling.service import serialize_appointment
 PAYMENT_METHODS = ("SHA", "MPESA", "CASH", "CARD", "BANK", "SELF_PAY")
 
 
+def _local_midnight(target_date):
+    """Midnight at the start of target_date in hospital time, expressed in UTC
+    like stored timestamps (as hospital_day_bounds does)."""
+    return hospital_local_datetime(target_date, time.min).astimezone(timezone.utc)
+
+
 def _day_bounds(target_date):
-    start = datetime.combine(target_date, time.min, tzinfo=timezone.utc)
-    return start, start + timedelta(days=1)
+    return hospital_day_bounds(target_date)
 
 
 def _month_start(target_date):
@@ -62,10 +73,8 @@ def _sum_successful_transactions(start, end):
 
 
 def _month_bounds(target_date):
-    current_start = datetime.combine(_month_start(target_date), time.min, tzinfo=timezone.utc)
-    next_start = datetime.combine(
-        _shift_month(_month_start(target_date), 1), time.min, tzinfo=timezone.utc
-    )
+    current_start = _local_midnight(_month_start(target_date))
+    next_start = _local_midnight(_shift_month(_month_start(target_date), 1))
     return current_start, next_start
 
 
@@ -108,8 +117,8 @@ def _payment_split(start, end):
 def _revenue_trend(today):
     current_month = _month_start(today)
     start_month = _shift_month(current_month, -5)
-    start = datetime.combine(start_month, time.min, tzinfo=timezone.utc)
-    end = datetime.combine(_shift_month(current_month, 1), time.min, tzinfo=timezone.utc)
+    start = _local_midnight(start_month)
+    end = _local_midnight(_shift_month(current_month, 1))
     months = []
     cursor = start_month
     for _ in range(6):
@@ -130,7 +139,7 @@ def _revenue_trend(today):
     department_rows = {month: {"month": month, "total_minor": 0} for month in months}
 
     for transaction in transactions:
-        paid_at = as_utc(transaction.paid_at)
+        paid_at = as_utc(transaction.paid_at).astimezone(hospital_tz())
         key = paid_at.strftime("%Y-%m")
         if key not in method_rows:
             continue
@@ -159,9 +168,7 @@ def _revenue_trend(today):
 
 def _stat_cards(today):
     month_start, next_month_start = _month_bounds(today)
-    previous_month_start = datetime.combine(
-        _shift_month(_month_start(today), -1), time.min, tzinfo=timezone.utc
-    )
+    previous_month_start = _local_midnight(_shift_month(_month_start(today), -1))
 
     total_patients = PatientProfile.query.count()
     patients_before_month = PatientProfile.query.filter(
@@ -260,7 +267,7 @@ def _recent_audit(limit=6):
 
 
 def dashboard_summary(today=None):
-    target = today or utcnow().date()
+    target = today or hospital_today()
     month_start, next_month_start = _month_bounds(target)
     return {
         "as_of": utcnow().isoformat(),
