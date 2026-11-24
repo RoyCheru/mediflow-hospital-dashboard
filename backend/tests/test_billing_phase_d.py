@@ -215,6 +215,10 @@ def test_legacy_create_invoice_finalizes_the_existing_draft(client, tokens, ids)
 def test_finalize_by_visit_creates_a_draft_when_missing(client, tokens, ids):
     appointment, visit = _visit_flow(client, tokens, ids)
     draft = _drafts(appointment["id"])[0]
+    from app.claims.models import EligibilityCheck
+
+    # The check-in eligibility check references the draft (enforced on Postgres).
+    EligibilityCheck.query.filter_by(invoice_id=draft.id).update({"invoice_id": None})
     db.session.delete(draft)
     db.session.commit()
     assert _drafts(appointment["id"]) == []
