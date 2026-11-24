@@ -1,5 +1,4 @@
 import base64
-import hashlib
 import hmac
 import uuid
 from datetime import datetime
@@ -35,11 +34,30 @@ def normalize_phone(phone: str) -> str:
     return value
 
 
+def _callback_token_matches(args) -> bool:
+    secret = current_app.config.get("MPESA_CALLBACK_SECRET") or ""
+    token = (args or {}).get("token") or ""
+    return bool(secret) and hmac.compare_digest(str(token), secret)
+
+
+def callback_url_with_token(url: str) -> str:
+    """Daraja does not sign callbacks, so the shared secret travels in the URL we
+    register (?token=...) and is checked on receipt."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    secret = current_app.config.get("MPESA_CALLBACK_SECRET") or ""
+    if not url or not secret:
+        return url
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query) if k != "token"] + [("token", secret)]
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 class MpesaGateway:
     def stk_push(self, phone, amount_minor, account_reference, description, callback_url=None):
         raise NotImplementedError
 
-    def verify_callback(self, headers, payload):
+    def verify_callback(self, headers, payload, args=None):
         raise NotImplementedError
 
 
@@ -53,13 +71,12 @@ class SimulatedMpesaGateway(MpesaGateway):
             "response_code": "0",
         }
 
-    def verify_callback(self, headers, payload):
-        secret = current_app.config.get("MPESA_CALLBACK_SECRET")
-        if not secret:
+    def verify_callback(self, headers, payload, args=None):
+        # Simulated (development) mode accepts unsigned callbacks only while no
+        # secret is configured; once one is set the token is required.
+        if not current_app.config.get("MPESA_CALLBACK_SECRET"):
             return True
-        signature = headers.get("X-Mpesa-Signature", "")
-        expected = hmac.new(secret.encode(), repr(payload).encode(), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(signature, expected)
+        return _callback_token_matches(args)
 
 
 class DarajaMpesaGateway(MpesaGateway):
@@ -93,7 +110,9 @@ class DarajaMpesaGateway(MpesaGateway):
             "PartyA": normalize_phone(phone),
             "PartyB": shortcode,
             "PhoneNumber": normalize_phone(phone),
-            "CallBackURL": callback_url or current_app.config["MPESA_CALLBACK_URL"],
+            "CallBackURL": callback_url_with_token(
+                callback_url or current_app.config["MPESA_CALLBACK_URL"]
+            ),
             "AccountReference": account_reference,
             "TransactionDesc": description[:100],
         }
@@ -115,13 +134,9 @@ class DarajaMpesaGateway(MpesaGateway):
             "response_code": str(body.get("ResponseCode")),
         }
 
-    def verify_callback(self, headers, payload):
-        secret = current_app.config.get("MPESA_CALLBACK_SECRET")
-        if not secret:
-            return True
-        signature = headers.get("X-Mpesa-Signature", "")
-        expected = hmac.new(secret.encode(), repr(payload).encode(), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(signature, expected)
+    def verify_callback(self, headers, payload, args=None):
+        # Live mode fails closed: without a configured secret no callback is trusted.
+        return _callback_token_matches(args)
 
 
 def get_mpesa_gateway() -> MpesaGateway:

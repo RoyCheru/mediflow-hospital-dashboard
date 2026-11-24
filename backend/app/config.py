@@ -58,7 +58,11 @@ class Config:
     MPESA_SHORTCODE = os.getenv("MPESA_SHORTCODE", "174379")
     MPESA_PASSKEY = os.getenv("MPESA_PASSKEY", "")
     MPESA_CALLBACK_URL = os.getenv("MPESA_CALLBACK_URL", "")
+    # Shared secret added to the registered callback URL as ?token=... and checked
+    # on every callback. Required in daraja mode (callbacks are refused without it).
     MPESA_CALLBACK_SECRET = os.getenv("MPESA_CALLBACK_SECRET", "")
+    # HMAC-SHA256 key for X-SHA-Signature on SHA claim-status callbacks (refused if unset).
+    SHA_CALLBACK_SECRET = os.getenv("SHA_CALLBACK_SECRET", "")
 
     SHA_MODE = os.getenv("SHA_MODE", "simulated")
     SHA_BASE_URL = os.getenv("SHA_BASE_URL", "")

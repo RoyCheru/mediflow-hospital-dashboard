@@ -327,6 +327,10 @@ Daraja needs a public HTTPS callback URL. Use a tunnel such as ngrok and set `MP
 ngrok http 5000
 ```
 
+Set `MPESA_CALLBACK_SECRET` to a long random value. MediFlow appends it to the
+callback URL it sends to Daraja (`?token=...`) and rejects callbacks without it,
+because Daraja does not sign its callbacks.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env`. Never commit real secrets.
@@ -343,6 +347,9 @@ Copy `.env.example` to `.env`. Never commit real secrets.
 | `MPESA_CONSUMER_KEY` / `MPESA_CONSUMER_SECRET` | Daraja app credentials |
 | `MPESA_SHORTCODE` / `MPESA_PASSKEY` | Business shortcode and STK passkey |
 | `MPESA_CALLBACK_URL` | Public HTTPS URL for payment callbacks |
+| `MPESA_CALLBACK_SECRET` | Random secret added to the callback URL as `?token=` and checked on every callback. Required with `MPESA_MODE=daraja` (callbacks are refused without it) |
+| `SHA_CALLBACK_SECRET` | Key for the `X-SHA-Signature` HMAC-SHA256 of the raw body on SHA claim-status callbacks. Callbacks are refused while it is unset |
+| `REPORT_EXPORTS_ASYNC` | `true` to build report exports on the Celery worker; default builds them in the request |
 | `SHA_MODE` | `simulated` (default) or `live` once real access exists |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio credentials |
 | `TWILIO_WHATSAPP_FROM` | Approved WhatsApp sender |

@@ -284,7 +284,7 @@ def create_payment_intent(invoice_id):
 def mpesa_callback():
     payload = request.get_json(silent=True) or {}
     gateway = get_mpesa_gateway()
-    if not gateway.verify_callback(dict(request.headers), payload):
+    if not gateway.verify_callback(dict(request.headers), payload, dict(request.args)):
         raise unauthorized("Invalid callback signature")
     return ok(service.handle_mpesa_callback(payload))
 

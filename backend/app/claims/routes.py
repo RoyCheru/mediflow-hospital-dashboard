@@ -160,8 +160,27 @@ def update_status(claim_id):
     return ok(service.serialize_claim(claim))
 
 
+def _sha_signature_valid():
+    """X-SHA-Signature must be the hex HMAC-SHA256 of the raw body with
+    SHA_CALLBACK_SECRET. Without a configured secret nothing is accepted."""
+    import hashlib
+    import hmac
+
+    from flask import current_app
+
+    secret = current_app.config.get("SHA_CALLBACK_SECRET") or ""
+    if not secret:
+        return False
+    expected = hmac.new(secret.encode(), request.get_data(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(request.headers.get("X-SHA-Signature", ""), expected)
+
+
 @bp.post("/webhooks/sha/claim-status")
 def sha_callback():
+    from app.common.errors import unauthorized
+
+    if not _sha_signature_valid():
+        raise unauthorized("Invalid or missing SHA callback signature")
     payload = request.get_json(silent=True) or {}
     claim = service.handle_sha_callback(payload)
     return ok(service.serialize_claim(claim))
