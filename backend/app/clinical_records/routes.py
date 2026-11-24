@@ -152,6 +152,19 @@ def list_prescriptions(visit_id):
     return ok({"items": [service.serialize_prescription(item) for item in items.all()]})
 
 
+@bp.get("/visits/<uuid:visit_id>/attachments")
+@auth_required(Role.DOCTOR, Role.ADMIN, Role.PATIENT)
+def list_attachments(visit_id):
+    visit = service.get_visit_or_404(visit_id)
+    _assert_read(current_user(), visit)
+    record_audit("attachment.list", "visit", visit.id, actor=current_user())
+    db.session.commit()
+    items = (
+        Attachment.query.filter_by(visit_id=visit.id).order_by(Attachment.created_at.desc()).all()
+    )
+    return ok({"items": [service.serialize_attachment(item) for item in items]})
+
+
 @bp.post("/visits/<uuid:visit_id>/attachments")
 @auth_required(Role.DOCTOR)
 def upload_attachment(visit_id):

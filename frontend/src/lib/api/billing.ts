@@ -1,4 +1,4 @@
-import { api } from "@/lib/api/client";
+import { api, apiBlob } from "@/lib/api/client";
 import type {
   CashReconciliation,
   CashSummary,
@@ -105,6 +105,10 @@ export function listDiscountRequests(params?: ListParams) {
 
 export function getInvoice(id: string) {
   return api.get<Invoice>(`/invoices/${id}`);
+}
+
+export function downloadInvoicePdf(id: string) {
+  return apiBlob(`/invoices/${id}/pdf`);
 }
 
 export function createPaymentIntent(

@@ -66,16 +66,17 @@ async function requestOnce<T>(
 ): Promise<T> {
   const { body, token, headers, ...rest } = options;
   let response: Response;
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
   const init: RequestInit = {
     ...rest,
     headers: {
       Accept: "application/json",
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(body !== undefined && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
   };
-  if (body !== undefined) init.body = JSON.stringify(body);
+  if (body !== undefined) init.body = isFormData ? body : JSON.stringify(body);
   try {
     response = await fetch(`${API_URL}${path}`, init);
   } catch {
@@ -141,6 +142,39 @@ export async function apiEnvelope<T>(
     }
     throw error;
   }
+}
+
+export async function apiBlob(
+  path: string,
+  options: RequestOptions = {},
+  allowRefresh = true,
+): Promise<Blob> {
+  const token = options.token ?? getAccessToken();
+  const { body, token: _ignored, headers, ...rest } = options;
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...rest,
+      headers: {
+        Accept: "*/*",
+        ...(body !== undefined && !isFormData ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...headers,
+      },
+      ...(body !== undefined ? { body: isFormData ? body : JSON.stringify(body) } : {}),
+    });
+  } catch {
+    throw new ApiNetworkError();
+  }
+  if (response.status === 401 && allowRefresh && (await refreshTokens())) {
+    return apiBlob(path, options, false);
+  }
+  if (!response.ok) {
+    const payload = await parseBody(response).catch(() => null);
+    throw new ApiError(response.status, payload as ApiErrorBody | null, response.statusText);
+  }
+  return response.blob();
 }
 
 export function buildQuery(params: ListParams = {}): string {

@@ -199,6 +199,17 @@ def create_exception():
     )
 
 
+@bp.delete("/doctors/me/exceptions/<uuid:exception_id>")
+@auth_required(Role.DOCTOR)
+def delete_my_exception(exception_id):
+    doctor = _doctor_for_user(current_user())
+    item = AvailabilityException.query.filter_by(id=exception_id, doctor_id=doctor.id).first()
+    if item is None:
+        raise not_found("Availability exception not found")
+    service.delete_exception(item, actor=current_user())
+    return ok({"deleted": True})
+
+
 @bp.get("/availability")
 @auth_required()
 def get_availability():

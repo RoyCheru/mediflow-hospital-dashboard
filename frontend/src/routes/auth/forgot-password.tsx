@@ -2,6 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { AuthField, AuthPanel } from "@/components/AuthPanel";
+import { errorMessage } from "@/lib/api/client";
+import { requestPasswordReset } from "@/lib/api/auth";
 
 export const Route = createFileRoute("/auth/forgot-password")({
   head: () => ({ meta: [{ title: "Reset password — MediFlow" }] }),
@@ -9,11 +11,30 @@ export const Route = createFileRoute("/auth/forgot-password")({
 });
 
 function ForgotPasswordPage() {
+  const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
+  const [message, setMessage] = useState("");
+  const [tokenReady, setTokenReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSent(true);
+    setError(null);
+    setSubmitting(true);
+    try {
+      const result = await requestPasswordReset(email.trim());
+      setSent(true);
+      setMessage(result.message);
+      if (result.reset_token) {
+        sessionStorage.setItem("mediflow.reset_token", result.reset_token);
+        setTokenReady(true);
+      }
+    } catch (submitError) {
+      setError(errorMessage(submitError));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -31,19 +52,35 @@ function ForgotPasswordPage() {
     >
       {sent ? (
         <div className="space-y-4 text-sm text-muted-foreground">
-          <p>
-            If an account exists for that email, a reset link is on its way. Follow the link to
-            choose a new password.
-          </p>
-          <Button asChild className="w-full">
-            <Link to="/auth/reset-password">Continue to reset form</Link>
-          </Button>
+          <p>{message}</p>
+          {tokenReady ? (
+            <Button asChild className="w-full">
+              <Link to="/auth/reset-password">Continue to reset form</Link>
+            </Button>
+          ) : (
+            <p className="text-xs">
+              Follow the link in your email to choose a new password. If you do not receive it,
+              check your spam folder or request another link.
+            </p>
+          )}
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
-          <AuthField label="Email" type="email" autoComplete="email" required />
-          <Button type="submit" className="w-full">
-            Send reset link
+          <AuthField
+            label="Email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+          />
+          {error && (
+            <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <Button type="submit" className="w-full" disabled={submitting}>
+            {submitting ? "Sending…" : "Send reset link"}
           </Button>
         </form>
       )}

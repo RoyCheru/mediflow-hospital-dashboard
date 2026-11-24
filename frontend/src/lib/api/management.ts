@@ -42,6 +42,10 @@ export function getPatient(id: string) {
   return api.get<Patient>(`/patients/${id}`);
 }
 
+export function getPatientTimeline(id: string) {
+  return api.get<{ items: import("@/types/api").TimelineEvent[] }>(`/patients/${id}/timeline`);
+}
+
 export function updatePatient(id: string, body: Record<string, unknown>) {
   return api.patch<Patient>(`/patients/${id}`, body);
 }
@@ -92,6 +96,19 @@ export function addServicePrice(id: string, body: { amount_minor: number }) {
 
 export function listDoctors(params?: ListParams) {
   return api.get<{ items: Doctor[] }>("/doctors", params);
+}
+
+export type AvailabilitySlot = {
+  start: string;
+  end: string;
+  available: boolean;
+};
+
+export function getAvailability(doctorId: string, date: string) {
+  return api.get<{ doctor_id: string; date: string; slots: AvailabilitySlot[] }>("/availability", {
+    doctor_id: doctorId,
+    date,
+  });
 }
 
 export function updateDoctor(id: string, body: Record<string, unknown>) {

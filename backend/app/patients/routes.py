@@ -31,9 +31,10 @@ def self_registration():
 
     data = RegisterPatientSchema().load(request.get_json(silent=True) or {})
     result = register_patient(data)
-    if not (current_app.config.get("TESTING") or current_app.config.get("ENV") == "development"):
-        result.pop("verification_token", None)
-    return created(service.serialize_patient(result["patient"]))
+    payload = service.serialize_patient(result["patient"])
+    if current_app.config.get("TESTING") or current_app.config.get("ENV") == "development":
+        payload["verification_token"] = result.get("verification_token")
+    return created(payload)
 
 
 @bp.post("/patients")
@@ -99,7 +100,55 @@ def my_profile():
         raise not_found("Patient profile not found")
     record_audit("patient.read_own", "patient", profile.id, actor=current_user())
     db.session.commit()
+    payload = service.serialize_patient(profile)
+    from app.patients.models import ConsentRecord
+
+    payload["consents"] = [
+        {
+            "channel": record.channel.value,
+            "granted": record.granted,
+            "created_at": record.created_at.isoformat(),
+        }
+        for record in profile.consents.order_by(ConsentRecord.created_at.desc()).all()
+    ]
+    return ok(payload)
+
+
+@bp.patch("/patients/me")
+@auth_required(Role.PATIENT)
+def update_my_profile():
+    profile = patient_profile_for_user(current_user())
+    if profile is None:
+        raise not_found("Patient profile not found")
+    data = PatientUpdateSchema().load(request.get_json(silent=True) or {})
+    data.pop("is_active", None)
+    profile = service.update_patient(profile, data, current_user())
     return ok(service.serialize_patient(profile))
+
+
+@bp.get("/patients/me/prescriptions")
+@auth_required(Role.PATIENT)
+def my_prescriptions():
+    from app.clinical_records.models import Prescription, Visit
+    from app.clinical_records.service import serialize_prescription
+
+    profile = patient_profile_for_user(current_user())
+    if profile is None:
+        raise not_found("Patient profile not found")
+    record_audit(
+        "prescription.read_own",
+        "patient",
+        profile.id,
+        actor=current_user(),
+    )
+    db.session.commit()
+    rows = (
+        Prescription.query.join(Visit, Prescription.visit_id == Visit.id)
+        .filter(Visit.patient_id == profile.id)
+        .order_by(Prescription.issued_at.desc())
+        .all()
+    )
+    return ok({"items": [serialize_prescription(item) for item in rows]})
 
 
 @bp.get("/patients/me/timeline")

@@ -1,7 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowLeft, CheckCircle2, Pill, Save } from "lucide-react";
+import {
+  ArrowLeft,
+  CalendarPlus,
+  CheckCircle2,
+  Download,
+  FileText,
+  Pill,
+  Save,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Badge, Field, Modal, PageHeader, Panel, inputCls, textareaCls } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
@@ -12,13 +21,25 @@ import {
   clinicalKeys,
   completeVisit,
   createPrescription,
+  createReferral,
+  downloadAttachment,
   getClinicalVisit,
+  listAttachments,
   listPrescriptions,
+  scheduleFollowUp,
   updateVisit,
+  uploadAttachment,
 } from "@/lib/api/clinical";
-import { getAppointment, getPatient } from "@/lib/api/management";
+import { getAppointment, getPatient, listServices } from "@/lib/api/management";
 import { formatDate, formatDateTime, formatTime, titleize } from "@/lib/format";
-import type { PrescriptionItemInput, Visit, VisitUpdateInput, VisitVitals } from "@/types/api";
+import { errorMessage } from "@/lib/api/client";
+import type {
+  Attachment,
+  PrescriptionItemInput,
+  Visit,
+  VisitUpdateInput,
+  VisitVitals,
+} from "@/types/api";
 
 export const Route = createFileRoute("/doctor/consultations/$visitId")({
   head: () => ({ meta: [{ title: "Consultation — MediFlow" }] }),
@@ -292,6 +313,11 @@ function ConsultationPage() {
         <PrescriptionsPanel visitId={visitId} />
       </div>
 
+      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+        <AttachmentsPanel visitId={visitId} />
+        <ReferralFollowUpPanel visit={data} />
+      </div>
+
       <Modal
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
@@ -455,6 +481,261 @@ function PrescriptionsPanel({ visitId }: { visitId: string }) {
           {add.isPending ? "Adding…" : "Add prescription"}
         </Button>
       </form>
+    </Panel>
+  );
+}
+
+function AttachmentsPanel({ visitId }: { visitId: string }) {
+  const queryClient = useQueryClient();
+  const [file, setFile] = useState<File | null>(null);
+  const [type, setType] = useState("LAB_REPORT");
+  const attachments = useQuery({
+    queryKey: clinicalKeys.attachments(visitId),
+    queryFn: () => listAttachments(visitId),
+  });
+  const upload = useMutation({
+    mutationFn: () => {
+      if (!file) throw new Error("Choose a file to upload");
+      return uploadAttachment(visitId, file, type);
+    },
+    onSuccess: () => {
+      setFile(null);
+      void queryClient.invalidateQueries({ queryKey: clinicalKeys.attachments(visitId) });
+      toast.success("Attachment uploaded");
+    },
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  });
+
+  async function download(attachment: Attachment) {
+    try {
+      const blob = await downloadAttachment(attachment.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = attachment.file_name;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Unable to download this file");
+    }
+  }
+
+  return (
+    <Panel title="Labs and scans">
+      {attachments.isLoading ? (
+        <LoadingRows rows={2} />
+      ) : attachments.error ? (
+        <ErrorBlock error={attachments.error} onRetry={() => void attachments.refetch()} />
+      ) : (attachments.data?.items.length ?? 0) === 0 ? (
+        <p className="mb-3 text-sm text-muted-foreground">No attachments yet.</p>
+      ) : (
+        <ul className="mb-3 space-y-2">
+          {attachments.data?.items.map((attachment) => (
+            <li
+              key={attachment.id}
+              className="flex flex-wrap items-center gap-2 rounded-xl bg-secondary/50 p-3"
+            >
+              <FileText className="h-4 w-4 text-primary" />
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+                {attachment.file_name}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {(attachment.byte_size / 1024).toFixed(0)} KB
+              </span>
+              <Button size="sm" variant="outline" onClick={() => void download(attachment)}>
+                <Download /> Download
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          upload.mutate();
+        }}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="File (PDF, JPG or PNG)">
+            <input
+              type="file"
+              accept="application/pdf,image/jpeg,image/png"
+              className={inputCls}
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            />
+          </Field>
+          <Field label="Type">
+            <select
+              className={inputCls}
+              value={type}
+              onChange={(event) => setType(event.target.value)}
+            >
+              <option value="LAB_REPORT">Lab report</option>
+              <option value="SCAN">Scan</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </Field>
+        </div>
+        <Button type="submit" variant="outline" disabled={!file || upload.isPending}>
+          <Upload /> {upload.isPending ? "Uploading…" : "Upload attachment"}
+        </Button>
+      </form>
+    </Panel>
+  );
+}
+
+function ReferralFollowUpPanel({ visit }: { visit: Visit }) {
+  const queryClient = useQueryClient();
+  const [referralOpen, setReferralOpen] = useState(false);
+  const [followUpOpen, setFollowUpOpen] = useState(false);
+  const [destination, setDestination] = useState("");
+  const [referralReason, setReferralReason] = useState("");
+  const [followUpDate, setFollowUpDate] = useState("");
+  const [followUpService, setFollowUpService] = useState("");
+  const [followUpNotes, setFollowUpNotes] = useState("");
+  const services = useQuery({
+    queryKey: ["clinical", "services"],
+    queryFn: () => listServices({}),
+    staleTime: 300_000,
+  });
+
+  const referral = useMutation({
+    mutationFn: () => {
+      if (!destination.trim() || !referralReason.trim()) {
+        throw new Error("Destination and reason are required");
+      }
+      return createReferral(visit.id, {
+        destination: destination.trim(),
+        reason: referralReason.trim(),
+      });
+    },
+    onSuccess: () => {
+      toast.success("Referral letter generated");
+      setReferralOpen(false);
+      setDestination("");
+      setReferralReason("");
+    },
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  });
+
+  const followUp = useMutation({
+    mutationFn: () => {
+      if (!followUpDate) throw new Error("Choose a follow-up date and time");
+      return scheduleFollowUp(visit.id, {
+        doctor_id: visit.doctor_id,
+        service_id: followUpService || undefined,
+        scheduled_start: new Date(followUpDate).toISOString(),
+        notes: followUpNotes.trim() || "Follow-up visit",
+      });
+    },
+    onSuccess: () => {
+      toast.success("Follow-up appointment scheduled");
+      setFollowUpOpen(false);
+      setFollowUpDate("");
+      setFollowUpService("");
+      setFollowUpNotes("");
+      void queryClient.invalidateQueries({ queryKey: ["clinical"] });
+    },
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  });
+
+  return (
+    <Panel title="Referral and follow-up">
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" onClick={() => setReferralOpen(true)}>
+          <FileText /> Referral letter
+        </Button>
+        <Button variant="outline" onClick={() => setFollowUpOpen(true)}>
+          <CalendarPlus /> Schedule follow-up
+        </Button>
+      </div>
+      <p className="mt-3 text-sm text-muted-foreground">
+        Generate a referral document or book the patient's next appointment from this visit.
+      </p>
+
+      <Modal
+        open={referralOpen}
+        onClose={() => setReferralOpen(false)}
+        title="Referral letter"
+        subtitle={visit.patient_name ?? undefined}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setReferralOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => referral.mutate()} disabled={referral.isPending}>
+              {referral.isPending ? "Generating…" : "Generate letter"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Field label="Destination">
+            <input
+              className={inputCls}
+              value={destination}
+              onChange={(event) => setDestination(event.target.value)}
+            />
+          </Field>
+          <Field label="Reason">
+            <textarea
+              className={textareaCls}
+              value={referralReason}
+              onChange={(event) => setReferralReason(event.target.value)}
+            />
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
+        open={followUpOpen}
+        onClose={() => setFollowUpOpen(false)}
+        title="Schedule follow-up"
+        subtitle={visit.patient_name ?? undefined}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setFollowUpOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => followUp.mutate()} disabled={followUp.isPending}>
+              {followUp.isPending ? "Scheduling…" : "Schedule"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Field label="Date and time">
+            <input
+              type="datetime-local"
+              className={inputCls}
+              value={followUpDate}
+              onChange={(event) => setFollowUpDate(event.target.value)}
+            />
+          </Field>
+          <Field label="Service (optional)">
+            <select
+              className={inputCls}
+              value={followUpService}
+              onChange={(event) => setFollowUpService(event.target.value)}
+            >
+              <option value="">No specific service</option>
+              {(services.data?.items ?? []).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Notes">
+            <textarea
+              className={textareaCls}
+              value={followUpNotes}
+              onChange={(event) => setFollowUpNotes(event.target.value)}
+            />
+          </Field>
+        </div>
+      </Modal>
     </Panel>
   );
 }

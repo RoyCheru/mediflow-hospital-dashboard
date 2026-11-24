@@ -1,10 +1,12 @@
-import { api } from "@/lib/api/client";
+import { api, apiBlob, apiRequest } from "@/lib/api/client";
 import type {
   Appointment,
+  Attachment,
   ListParams,
   Paginated,
   Prescription,
   PrescriptionItemInput,
+  Referral,
   Visit,
   VisitUpdateInput,
 } from "@/types/api";
@@ -15,6 +17,7 @@ export const clinicalKeys = {
   myVisits: (params?: ListParams) => ["clinical", "my-visits", params] as const,
   visit: (id: string) => ["clinical", "visit", id] as const,
   prescriptions: (visitId: string) => ["clinical", "prescriptions", visitId] as const,
+  attachments: (visitId: string) => ["clinical", "attachments", visitId] as const,
 };
 
 /** Today's queue in hospital time. Doctors only see their own patients (API-enforced). */
@@ -51,4 +54,42 @@ export function createPrescription(
   body: { notes?: string | null; items: PrescriptionItemInput[] },
 ) {
   return api.post<Prescription>(`/visits/${visitId}/prescriptions`, body);
+}
+
+export function listAttachments(visitId: string) {
+  return api.get<{ items: Attachment[] }>(`/visits/${visitId}/attachments`);
+}
+
+export function uploadAttachment(visitId: string, file: File, attachmentType: string) {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("attachment_type", attachmentType);
+  return apiRequest<Attachment>(`/visits/${visitId}/attachments`, {
+    method: "POST",
+    body,
+  });
+}
+
+export function downloadAttachment(attachmentId: string) {
+  return apiBlob(`/attachments/${attachmentId}/content`);
+}
+
+export function createReferral(visitId: string, body: { destination: string; reason: string }) {
+  return apiRequest<Referral>(`/visits/${visitId}/referral-letter`, {
+    method: "POST",
+    body,
+  });
+}
+
+export function scheduleFollowUp(
+  visitId: string,
+  body: {
+    doctor_id: string;
+    service_id?: string | undefined;
+    scheduled_start: string;
+    notes?: string | undefined;
+    slot_minutes?: number | undefined;
+  },
+) {
+  return api.post<Appointment>(`/visits/${visitId}/follow-up`, body);
 }

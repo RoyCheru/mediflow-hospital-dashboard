@@ -251,9 +251,13 @@ def record_payment(invoice_id):
 
 
 @bp.post("/invoices/<uuid:invoice_id>/payment-intents")
-@auth_required(*BILLING)
+@auth_required(Role.PATIENT, *BILLING)
 def create_payment_intent(invoice_id):
     invoice = service.get_invoice_or_404(invoice_id)
+    if current_user().role == Role.PATIENT:
+        profile = patient_profile_for_user(current_user())
+        if profile is None or invoice.patient_id != profile.id:
+            raise forbidden()
     data = PaymentIntentSchema().load(request.get_json(silent=True) or {})
     key = request.headers.get("Idempotency-Key")
     record = None

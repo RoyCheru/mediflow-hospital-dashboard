@@ -777,8 +777,29 @@ def aging_report():
             buckets["14_days"].append((claim, age))
         else:
             buckets["current"].append((claim, age))
-    return {
-        key: {
+    all_claims = Claim.query.all()
+    by_status = {}
+    for claim in all_claims:
+        by_status[claim.status.value] = by_status.get(claim.status.value, 0) + 1
+    decided = by_status.get(ClaimStatus.APPROVED.value, 0) + by_status.get(
+        ClaimStatus.PAID.value, 0
+    )
+    rejected = by_status.get(ClaimStatus.REJECTED.value, 0)
+    total_decided = decided + rejected
+    paid_days = [
+        (as_utc(claim.paid_at) - as_utc(claim.submitted_at)).days
+        for claim in all_claims
+        if claim.paid_at and claim.submitted_at
+    ]
+    payload = {
+        "total_claims": len(all_claims),
+        "by_status": by_status,
+        "aging_buckets": {key: len(items) for key, items in buckets.items()},
+        "approval_rate": round(decided / total_decided, 4) if total_decided else None,
+        "average_days_to_payment": round(sum(paid_days) / len(paid_days), 2) if paid_days else None,
+    }
+    for key, items in buckets.items():
+        payload[key] = {
             "count": len(items),
             "claims": [
                 {
@@ -791,8 +812,7 @@ def aging_report():
                 for claim, age in items
             ],
         }
-        for key, items in buckets.items()
-    }
+    return payload
 
 
 def handle_sha_callback(payload):

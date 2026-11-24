@@ -24,6 +24,15 @@ export type AuthTokens = {
   user: AuthUser;
 };
 
+export type PatientRegistrationResult = Patient & {
+  verification_token?: string | null;
+};
+
+export type PasswordResetRequestResult = {
+  message: string;
+  reset_token?: string | null;
+};
+
 export type PaginationMeta = {
   page: number;
   per_page: number;
@@ -313,6 +322,7 @@ export type PatientBrief = {
 };
 
 export type Patient = PatientBrief & {
+  consents?: { channel: "WHATSAPP" | "EMAIL" | "SMS"; granted: boolean; created_at: string }[];
   user_id: string | null;
   middle_name: string | null;
   email: string | null;
@@ -467,6 +477,34 @@ export type PrescriptionItemInput = Omit<
   route?: string | null;
   instructions?: string | null;
   quantity?: number | null;
+};
+
+export type Attachment = {
+  id: string;
+  visit_id: string;
+  patient_id: string;
+  attachment_type: string;
+  file_name: string;
+  content_type: string;
+  byte_size: number;
+  checksum_sha256: string;
+  scan_state: string;
+  created_at: string | null;
+};
+
+export type Referral = {
+  id: string;
+  visit_id: string;
+  destination: string;
+  reason: string;
+  created_at: string | null;
+};
+
+export type TimelineEvent = {
+  type: "visit" | "prescription" | "attachment" | string;
+  id: string;
+  occurred_at: string;
+  summary: Record<string, unknown>;
 };
 
 export type Prescription = {
@@ -680,6 +718,19 @@ export type AdminAvailabilityDay = {
   on_leave: boolean;
   exceptions: AvailabilityException[];
   slots: AdminAvailabilitySlot[];
+};
+
+export type DoctorAvailability = {
+  rules: AvailabilityRule[];
+  exceptions: AvailabilityException[];
+};
+
+export type DoctorStats = {
+  doctor_id: string;
+  patients_seen: number;
+  consultations: number;
+  average_consultation_minutes: number | null;
+  revenue_minor: number;
 };
 
 export type AdminStaffAvailability = {
