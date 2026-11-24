@@ -90,7 +90,11 @@ class Config:
 
 class TestConfig(Config):
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = "sqlite+pysqlite:///:memory:"
+    # In-memory SQLite by default. Set MEDIFLOW_TEST_DATABASE_URL to a disposable
+    # Postgres database or schema to run the suite against Postgres, which (unlike
+    # SQLite) enforces row locks and strict type comparisons. Each test creates and
+    # drops every table, so never point it at real data.
+    SQLALCHEMY_DATABASE_URI = os.getenv("MEDIFLOW_TEST_DATABASE_URL", "sqlite+pysqlite:///:memory:")
     SQLALCHEMY_ENGINE_OPTIONS = {}
     JWT_SECRET_KEY = "test-jwt-secret-with-at-least-32-bytes"
     SECRET_KEY = "test-secret"

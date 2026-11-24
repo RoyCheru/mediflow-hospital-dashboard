@@ -32,6 +32,9 @@ def make_user(email, phone, password, role, first_name, last_name):
 def app():
     application = create_app(TestConfig)
     with application.app_context():
+        # Start from empty tables even if an earlier run was interrupted before its
+        # teardown (matters when MEDIFLOW_TEST_DATABASE_URL points at Postgres).
+        db.drop_all()
         db.create_all()
         from app.notifications.service import ensure_default_templates
 
@@ -39,6 +42,7 @@ def app():
         ids = _seed()
         application.config["TEST_IDS"] = ids
         yield application
+        db.session.rollback()
         db.session.remove()
         db.drop_all()
 
