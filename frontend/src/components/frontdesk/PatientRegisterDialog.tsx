@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Modal } from "@/components/kit";
 import { Button } from "@/components/ui/button";
 import { createPatient, findDuplicatePatients } from "@/lib/api/management";
+import { newIdempotencyKey } from "@/lib/billingShares";
 import { formatDate } from "@/lib/format";
 import {
   blankPatientForm,
@@ -31,10 +32,13 @@ export function PatientRegisterDialog({
   const queryClient = useQueryClient();
   const [form, setForm] = useState<PatientFormState>(blankPatientForm);
   const [duplicates, setDuplicates] = useState<PatientBrief[] | null>(null);
+  // One key per registration attempt: a double click or a retry creates one patient.
+  const [submitKey, setSubmitKey] = useState(newIdempotencyKey);
 
   const close = () => {
     setForm(blankPatientForm);
     setDuplicates(null);
+    setSubmitKey(newIdempotencyKey());
     onClose();
   };
 
@@ -51,7 +55,7 @@ export function PatientRegisterDialog({
         });
         if (found.items.length > 0) return { duplicates: found.items } as const;
       }
-      return { patient: await createPatient(patientPayload(form)) } as const;
+      return { patient: await createPatient(patientPayload(form), submitKey) } as const;
     },
     onSuccess: (result) => {
       if ("duplicates" in result) {

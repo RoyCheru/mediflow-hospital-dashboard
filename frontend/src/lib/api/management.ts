@@ -50,8 +50,11 @@ export function updatePatient(id: string, body: Record<string, unknown>) {
   return api.patch<Patient>(`/patients/${id}`, body);
 }
 
-export function createPatient(body: Record<string, unknown>) {
-  return api.post<RegisterPatientResult>("/patients", body);
+/** With an idempotency key, a double-submitted registration creates one patient. */
+export function createPatient(body: Record<string, unknown>, idempotencyKey?: string) {
+  return idempotencyKey
+    ? api.postIdempotent<RegisterPatientResult>("/patients", body, idempotencyKey)
+    : api.post<RegisterPatientResult>("/patients", body);
 }
 
 export function listUsers(params?: ListParams) {
@@ -127,8 +130,10 @@ export function updateAppointment(id: string, body: Record<string, unknown>) {
   return api.patch<Appointment>(`/appointments/${id}`, body);
 }
 
-export function createAppointment(body: Record<string, unknown>) {
-  return api.post<Appointment>("/appointments", body);
+export function createAppointment(body: Record<string, unknown>, idempotencyKey?: string) {
+  return idempotencyKey
+    ? api.postIdempotent<Appointment>("/appointments", body, idempotencyKey)
+    : api.post<Appointment>("/appointments", body);
 }
 
 export type WalkInResult = Appointment & {
@@ -136,8 +141,10 @@ export type WalkInResult = Appointment & {
   potential_duplicates: PatientBrief[];
 };
 
-export function createWalkIn(body: Record<string, unknown>) {
-  return api.post<WalkInResult>("/appointments/walk-in", body);
+export function createWalkIn(body: Record<string, unknown>, idempotencyKey?: string) {
+  return idempotencyKey
+    ? api.postIdempotent<WalkInResult>("/appointments/walk-in", body, idempotencyKey)
+    : api.post<WalkInResult>("/appointments/walk-in", body);
 }
 
 export function checkInAppointment(id: string) {

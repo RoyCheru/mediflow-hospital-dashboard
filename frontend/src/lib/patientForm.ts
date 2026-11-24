@@ -33,11 +33,22 @@ export const blankPatientForm: PatientFormState = {
   email_consent: true,
 };
 
+function todayIso(): string {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 10);
+}
+
 /** First problem with the form, or null when it can be submitted. */
 export function patientFormError(form: PatientFormState): string | null {
   if (!form.first_name.trim() || !form.last_name.trim()) return "First and last name are required";
   if (!form.date_of_birth) return "Date of birth is required";
-  if (form.phone.replace(/\D/g, "").length < 7) return "A phone number is required";
+  if (form.date_of_birth > todayIso()) return "Date of birth cannot be in the future";
+  const digits = form.phone.replace(/\D/g, "").length;
+  if (digits === 0) return "A phone number is required";
+  if (!/^\+?[0-9][0-9 ()-]*$/.test(form.phone.trim()) || digits < 7 || digits > 15) {
+    return "Enter a valid phone number (7 to 15 digits)";
+  }
   if (form.insurance_member_number.trim() && !form.insurance_provider.trim()) {
     return "Insurance provider is required with a member number";
   }

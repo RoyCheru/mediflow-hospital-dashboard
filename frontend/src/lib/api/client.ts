@@ -4,6 +4,7 @@ import {
   getRefreshToken,
   saveStoredSession,
 } from "@/lib/auth-storage";
+import { describeApiError } from "@/lib/api/errorDetails";
 import type { AuthTokens, ListParams } from "@/types/api";
 
 export const API_URL = (
@@ -24,7 +25,9 @@ export class ApiError extends Error {
   details: unknown;
 
   constructor(status: number, body: ApiErrorBody | null, fallback: string) {
-    super(body?.error?.message || fallback);
+    // Include field errors (e.g. "Phone: Length must be between 7 and 32.") so
+    // forms show what to fix instead of a generic "Request validation failed".
+    super(describeApiError(body?.error?.message || fallback, body?.error?.details));
     this.name = "ApiError";
     this.status = status;
     this.code = body?.error?.code || "REQUEST_FAILED";

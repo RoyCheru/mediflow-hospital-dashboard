@@ -20,6 +20,13 @@ describe("patientFormError", () => {
     expect(patientFormError({ ...valid, phone: "07" })).toMatch(/phone/);
   });
 
+  it("rejects a future date of birth and malformed phone numbers", () => {
+    expect(patientFormError({ ...valid, date_of_birth: "2999-01-01" })).toMatch(/future/);
+    expect(patientFormError({ ...valid, phone: "07x1-abc-999" })).toMatch(/valid phone/);
+    expect(patientFormError({ ...valid, phone: "0712345678901234" })).toMatch(/valid phone/);
+    expect(patientFormError({ ...valid, phone: "+254 712 345-678" })).toBeNull();
+  });
+
   it("requires the insurer when a member number is given", () => {
     expect(patientFormError({ ...valid, insurance_member_number: "M-1" })).toMatch(/provider/);
     expect(

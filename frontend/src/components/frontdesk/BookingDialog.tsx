@@ -12,6 +12,7 @@ import {
   managementKeys,
   type WalkInResult,
 } from "@/lib/api/management";
+import { newIdempotencyKey } from "@/lib/billingShares";
 import { formatKshMinor } from "@/lib/format";
 import {
   blankPatientForm,
@@ -72,6 +73,8 @@ export function BookingDialog({
   const [patient, setPatient] = useState<PatientBrief | null>(initialPatient);
   const [newPatient, setNewPatient] = useState<PatientFormState>(blankPatientForm);
   const [details, setDetails] = useState<Details>(blankDetails);
+  // One key per booking attempt: a double click or a retry books once.
+  const [submitKey, setSubmitKey] = useState(newIdempotencyKey);
 
   const doctors = useQuery({
     queryKey: managementKeys.doctors({}),
@@ -92,6 +95,7 @@ export function BookingDialog({
     setPatient(initialPatient);
     setNewPatient(blankPatientForm);
     setDetails(blankDetails);
+    setSubmitKey(newIdempotencyKey());
   };
   const close = () => {
     reset();
@@ -111,18 +115,21 @@ export function BookingDialog({
         if (patientMode === "new") {
           const problem = patientFormError(newPatient);
           if (problem) throw new Error(problem);
-          return createWalkIn({ ...common, patient: patientPayload(newPatient) });
+          return createWalkIn({ ...common, patient: patientPayload(newPatient) }, submitKey);
         }
         if (!patient) throw new Error("Find the patient or register a new one");
-        return createWalkIn({ ...common, patient_id: patient.id });
+        return createWalkIn({ ...common, patient_id: patient.id }, submitKey);
       }
       if (!patient) throw new Error("Find the patient first");
       if (!details.scheduled_start) throw new Error("Appointment date and time are required");
-      return createAppointment({
-        ...common,
-        patient_id: patient.id,
-        scheduled_start: new Date(details.scheduled_start).toISOString(),
-      });
+      return createAppointment(
+        {
+          ...common,
+          patient_id: patient.id,
+          scheduled_start: new Date(details.scheduled_start).toISOString(),
+        },
+        submitKey,
+      );
     },
     onSuccess: (result) => {
       if (kind === "walk-in") {
