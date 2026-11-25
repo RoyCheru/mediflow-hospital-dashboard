@@ -411,10 +411,48 @@ def _invoice_line_from_spec(spec):
     )
 
 
+MAX_LINE_QUANTITY = 100
+
+
+def _priced_line_spec(spec):
+    """Validate a line someone asked to bill; the price list sets the price.
+
+    Lines must name an active service with a current price. A caller-supplied
+    unit price or free-text description is refused, so nobody at the desk or in
+    the consulting room can bill an amount the price list does not hold.
+    """
+    from app.scheduling.models import Service
+    from app.scheduling.service import current_price
+
+    if spec.get("unit_price_minor") is not None or spec.get("description"):
+        raise bad_request(
+            "Prices come from the service price list",
+            {"service_id": ["Choose a service; its configured price is used"]},
+        )
+    if not spec.get("service_id"):
+        raise bad_request("A service is required", {"service_id": ["Required"]})
+    service = Service.query.get(spec["service_id"])
+    if service is None:
+        raise not_found("Service not found")
+    if not service.is_active:
+        raise bad_request(f"{service.name} is not active", {"service_id": ["Inactive service"]})
+    price = current_price(service.id)
+    if price is None:
+        raise bad_request(
+            f"{service.name} has no price configured",
+            {"service_id": ["Ask an administrator to set its price"]},
+        )
+    quantity = int(spec.get("quantity") or 1)
+    if not 1 <= quantity <= MAX_LINE_QUANTITY:
+        raise bad_request("Invalid quantity", {"quantity": [f"Use 1 to {MAX_LINE_QUANTITY}"]})
+    return {"service_id": service.id, "quantity": quantity, "unit_price_minor": price.amount_minor}
+
+
 def _replace_invoice_lines(invoice, specs):
+    priced = [_priced_line_spec(spec) for spec in specs]
     invoice.lines.clear()
     db.session.flush()
-    for spec in specs:
+    for spec in priced:
         invoice.lines.append(_invoice_line_from_spec(spec))
     db.session.flush()
 
@@ -563,7 +601,7 @@ def finalize_invoice(invoice, actor):
     return invoice
 
 
-def _find_invoice_for_visit(visit):
+def find_invoice_for_visit(visit):
     clauses = [Invoice.visit_id == visit.id]
     if visit.appointment_id:
         clauses.append(Invoice.appointment_id == visit.appointment_id)
@@ -581,7 +619,7 @@ def finalize_visit_invoice(visit, data, actor):
             "Complete the visit before invoicing it",
             {"visit_id": str(visit.id)},
         )
-    invoice = _find_invoice_for_visit(visit)
+    invoice = find_invoice_for_visit(visit)
     if invoice is not None and invoice.status != InvoiceStatus.DRAFT:
         raise conflict(
             "An invoice already exists for this visit",
@@ -651,7 +689,7 @@ def add_invoice_line(invoice, data, actor):
             "Only draft invoices can be edited",
             {"invoice_id": str(invoice.id), "status": invoice.status.value},
         )
-    line = _invoice_line_from_spec(data)
+    line = _invoice_line_from_spec(_priced_line_spec(data))
     invoice.lines.append(line)
     db.session.flush()
     _recalculate_draft_totals(invoice)

@@ -52,3 +52,25 @@ def create_invoice_flow(client, tokens, ids):
     )
     assert response.status_code == 201, response.get_json()
     return appointment, visit, response.get_json()["data"]
+
+
+def priced_service(ids, code, name, amount_minor, active=True):
+    """A catalogue service with a current price (the only way lines can be billed)."""
+    from datetime import timedelta
+
+    from app.common.base import utcnow
+    from app.extensions import db
+    from app.scheduling.models import Service, ServicePrice
+
+    service = Service(department_id=ids["department_id"], name=name, code=code, is_active=active)
+    db.session.add(service)
+    db.session.flush()
+    db.session.add(
+        ServicePrice(
+            service_id=service.id,
+            amount_minor=amount_minor,
+            effective_from=utcnow() - timedelta(days=1),
+        )
+    )
+    db.session.commit()
+    return service

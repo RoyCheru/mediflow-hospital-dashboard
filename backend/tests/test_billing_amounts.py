@@ -6,7 +6,13 @@ from uuid import UUID
 from app.common.base import utcnow
 from app.extensions import db
 from app.scheduling.models import ServicePrice
-from tests.helpers import auth, complete_visit, create_invoice_flow, create_visit_flow
+from tests.helpers import (
+    auth,
+    complete_visit,
+    create_invoice_flow,
+    create_visit_flow,
+    priced_service,
+)
 
 
 def _invoice_for(client, tokens, visit_id, body=None):
@@ -43,18 +49,28 @@ def test_doctor_fee_is_the_default_price_when_the_service_has_no_price(client, t
     assert invoice["total_minor"] == 250000
 
 
-def test_explicit_items_are_billed_as_given(client, tokens, ids):
+def test_explicit_items_are_priced_from_the_price_list(client, tokens, ids):
     _, visit = create_visit_flow(client, tokens, ids)
     complete_visit(client, tokens, visit["id"])
-    response = _invoice_for(
+    dressing = priced_service(ids, "PROC-DRESS", "Dressing", 30000)
+
+    # A caller-supplied price is refused: the price list is the source of truth.
+    overridden = _invoice_for(
         client,
         tokens,
         visit["id"],
-        {"items": [{"description": "Dressing", "quantity": 2, "unit_price_minor": 30000}]},
+        {"items": [{"service_id": str(dressing.id), "unit_price_minor": 1}]},
+    )
+    assert overridden.status_code == 400
+    assert overridden.get_json()["error"]["message"] == "Prices come from the service price list"
+
+    response = _invoice_for(
+        client, tokens, visit["id"], {"items": [{"service_id": str(dressing.id), "quantity": 2}]}
     )
     assert response.status_code == 201, response.get_json()
     invoice = response.get_json()["data"]
     assert [line["description"] for line in invoice["lines"]] == ["Dressing"]
+    assert invoice["lines"][0]["unit_price_minor"] == 30000
     assert invoice["total_minor"] == 60000
     assert UUID(invoice["id"])
 

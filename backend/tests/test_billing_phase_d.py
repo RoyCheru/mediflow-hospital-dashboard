@@ -5,7 +5,7 @@ from uuid import UUID
 from app.billing.models import Invoice
 from app.common.enums import InvoiceStatus
 from app.extensions import db
-from tests.helpers import auth, book_appointment, complete_visit
+from tests.helpers import auth, book_appointment, complete_visit, priced_service
 
 
 def _check_in(client, tokens, ids):
@@ -88,10 +88,11 @@ def test_walk_in_creates_a_draft(client, tokens, ids):
 def test_line_endpoints_only_work_while_draft(client, tokens, ids):
     _, visit = _visit_flow(client, tokens, ids)
     draft = _drafts(visit["appointment_id"])[0]
+    dressing_service = priced_service(ids, "PROC-DRESS", "Dressing", 30000)
 
     added = client.post(
         f"/api/v1/invoices/{draft.id}/lines",
-        json={"description": "Dressing", "quantity": 2, "unit_price_minor": 30000},
+        json={"service_id": str(dressing_service.id), "quantity": 2},
         headers=auth(tokens["cashier"]),
     )
     assert added.status_code == 201, added.get_json()
@@ -119,7 +120,7 @@ def test_line_endpoints_only_work_while_draft(client, tokens, ids):
 
     blocked_add = client.post(
         f"/api/v1/invoices/{draft.id}/lines",
-        json={"description": "Late line", "unit_price_minor": 1000},
+        json={"service_id": str(dressing_service.id)},
         headers=auth(tokens["cashier"]),
     )
     assert blocked_add.status_code == 409

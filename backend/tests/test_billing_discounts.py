@@ -2,7 +2,13 @@
 
 from app.audit.models import AuditLog
 from app.notifications.models import Notification
-from tests.helpers import auth, complete_visit, create_invoice_flow, create_visit_flow
+from tests.helpers import (
+    auth,
+    complete_visit,
+    create_invoice_flow,
+    create_visit_flow,
+    priced_service,
+)
 
 
 def _new_invoice(client, tokens, ids, body):
@@ -82,7 +88,13 @@ def test_discount_above_kes_1000_needs_approval_even_under_ten_percent(client, t
         tokens,
         ids,
         {
-            "items": [{"description": "Minor procedure", "unit_price_minor": 2000000}],
+            "items": [
+                {
+                    "service_id": str(
+                        priced_service(ids, "PROC-MINOR", "Minor procedure", 2000000).id
+                    )
+                }
+            ],
             "discount_minor": 150000,  # 7.5% but above KES 1,000
             "discount_reason": "Hardship",
         },

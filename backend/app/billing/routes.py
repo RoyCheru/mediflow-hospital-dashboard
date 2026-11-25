@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from flask import Blueprint, Response, request
-from sqlalchemy import or_
+from sqlalchemy import String, cast, or_
 
 from app.billing import service
 from app.billing.models import (
@@ -29,6 +29,7 @@ from app.clinical_records.service import get_visit_or_404
 from app.common.decorators import auth_required, current_user
 from app.common.enums import (
     DiscountStatus,
+    InvoiceStatus,
     PaymentMethod,
     RefundStatus,
     Role,
@@ -50,6 +51,31 @@ bp = Blueprint("billing", __name__)
 BILLING = (Role.RECEPTIONIST, Role.CASHIER, Role.ADMIN)
 
 
+def _encounter_for_invoice(invoice):
+    """The visit and appointment an encounter bill belongs to (either may be None)."""
+    from app.clinical_records.models import Visit
+    from app.scheduling.models import Appointment
+
+    visit = Visit.query.get(invoice.visit_id) if invoice.visit_id else None
+    if visit is None and invoice.appointment_id:
+        visit = Visit.query.filter_by(appointment_id=invoice.appointment_id).first()
+    appointment_id = invoice.appointment_id or (visit.appointment_id if visit else None)
+    appointment = Appointment.query.get(appointment_id) if appointment_id else None
+    return visit, appointment
+
+
+def _assert_doctor_owns(user, visit=None, appointment=None):
+    """Doctors may only work on the bill of their own encounter."""
+    from app.scheduling.models import DoctorProfile
+
+    if user.role != Role.DOCTOR:
+        return
+    doctor = DoctorProfile.query.filter_by(user_id=user.id).first()
+    owner = visit.doctor_id if visit is not None else getattr(appointment, "doctor_id", None)
+    if doctor is None or owner is None or owner != doctor.id:
+        raise forbidden("This bill belongs to another doctor's encounter")
+
+
 @bp.post("/visits/<uuid:visit_id>/invoices")
 @auth_required(*BILLING)
 def create_invoice(visit_id):
@@ -61,11 +87,33 @@ def create_invoice(visit_id):
     return created(service.serialize_invoice(invoice))
 
 
+@bp.get("/visits/<uuid:visit_id>/invoice")
+@auth_required(Role.DOCTOR, *BILLING)
+def get_visit_invoice(visit_id):
+    """The encounter bill (draft or finalized) for a visit, for the consulting room."""
+    visit = get_visit_or_404(visit_id)
+    _assert_doctor_owns(current_user(), visit=visit)
+    invoice = service.find_invoice_for_visit(visit)
+    if invoice is None:
+        raise not_found("This encounter has no bill yet")
+    return ok(service.serialize_invoice(invoice))
+
+
 @bp.post("/visits/<uuid:visit_id>/invoices/finalize")
-@auth_required(*BILLING)
+@auth_required(Role.DOCTOR, *BILLING)
 def finalize_visit_invoice(visit_id):
     visit = get_visit_or_404(visit_id)
-    data = InvoiceCreateSchema().load(request.get_json(silent=True) or {})
+    user = current_user()
+    _assert_doctor_owns(user, visit=visit)
+    payload = request.get_json(silent=True) or {}
+    if user.role == Role.DOCTOR and (payload.get("items") or payload.get("discount_minor")):
+        from app.common.errors import bad_request
+
+        raise bad_request(
+            "Doctors submit the services already on the bill; "
+            "discounts and line changes are made at the billing desk"
+        )
+    data = InvoiceCreateSchema().load(payload)
     invoice = service.finalize_visit_invoice(visit, data, current_user())
     return created(service.serialize_invoice(invoice))
 
@@ -79,19 +127,30 @@ def finalize_invoice(invoice_id):
 
 
 @bp.post("/invoices/<uuid:invoice_id>/lines")
-@auth_required(*BILLING)
+@auth_required(Role.DOCTOR, *BILLING)
 def add_invoice_line(invoice_id):
     invoice = service.get_invoice_or_404(invoice_id)
+    visit, appointment = _encounter_for_invoice(invoice)
+    _assert_doctor_owns(current_user(), visit=visit, appointment=appointment)
     data = InvoiceLineSchema().load(request.get_json(silent=True) or {})
     invoice = service.add_invoice_line(invoice, data, current_user())
     return created(service.serialize_invoice(invoice))
 
 
 @bp.delete("/invoices/<uuid:invoice_id>/lines/<uuid:line_id>")
-@auth_required(*BILLING)
+@auth_required(Role.DOCTOR, *BILLING)
 def remove_invoice_line(invoice_id, line_id):
     invoice = service.get_invoice_or_404(invoice_id)
-    invoice = service.remove_invoice_line(invoice, line_id, current_user())
+    user = current_user()
+    visit, appointment = _encounter_for_invoice(invoice)
+    _assert_doctor_owns(user, visit=visit, appointment=appointment)
+    if user.role == Role.DOCTOR and appointment is not None and appointment.service_id:
+        line = next((item for item in invoice.lines if item.id == line_id), None)
+        if line is not None and line.service_id == appointment.service_id:
+            raise forbidden(
+                "The booked consultation stays on the bill; the billing desk can adjust it"
+            )
+    invoice = service.remove_invoice_line(invoice, line_id, user)
     return ok(service.serialize_invoice(invoice))
 
 
@@ -143,7 +202,22 @@ def list_invoices():
             raise not_found("Patient profile not found")
         query = query.filter_by(patient_id=profile.id)
     if request.args.get("status"):
-        query = query.filter(Invoice.status == request.args["status"])
+        # One status or several, comma separated (e.g. ISSUED,PARTIALLY_PAID for
+        # "awaiting payment").
+        try:
+            statuses = [
+                InvoiceStatus(item.strip())
+                for item in request.args["status"].split(",")
+                if item.strip()
+            ]
+        except ValueError as exc:
+            from app.common.errors import bad_request
+
+            raise bad_request(
+                "Invalid status",
+                {"status": [", ".join(item.value for item in InvoiceStatus)]},
+            ) from exc
+        query = query.filter(Invoice.status.in_(statuses))
     if request.args.get("patient_id") and user.role != Role.PATIENT:
         from uuid import UUID
 
@@ -167,9 +241,19 @@ def list_invoices():
     if request.args.get("date_to"):
         query = query.filter(Invoice.created_at <= _date_bound("date_to", end_of_day=True))
     if request.args.get("q"):
-        like = f"%{request.args['q'].strip()}%"
+        term = request.args["q"].strip()
+        like = f"%{term}%"
+        encounter = []
+        if len(term) >= 6 and all(char in "0123456789abcdefABCDEF-" for char in term):
+            # An encounter reference: the start (or all) of a visit or appointment id.
+            prefix = f"{term.lower()}%"
+            encounter = [
+                cast(Invoice.visit_id, String).ilike(prefix),
+                cast(Invoice.appointment_id, String).ilike(prefix),
+            ]
         query = query.filter(
             or_(
+                *encounter,
                 Invoice.invoice_number.ilike(like),
                 Invoice.patient.has(
                     or_(
