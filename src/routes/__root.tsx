@@ -113,6 +113,15 @@ function RootShell({ children }: { children: ReactNode }) {
     <html lang="en" className="dark">
       <head>
         <HeadContent />
+        {/* Precision Desk support widget (docs/integrations INT-018). The loader is async and the queue below
+            stores init until it arrives, so the order of the two tags does not matter. */}
+        <script src="https://demo.precision.ke/widget/v1.js" async />
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              'window.PrecisionDesk = window.PrecisionDesk || [];window.PrecisionDesk.push(["init", { key: "pk_test_1kZowbAWwVQuCh6iCEyRrVrFW4Edh5tL" }]);',
+          }}
+        />
       </head>
       <body>
         {children}
