@@ -20,14 +20,23 @@ import {
   billingKeys,
   createPaymentIntent,
   downloadInvoicePdf,
+  downloadReceipt,
   finalizeInvoice,
   getInvoice,
+  listTransactions,
   recordPayment,
   requestDiscount,
 } from "@/lib/api/billing";
 import { claimKeys, createClaim, runEligibilityCheck } from "@/lib/api/claims";
 import { kesToMinor, newIdempotencyKey, payerShares } from "@/lib/billingShares";
-import { formatDateTime, formatKshMinor, paymentMethodLabel, titleize } from "@/lib/format";
+import {
+  formatDateTime,
+  formatKshMinor,
+  invoiceStatusLabel,
+  paymentMethodLabel,
+  titleize,
+} from "@/lib/format";
+import { encounterRef } from "@/lib/invoices";
 import { toast } from "sonner";
 import type {
   EligibilityCheck,
@@ -193,9 +202,16 @@ export function InvoiceCheckout({
       if (payment.method === "MPESA") {
         toast.success("STK push sent. The payment appears once the customer confirms.");
       } else {
-        const change = (result as Transaction).change_minor;
+        const transaction = result as Transaction;
+        const change = transaction.change_minor;
         toast.success(
           change ? `Payment recorded. Change: ${formatKshMinor(change)}` : "Payment recorded",
+          {
+            action: {
+              label: "Receipt",
+              onClick: () => void saveReceipt(transaction.id, transaction.reference),
+            },
+          },
         );
       }
       setPanel("none");
@@ -253,7 +269,14 @@ export function InvoiceCheckout({
       title={invoice?.invoice_number ?? (isDraft ? "Draft invoice" : "Invoice")}
       subtitle={
         invoice
-          ? `${invoice.patient_name ?? "Patient"} · ${invoice.department_name ?? "Department"}`
+          ? [
+              invoice.patient_name ?? "Patient",
+              invoice.patient_number,
+              invoice.department_name,
+              encounterRef(invoice) ? `Encounter ${encounterRef(invoice)}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")
           : "Loading invoice…"
       }
       wide
@@ -298,9 +321,10 @@ export function InvoiceCheckout({
         <ErrorBlock error={invoiceQuery.error} onRetry={() => void invoiceQuery.refetch()} />
       ) : invoice && shares ? (
         <div className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-5">
             <DetailRow label="Total" value={formatKshMinor(invoice.total_minor)} />
             <DetailRow label="Paid" value={formatKshMinor(invoice.amount_paid_minor)} />
+            <DetailRow label="Balance" value={formatKshMinor(invoice.balance_minor)} />
             <DetailRow label="SHA pending" value={formatKshMinor(shares.payerPending)} />
             <DetailRow label="Patient due" value={formatKshMinor(shares.patientDue)} />
           </div>
@@ -356,8 +380,10 @@ export function InvoiceCheckout({
             </table>
           </div>
 
+          <PaymentHistory invoiceId={invoice.id} />
+
           <div className="flex flex-wrap items-center gap-2">
-            <Badge>{titleize(invoice.status)}</Badge>
+            <Badge>{invoiceStatusLabel(invoice.status)}</Badge>
             {invoice.primary_method && (
               <Badge tone="muted">{paymentMethodLabel(invoice.primary_method)}</Badge>
             )}
@@ -567,5 +593,85 @@ export function InvoiceCheckout({
         </div>
       ) : null}
     </Modal>
+  );
+}
+
+async function saveReceipt(transactionId: string, reference: string | null) {
+  try {
+    const blob = await downloadReceipt(transactionId);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `receipt-${reference ?? transactionId.slice(0, 8)}.pdf`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } catch (error: unknown) {
+    toast.error(errorMessage(error));
+  }
+}
+
+/** Payments recorded against the invoice, with a receipt for each successful one. */
+function PaymentHistory({ invoiceId }: { invoiceId: string }) {
+  const params = { invoice_id: invoiceId, page_size: 50 };
+  const payments = useQuery({
+    queryKey: billingKeys.transactions(params),
+    queryFn: () => listTransactions(params),
+  });
+  const items = payments.data?.items ?? [];
+  return (
+    <section aria-label="Payment history">
+      <h3 className="mb-2 text-sm font-semibold">Payments</h3>
+      {payments.isLoading ? (
+        <LoadingRows rows={2} />
+      ) : payments.error ? (
+        <ErrorBlock error={payments.error} onRetry={() => void payments.refetch()} />
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No payments recorded yet.</p>
+      ) : (
+        <div className={tableWrap}>
+          <table className="w-full">
+            <thead>
+              <tr className={theadRow}>
+                <th className={th}>Date</th>
+                <th className={th}>Method</th>
+                <th className={th}>Reference</th>
+                <th className={th}>Amount</th>
+                <th className={th}>Status</th>
+                <th className={th}>Receipt</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((payment) => (
+                <tr key={payment.id} className={tbodyRow}>
+                  <td className={td}>{formatDateTime(payment.paid_at ?? payment.created_at)}</td>
+                  <td className={td}>{paymentMethodLabel(payment.method)}</td>
+                  <td className={td}>{payment.reference ?? "—"}</td>
+                  <td className={td}>{formatKshMinor(payment.amount_minor)}</td>
+                  <td className={td}>
+                    <Badge>{titleize(payment.status)}</Badge>
+                  </td>
+                  <td className={td}>
+                    {payment.status === "SUCCESS" ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Download receipt ${payment.reference ?? ""}`}
+                        onClick={() => void saveReceipt(payment.id, payment.reference)}
+                      >
+                        <Download /> Receipt
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {payment.status === "PENDING" ? "Awaiting confirmation" : "—"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }

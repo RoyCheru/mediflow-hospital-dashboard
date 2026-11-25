@@ -57,6 +57,7 @@ import {
   formatDate,
   formatDateTime,
   formatKshMinor,
+  invoiceStatusLabel,
   paymentMethodLabel,
   titleize,
 } from "@/lib/format";
@@ -457,7 +458,7 @@ function Page() {
                       <td className={td}>{formatKshMinor(invoice.total_minor)}</td>
                       <td className={td}>{formatKshMinor(invoice.balance_minor)}</td>
                       <td className={td}>
-                        <Badge>{titleize(invoice.status)}</Badge>
+                        <Badge>{invoiceStatusLabel(invoice.status)}</Badge>
                       </td>
                       <td className={cn(td, "text-muted-foreground")}>
                         {formatDate(invoice.created_at)}
@@ -843,7 +844,7 @@ function Page() {
               </table>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge>{titleize(invoiceQuery.data.status)}</Badge>
+              <Badge>{invoiceStatusLabel(invoiceQuery.data.status)}</Badge>
               {invoiceQuery.data.primary_method && (
                 <Badge tone="muted">{paymentMethodLabel(invoiceQuery.data.primary_method)}</Badge>
               )}

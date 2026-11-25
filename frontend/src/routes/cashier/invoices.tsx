@@ -3,6 +3,7 @@ import { useState } from "react";
 import { PageHeader } from "@/components/kit";
 import { InvoiceCheckout } from "@/components/billing/InvoiceCheckout";
 import { InvoiceListPanel } from "@/components/billing/InvoiceListPanel";
+import { AWAITING_PAYMENT } from "@/lib/invoices";
 
 export const Route = createFileRoute("/cashier/invoices")({
   head: () => ({
@@ -23,9 +24,9 @@ function Page() {
     <div>
       <PageHeader
         title="Invoices"
-        subtitle="Find invoices, review line items and collect outstanding balances."
+        subtitle="Finalized invoices awaiting payment. Review the charges, collect payment and print receipts."
       />
-      <InvoiceListPanel onOpen={setOpenInvoiceId} />
+      <InvoiceListPanel onOpen={setOpenInvoiceId} defaultStatus={AWAITING_PAYMENT} />
       {openInvoiceId && (
         <InvoiceCheckout
           key={openInvoiceId}

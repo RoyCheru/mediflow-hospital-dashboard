@@ -4,7 +4,6 @@ import { Eye, Search } from "lucide-react";
 import {
   Badge,
   EmptyState,
-  FilterSelect,
   Panel,
   inputCls,
   td,
@@ -17,11 +16,19 @@ import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
 import { billingKeys, listInvoices } from "@/lib/api/billing";
 import { payerShares } from "@/lib/billingShares";
-import { formatDate, formatKshMinor, titleize } from "@/lib/format";
+import { formatDate, formatKshMinor, invoiceStatusLabel } from "@/lib/format";
+import { AWAITING_PAYMENT, encounterRef } from "@/lib/invoices";
 import { cn } from "@/lib/utils";
 import { ListPagination } from "./ListPagination";
 
-const statuses = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOIDED", "REFUNDED"];
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "All", label: "All statuses" },
+  { value: AWAITING_PAYMENT, label: "Awaiting payment" },
+  ...["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOIDED", "REFUNDED"].map((value) => ({
+    value,
+    label: invoiceStatusLabel(value),
+  })),
+];
 
 /** Searchable invoice list; a row opens checkout via ``onOpen``. */
 export function InvoiceListPanel({
@@ -59,19 +66,26 @@ export function InvoiceListPanel({
               setQ(event.target.value);
               setPage(1);
             }}
-            placeholder="Search invoice number or patient"
+            placeholder="Search invoice no., patient name or number, phone, or encounter"
+            aria-label="Search invoices"
             className={cn(inputCls, "pl-10")}
           />
         </div>
-        <FilterSelect
-          label="Status"
+        <select
+          aria-label="Status"
           value={status}
-          onChange={(value) => {
-            setStatus(value);
+          onChange={(event) => {
+            setStatus(event.target.value);
             setPage(1);
           }}
-          options={statuses}
-        />
+          className="h-10 rounded-xl border border-input bg-secondary px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+        >
+          {STATUS_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
       <div className={cn(tableWrap, "mt-4")}>
         <table className="w-full">
@@ -80,6 +94,8 @@ export function InvoiceListPanel({
               <th className={th}>Invoice</th>
               <th className={th}>Patient</th>
               <th className={th}>Total</th>
+              <th className={th}>Paid</th>
+              <th className={th}>Balance</th>
               <th className={th}>Patient due</th>
               <th className={th}>SHA pending</th>
               <th className={th}>Status</th>
@@ -89,13 +105,13 @@ export function InvoiceListPanel({
           <tbody>
             {invoicesQuery.isLoading ? (
               <tr>
-                <td colSpan={7} className="p-0">
+                <td colSpan={9} className="p-0">
                   <LoadingRows rows={5} className="p-3" />
                 </td>
               </tr>
             ) : invoicesQuery.error ? (
               <tr>
-                <td colSpan={7} className="p-3">
+                <td colSpan={9} className="p-3">
                   <ErrorBlock
                     error={invoicesQuery.error}
                     onRetry={() => void invoicesQuery.refetch()}
@@ -103,7 +119,7 @@ export function InvoiceListPanel({
                 </td>
               </tr>
             ) : rows.length === 0 ? (
-              <EmptyState cols={7} message="No invoices match these filters." />
+              <EmptyState cols={9} message="No invoices match these filters." />
             ) : (
               rows.map((invoice) => {
                 const shares = payerShares(invoice);
@@ -115,12 +131,24 @@ export function InvoiceListPanel({
                         {formatDate(invoice.issued_at ?? invoice.created_at)}
                       </p>
                     </td>
-                    <td className={td}>{invoice.patient_name ?? "—"}</td>
+                    <td className={td}>
+                      {invoice.patient_name ?? "—"}
+                      <p className="text-xs text-muted-foreground">
+                        {[
+                          invoice.patient_number,
+                          encounterRef(invoice) ? `Encounter ${encounterRef(invoice)}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    </td>
                     <td className={td}>{formatKshMinor(invoice.total_minor)}</td>
+                    <td className={td}>{formatKshMinor(invoice.amount_paid_minor)}</td>
+                    <td className={td}>{formatKshMinor(invoice.balance_minor)}</td>
                     <td className={td}>{formatKshMinor(shares.patientDue)}</td>
                     <td className={td}>{formatKshMinor(shares.payerPending)}</td>
                     <td className={td}>
-                      <Badge>{titleize(invoice.status)}</Badge>
+                      <Badge>{invoiceStatusLabel(invoice.status)}</Badge>
                     </td>
                     <td className={td}>
                       <Button size="sm" variant="outline" onClick={() => onOpen(invoice.id)}>
