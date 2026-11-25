@@ -156,3 +156,21 @@ export function toHospitalDateTimeInput(value: string | null | undefined): strin
     parts.find((part) => part.type === type)?.value ?? "00";
   return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
 }
+
+const INVOICE_STATUS_LABELS: Record<string, string> = {
+  DRAFT: "Draft",
+  ISSUED: "Finalized",
+  PARTIALLY_PAID: "Partially Paid",
+  PAID: "Paid",
+  VOIDED: "Cancelled",
+  REFUNDED: "Refunded",
+};
+
+/**
+ * Invoice lifecycle names shown to staff: Draft, Finalized (ISSUED: submitted
+ * and awaiting payment), Partially Paid, Paid, Cancelled (VOIDED), Refunded.
+ */
+export function invoiceStatusLabel(status: string | null | undefined): string {
+  if (!status) return "—";
+  return INVOICE_STATUS_LABELS[status] ?? titleize(status);
+}

@@ -1,6 +1,7 @@
 import { api, apiBlob, apiRequest } from "@/lib/api/client";
 import type {
   Appointment,
+  Invoice,
   Attachment,
   ListParams,
   Paginated,
@@ -17,6 +18,7 @@ export const clinicalKeys = {
   myVisits: (params?: ListParams) => ["clinical", "my-visits", params] as const,
   visit: (id: string) => ["clinical", "visit", id] as const,
   prescriptions: (visitId: string) => ["clinical", "prescriptions", visitId] as const,
+  visitInvoice: (visitId: string) => ["clinical", "visit-invoice", visitId] as const,
   attachments: (visitId: string) => ["clinical", "attachments", visitId] as const,
 };
 
@@ -92,4 +94,9 @@ export function scheduleFollowUp(
   },
 ) {
   return api.post<Appointment>(`/visits/${visitId}/follow-up`, body);
+}
+
+/** The encounter bill (draft or finalized) for one of the doctor's visits. */
+export function getVisitInvoice(visitId: string) {
+  return api.get<Invoice>(`/visits/${visitId}/invoice`);
 }

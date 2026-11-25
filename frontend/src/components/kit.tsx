@@ -114,6 +114,7 @@ const statusTone: Record<string, keyof typeof tones> = {
   completed: "success",
   clean: "success",
   issued: "success",
+  finalized: "info",
   pending: "warning",
   submitted: "info",
   "under review": "warning",

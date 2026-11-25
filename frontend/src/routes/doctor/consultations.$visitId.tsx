@@ -17,6 +17,8 @@ import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { PayerBadge } from "@/components/PayerBadge";
 import { copayLabel } from "@/lib/payer";
 import { Button } from "@/components/ui/button";
+import { EncounterBillPanel } from "@/components/doctor/EncounterBillPanel";
+import { finalizeVisitInvoice } from "@/lib/api/billing";
 import {
   clinicalKeys,
   completeVisit,
@@ -35,6 +37,7 @@ import { formatDate, formatDateTime, formatTime, titleize } from "@/lib/format";
 import { errorMessage } from "@/lib/api/client";
 import type {
   Attachment,
+  Invoice,
   PrescriptionItemInput,
   Visit,
   VisitUpdateInput,
@@ -156,13 +159,30 @@ function ConsultationPage() {
   const complete = useMutation({
     mutationFn: async () => {
       if (dirty && form && data) await save.mutateAsync(toPayload(form, data));
-      return completeVisit(visitId);
+      const updated = await completeVisit(visitId);
+      // Submit the encounter bill with the services ordered. If that fails the
+      // visit stays completed and the bill can be submitted from its panel.
+      let submitted: Invoice | null = null;
+      let submitError: string | null = null;
+      try {
+        submitted = await finalizeVisitInvoice(visitId);
+      } catch (error) {
+        submitError = errorMessage(error);
+      }
+      return { updated, submitted, submitError };
     },
-    onSuccess: (updated) => {
+    onSuccess: ({ updated, submitted, submitError }) => {
       queryClient.setQueryData(clinicalKeys.visit(visitId), updated);
+      if (submitted) queryClient.setQueryData(clinicalKeys.visitInvoice(visitId), submitted);
       void queryClient.invalidateQueries({ queryKey: ["clinical"] });
       setConfirmOpen(false);
-      toast.success("Visit completed. It is now on the billing desk's Ready to bill list.");
+      if (submitted) {
+        toast.success(
+          `Visit completed. Bill ${submitted.invoice_number ?? ""} submitted for payment.`,
+        );
+      } else {
+        toast.warning(`Visit completed, but the bill was not submitted: ${submitError}`);
+      }
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -313,6 +333,14 @@ function ConsultationPage() {
         <PrescriptionsPanel visitId={visitId} />
       </div>
 
+      <div className="mt-6">
+        <EncounterBillPanel
+          visitId={visitId}
+          completed={completed}
+          consultationServiceId={appointment.data?.service_id}
+        />
+      </div>
+
       <div className="mt-6 grid gap-6 xl:grid-cols-2">
         <AttachmentsPanel visitId={visitId} />
         <ReferralFollowUpPanel visit={data} />
@@ -325,7 +353,7 @@ function ConsultationPage() {
         subtitle={
           dirty
             ? "Your unsaved changes will be saved first."
-            : "The patient moves to the billing desk's Ready to bill list."
+            : "The bill is then submitted for payment with the services on it."
         }
         footer={
           <>
@@ -333,7 +361,7 @@ function ConsultationPage() {
               Cancel
             </Button>
             <Button onClick={() => complete.mutate()} disabled={complete.isPending}>
-              {complete.isPending ? "Completing…" : "Complete visit"}
+              {complete.isPending ? "Completing…" : "Complete and submit bill"}
             </Button>
           </>
         }
