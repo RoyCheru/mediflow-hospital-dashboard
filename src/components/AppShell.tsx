@@ -107,9 +107,13 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
       </nav>
-      <button className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground">
+      <Link
+        to="/signin"
+        onClick={onNavigate}
+        className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+      >
         <LogOut className="h-[18px] w-[18px]" /> Log out
-      </button>
+      </Link>
     </div>
   );
 }

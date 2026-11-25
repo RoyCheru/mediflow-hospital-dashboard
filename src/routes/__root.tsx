@@ -4,6 +4,7 @@ import {
   Link,
   createRootRouteWithContext,
   useRouter,
+  useRouterState,
   HeadContent,
   Scripts,
   type ErrorComponentProps,
@@ -123,13 +124,20 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // The sign-in page is a standalone screen: no sidebar or top bar around it.
+  const bare = pathname === "/signin";
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <AppShell>
+      {bare ? (
+        // Required: nested routes render here. Removing <Outlet /> breaks all child routes.
         <Outlet />
-      </AppShell>
+      ) : (
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      )}
       <Toaster position="top-right" />
     </QueryClientProvider>
   );

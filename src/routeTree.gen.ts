@@ -20,6 +20,7 @@ import { Route as DepartmentsRouteImport } from './routes/departments'
 import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as PatientsRouteImport } from './routes/patients'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SigninRouteImport } from './routes/signin'
 import { Route as StaffRouteImport } from './routes/staff'
 import { Route as VisitsRouteImport } from './routes/visits'
 
@@ -78,6 +79,11 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SigninRoute = SigninRouteImport.update({
+  id: '/signin',
+  path: '/signin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const StaffRoute = StaffRouteImport.update({
   id: '/staff',
   path: '/staff',
@@ -101,6 +107,7 @@ export interface FileRoutesByFullPath {
   '/notifications': typeof NotificationsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
+  '/signin': typeof SigninRoute
   '/staff': typeof StaffRoute
   '/visits': typeof VisitsRoute
 }
@@ -116,6 +123,7 @@ export interface FileRoutesByTo {
   '/notifications': typeof NotificationsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
+  '/signin': typeof SigninRoute
   '/staff': typeof StaffRoute
   '/visits': typeof VisitsRoute
 }
@@ -132,6 +140,7 @@ export interface FileRoutesById {
   '/notifications': typeof NotificationsRoute
   '/patients': typeof PatientsRoute
   '/settings': typeof SettingsRoute
+  '/signin': typeof SigninRoute
   '/staff': typeof StaffRoute
   '/visits': typeof VisitsRoute
 }
@@ -149,6 +158,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/patients'
     | '/settings'
+    | '/signin'
     | '/staff'
     | '/visits'
   fileRoutesByTo: FileRoutesByTo
@@ -164,6 +174,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/patients'
     | '/settings'
+    | '/signin'
     | '/staff'
     | '/visits'
   id:
@@ -179,6 +190,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/patients'
     | '/settings'
+    | '/signin'
     | '/staff'
     | '/visits'
   fileRoutesById: FileRoutesById
@@ -195,6 +207,7 @@ export interface RootRouteChildren {
   NotificationsRoute: typeof NotificationsRoute
   PatientsRoute: typeof PatientsRoute
   SettingsRoute: typeof SettingsRoute
+  SigninRoute: typeof SigninRoute
   StaffRoute: typeof StaffRoute
   VisitsRoute: typeof VisitsRoute
 }
@@ -278,6 +291,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/signin': {
+      id: '/signin'
+      path: '/signin'
+      fullPath: '/signin'
+      preLoaderRoute: typeof SigninRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/staff': {
       id: '/staff'
       path: '/staff'
@@ -307,6 +327,7 @@ const rootRouteChildren: RootRouteChildren = {
   NotificationsRoute: NotificationsRoute,
   PatientsRoute: PatientsRoute,
   SettingsRoute: SettingsRoute,
+  SigninRoute: SigninRoute,
   StaffRoute: StaffRoute,
   VisitsRoute: VisitsRoute,
 }
