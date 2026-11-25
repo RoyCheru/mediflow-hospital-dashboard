@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   createAppointment,
   createWalkIn,
+  listDepartments,
   listDoctors,
   listServices,
   managementKeys,
@@ -27,6 +28,7 @@ import { PatientPicker } from "./PatientPicker";
 export type BookingKind = "scheduled" | "walk-in";
 
 type Details = {
+  department_id: string;
   doctor_id: string;
   service_id: string;
   scheduled_start: string;
@@ -35,6 +37,7 @@ type Details = {
 };
 
 const blankDetails: Details = {
+  department_id: "",
   doctor_id: "",
   service_id: "",
   scheduled_start: "",
@@ -88,6 +91,12 @@ export function BookingDialog({
     staleTime: 120_000,
     enabled: open,
   });
+  const departments = useQuery({
+    queryKey: managementKeys.departments,
+    queryFn: listDepartments,
+    staleTime: 300_000,
+    enabled: open,
+  });
 
   const reset = () => {
     setKind(initialKind);
@@ -105,6 +114,7 @@ export function BookingDialog({
   const save = useMutation({
     mutationFn: (): Promise<Appointment | WalkInResult> => {
       if (!details.doctor_id) throw new Error("Doctor is required");
+      if (!details.service_id) throw new Error("Choose the consultation service");
       const common = {
         doctor_id: details.doctor_id,
         service_id: details.service_id || undefined,
@@ -154,6 +164,14 @@ export function BookingDialog({
     },
     onError: (error: unknown) => toast.error(errorMessage(error)),
   });
+
+  const doctorList = doctors.data?.items ?? [];
+  const serviceList = services.data?.items ?? [];
+  const departmentId =
+    details.department_id ||
+    doctorList.find((doctor) => doctor.id === details.doctor_id)?.department_id ||
+    "";
+  const selectedService = serviceList.find((service) => service.id === details.service_id);
 
   const set = <K extends keyof Details>(key: K, value: Details[K]) =>
     setDetails({ ...details, [key]: value });
@@ -209,32 +227,89 @@ export function BookingDialog({
         )}
 
         <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Department">
+            <select
+              className={inputCls}
+              value={departmentId}
+              onChange={(event) =>
+                setDetails({
+                  ...details,
+                  department_id: event.target.value,
+                  doctor_id: "",
+                  service_id: "",
+                })
+              }
+            >
+              <option value="">All departments</option>
+              {(departments.data?.items ?? [])
+                .filter((department) => department.is_active)
+                .map((department) => (
+                  <option key={department.id} value={department.id}>
+                    {department.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
           <Field label="Doctor">
             <select
               className={inputCls}
               value={details.doctor_id}
-              onChange={(event) => set("doctor_id", event.target.value)}
+              onChange={(event) => {
+                const doctor = doctorList.find((item) => item.id === event.target.value);
+                const department = details.department_id || doctor?.department_id || "";
+                const service = serviceList.find((item) => item.id === details.service_id);
+                setDetails({
+                  ...details,
+                  doctor_id: event.target.value,
+                  department_id: department,
+                  // Keep the service only if it belongs to the doctor's department.
+                  service_id:
+                    service && service.department_id === department ? details.service_id : "",
+                });
+              }}
             >
               <option value="">Select doctor</option>
-              {(doctors.data?.items ?? []).map((doctor) => (
-                <option key={doctor.id} value={doctor.id}>
-                  {doctor.name ?? doctor.id} · {doctor.specialty ?? "Doctor"}
-                </option>
-              ))}
+              {doctorList
+                .filter(
+                  (doctor) =>
+                    !details.department_id || doctor.department_id === details.department_id,
+                )
+                .map((doctor) => (
+                  <option key={doctor.id} value={doctor.id}>
+                    {doctor.name ?? doctor.id} · {doctor.specialty ?? "Doctor"}
+                  </option>
+                ))}
             </select>
           </Field>
-          <Field label="Service">
+          <Field
+            label="Consultation service"
+            hint={
+              selectedService
+                ? selectedService.current_price_minor === null
+                  ? "No price is configured for this service: ask an administrator to set one."
+                  : `Fee ${formatKshMinor(selectedService.current_price_minor)} from the price list; it opens the patient's bill.`
+                : "The fee comes from the service price list."
+            }
+          >
             <select
               className={inputCls}
               value={details.service_id}
               onChange={(event) => set("service_id", event.target.value)}
             >
-              <option value="">No service</option>
-              {(services.data?.items ?? []).map((service) => (
-                <option key={service.id} value={service.id}>
-                  {service.name}
-                </option>
-              ))}
+              <option value="">Select service</option>
+              {serviceList
+                .filter(
+                  (service) =>
+                    service.is_active && (!departmentId || service.department_id === departmentId),
+                )
+                .map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name} ·{" "}
+                    {service.current_price_minor === null
+                      ? "no price set"
+                      : formatKshMinor(service.current_price_minor)}
+                  </option>
+                ))}
             </select>
           </Field>
           {kind === "scheduled" && (
