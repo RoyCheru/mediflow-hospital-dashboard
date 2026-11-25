@@ -285,6 +285,7 @@ test("admin creates a new-patient walk-in from appointments", async ({ page, req
   await dialog.getByLabel("Sex").selectOption("FEMALE");
   await dialog.getByLabel("Phone").fill(`07${Date.now().toString().slice(-8)}`);
   await dialog.getByLabel("Doctor").selectOption({ index: 1 });
+  await dialog.getByLabel("Consultation service").selectOption({ index: 1 });
   await dialog.getByRole("button", { name: "Add to queue" }).click();
 
   await expect(page.getByText(/Walk-in added to queue/)).toBeVisible();

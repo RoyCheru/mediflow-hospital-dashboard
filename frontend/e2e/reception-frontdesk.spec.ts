@@ -60,6 +60,7 @@ test("reception registers a patient, catches the duplicate and adds a walk-in", 
   const booking = page.getByRole("dialog", { name: "Add walk-in" });
   await expect(booking.getByText(`${firstName} Front`)).toBeVisible();
   await booking.getByLabel("Doctor").selectOption({ index: 1 });
+  await booking.getByLabel("Consultation service").selectOption({ index: 1 });
   await booking.getByRole("button", { name: "Add to queue" }).click();
   await expect(page.getByText(/Walk-in added to queue · .*SHA · Active/)).toBeVisible();
 

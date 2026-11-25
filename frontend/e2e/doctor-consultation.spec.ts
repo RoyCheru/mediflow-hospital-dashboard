@@ -120,9 +120,13 @@ test("doctor starts, documents and completes a visit from the queue", async ({ p
   await page.getByRole("button", { name: "Complete visit" }).click();
   await page
     .getByRole("dialog", { name: "Complete this visit?" })
-    .getByRole("button", { name: "Complete visit" })
+    .getByRole("button", { name: "Complete and submit bill" })
     .click();
-  await expect(page.getByText(/Visit completed/)).toBeVisible();
+  // Completing submits the encounter bill for payment.
+  await expect(
+    page.getByText(/Visit completed\. Bill INV-\d{4}-\d+ submitted for payment/),
+  ).toBeVisible();
+  await expect(page.getByText(/Changes now go through the billing desk/)).toBeVisible();
   await expect(page.getByText("Completed", { exact: true })).toBeVisible();
 
   // The consultations list shows it as completed and links back to the visit.
@@ -132,14 +136,17 @@ test("doctor starts, documents and completes a visit from the queue", async ({ p
   await listRow.getByRole("link", { name: patient.name }).click();
   await expect(page).toHaveURL(visitUrl);
 
-  // The billing desk now sees the visit with its draft bill.
-  const readyToBill = await request.get(`${API_URL}/billing/ready-to-bill?page_size=100`, {
-    headers: { Authorization: `Bearer ${patient.receptionToken}` },
-  });
-  const items = (await readyToBill.json()).data.items as {
-    patient: { name: string };
-    draft_invoice_id: string | null;
+  // The cashier now sees the finalized bill awaiting payment.
+  const awaiting = await request.get(
+    `${API_URL}/invoices?status=ISSUED,PARTIALLY_PAID&q=${encodeURIComponent(patient.name.split(" ")[0])}`,
+    { headers: { Authorization: `Bearer ${patient.receptionToken}` } },
+  );
+  const invoices = (await awaiting.json()).data.items as {
+    patient_name: string;
+    status: string;
+    invoice_number: string | null;
   }[];
-  const entry = items.find((item) => item.patient.name === patient.name);
-  expect(entry?.draft_invoice_id).toBeTruthy();
+  const bill = invoices.find((item) => item.patient_name === patient.name);
+  expect(bill?.status).toBe("ISSUED");
+  expect(bill?.invoice_number).toMatch(/^INV-/);
 });

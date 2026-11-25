@@ -102,6 +102,7 @@ test("admin adds a walk-in for a new patient and a repeat walk-in is refused", a
   await walkIn.getByLabel("Phone").fill(`07${suffix()}33`);
   await walkIn.getByLabel("SHA number").fill("SHA-DEMO-ACTIVE");
   await walkIn.getByLabel("Doctor").selectOption({ index: 1 });
+  await walkIn.getByLabel("Consultation service").selectOption({ index: 1 });
   await walkIn.getByRole("button", { name: "Add to queue" }).click();
   await expect(page.getByText(/Walk-in added to queue · queue position \d+/)).toBeVisible();
   await expect(walkIn).toBeHidden();
@@ -123,6 +124,7 @@ test("admin adds a walk-in for a new patient and a repeat walk-in is refused", a
   await again.getByLabel("Find patient").fill(lastName);
   await again.getByRole("list", { name: "Patient results" }).getByRole("button").first().click();
   await again.getByLabel("Doctor").selectOption({ index: 1 });
+  await again.getByLabel("Consultation service").selectOption({ index: 1 });
   await again.getByRole("button", { name: "Add to queue" }).click();
   await expect(
     page.getByText("This patient is already in today's queue for this doctor"),

@@ -57,17 +57,18 @@ test("patient journey: register, walk-in, consult, bill, pay, reconcile", async 
   await booking.getByLabel("Doctor").selectOption({ label: doctorOption ?? "" });
   const serviceOption = (
     await booking
-      .getByLabel("Service")
+      .getByLabel("Consultation service")
       .locator("option", { hasText: "General consultation" })
       .textContent()
   )?.trim();
-  await booking.getByLabel("Service").selectOption({ label: serviceOption ?? "" });
+  await booking.getByLabel("Consultation service").selectOption({ label: serviceOption ?? "" });
   await booking.getByRole("button", { name: "Add to queue" }).click();
   await expect(reception.getByText(/Walk-in added to queue · .*Cash/)).toBeVisible();
   const queued = reception.getByRole("listitem", { name: patientName });
   await expect(queued.getByText("Cash", { exact: true })).toBeVisible();
 
-  // 2. The doctor starts, documents and completes the visit.
+  // 2. The doctor documents the visit, orders a lab test onto the bill, then
+  //    completes the visit, which submits the bill for payment.
   const doctor = await signedIn(browser, request, "doctor@mediflow.test", "Doctor12345!");
   await doctor.goto("/doctor/queue");
   const row = doctor.getByRole("listitem", { name: patientName });
@@ -78,53 +79,60 @@ test("patient journey: register, walk-in, consult, bill, pay, reconcile", async 
   await doctor.getByLabel("Diagnosis").fill("Upper respiratory tract infection");
   await doctor.getByRole("button", { name: "Save", exact: true }).click();
   await expect(doctor.getByText("Consultation saved")).toBeVisible();
-  await doctor.getByRole("button", { name: "Complete visit" }).click();
-  await doctor
-    .getByRole("dialog", { name: "Complete this visit?" })
-    .getByRole("button", { name: "Complete visit" })
-    .click();
-  await expect(doctor.getByText(/Visit completed/)).toBeVisible();
 
-  // 3. The desk adds a lab line to the draft, finalizes, and takes cash.
-  await reception.goto("/receptionist/billing");
-  await expect(reception.getByRole("heading", { name: "Billing & Payments" })).toBeVisible({
-    timeout: 90_000,
-  });
-  await reception
-    .getByRole("row")
-    .filter({ hasText: patientName })
-    .getByRole("button", { name: "Finalize draft" })
-    .click();
-  const finalize = reception.getByRole("dialog", { name: "Finalize draft" });
-  const addLine = finalize.getByRole("form", { name: "Add line" });
+  const billLines = doctor.getByRole("list", { name: "Bill lines" });
+  await expect(billLines.getByRole("listitem", { name: /General consultation/ })).toBeVisible();
+  const totalBefore = kes(await doctor.getByLabel("Bill total").textContent());
+  const order = doctor.getByRole("form", { name: "Order a service" });
   const cbc = (
-    await addLine
-      .getByLabel("Add service")
+    await order
+      .getByLabel("Order service")
       .locator("option", { hasText: "Complete blood count" })
       .textContent()
   )?.trim();
-  await addLine.getByLabel("Add service").selectOption({ label: cbc ?? "" });
-  await addLine.getByRole("button", { name: "Add line" }).click();
-  await expect(finalize.getByRole("listitem", { name: /Complete blood count/ })).toBeVisible();
-  await finalize.getByRole("button", { name: "Finalize draft" }).click();
-  await expect(reception.getByText(/Invoice INV-\d{4}-\d+ finalized/)).toBeVisible();
+  await order.getByLabel("Order service").selectOption({ label: cbc ?? "" });
+  await order.getByRole("button", { name: "Add to bill" }).click();
+  await expect(billLines.getByRole("listitem", { name: /Complete blood count/ })).toBeVisible();
+  await expect
+    .poll(async () => kes(await doctor.getByLabel("Bill total").textContent()))
+    .toBeGreaterThan(totalBefore);
+  const billTotal = kes(await doctor.getByLabel("Bill total").textContent());
 
-  const checkout = reception.getByRole("dialog", { name: /^INV-/ });
-  await checkout.getByRole("button", { name: "Collect payment" }).click();
-  const amount = Number(await checkout.getByLabel("Amount (KES)").inputValue());
-  expect(amount).toBeGreaterThan(0);
-  await checkout.getByLabel("Tendered (KES)").fill(String(amount));
-  await checkout.getByRole("button", { name: "Record payment" }).click();
-  await expect(reception.getByText(/Payment recorded/)).toBeVisible();
-  await expect(checkout.getByText("Paid", { exact: true }).first()).toBeVisible();
+  await doctor.getByRole("button", { name: "Complete visit" }).click();
+  await doctor
+    .getByRole("dialog", { name: "Complete this visit?" })
+    .getByRole("button", { name: "Complete and submit bill" })
+    .click();
+  await expect(doctor.getByText(/Bill INV-\d{4}-\d+ submitted for payment/)).toBeVisible();
 
-  // 4. The cash shows in the cashier's expected total for the day.
+  // 3. The cashier finds the bill awaiting payment, collects cash and prints a receipt.
   const cashier = await signedIn(browser, request, "cashier@mediflow.test", "Cashier12345!");
-  await cashier.goto("/cashier/payments");
-  await expect(cashier.getByRole("heading", { name: "Payments" }).first()).toBeVisible({
+  await cashier.goto("/cashier/invoices");
+  await expect(cashier.getByLabel("Status")).toHaveValue("ISSUED,PARTIALLY_PAID", {
     timeout: 90_000,
   });
-  await expect(cashier.getByText(patientName).first()).toBeVisible();
+  await cashier.getByLabel("Search invoices").fill(firstName);
+  const invoiceRow = cashier.getByRole("row").filter({ hasText: patientName });
+  await expect(invoiceRow.getByText("Finalized")).toBeVisible();
+  await invoiceRow.getByRole("button", { name: "Open" }).click();
+
+  const checkout = cashier.getByRole("dialog", { name: /^INV-/ });
+  await expect(checkout.getByText(/Complete blood count/)).toBeVisible();
+  await checkout.getByRole("button", { name: "Collect payment" }).click();
+  const amount = Number(await checkout.getByLabel("Amount (KES)").inputValue());
+  expect(amount).toBe(billTotal);
+  await checkout.getByLabel("Tendered (KES)").fill(String(amount));
+  await checkout.getByRole("button", { name: "Record payment" }).click();
+  await expect(cashier.getByText(/Payment recorded/)).toBeVisible();
+  await expect(checkout.getByText("Paid", { exact: true }).first()).toBeVisible();
+
+  const history = checkout.getByRole("region", { name: "Payment history" });
+  await expect(history.getByRole("cell", { name: "Cash", exact: true })).toBeVisible();
+  const receiptDownload = cashier.waitForEvent("download");
+  await history.getByRole("button", { name: /Download receipt/ }).click();
+  expect((await receiptDownload).suggestedFilename()).toMatch(/^receipt-.*\.pdf$/);
+
+  // 4. The cash shows in the day's expected total.
   await cashier.goto("/cashier/reconciliation");
   const expected = cashier.getByLabel("Cash expected");
   await expect(expected).toBeVisible({ timeout: 90_000 });
