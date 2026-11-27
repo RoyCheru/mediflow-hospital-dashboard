@@ -24,6 +24,7 @@ import { getMyInvoices } from "@/lib/api/patient";
 import { errorMessage } from "@/lib/api/client";
 import { formatDateTime, formatKshMinor, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { isPayableStatus } from "@/lib/invoices";
 
 export const Route = createFileRoute("/patient/invoices")({
   head: () => ({ meta: [{ title: "Invoices & Payments — MediFlow" }] }),
@@ -157,19 +158,21 @@ function PatientInvoicesPage() {
             >
               Close
             </button>
-            {detail.data && detail.data.balance_minor > 0 && detail.data.status !== "DRAFT" && (
-              <button
-                type="button"
-                className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
-                onClick={() => {
-                  setAmount(String(detail.data.balance_minor / 100));
-                  setPaymentKey(newIdempotencyKey());
-                  setPaymentOpen(true);
-                }}
-              >
-                <Receipt className="h-4 w-4" /> Pay by M-Pesa
-              </button>
-            )}
+            {detail.data &&
+              detail.data.balance_minor > 0 &&
+              isPayableStatus(detail.data.status) && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
+                  onClick={() => {
+                    setAmount(String(detail.data.balance_minor / 100));
+                    setPaymentKey(newIdempotencyKey());
+                    setPaymentOpen(true);
+                  }}
+                >
+                  <Receipt className="h-4 w-4" /> Pay by M-Pesa
+                </button>
+              )}
             {detail.data && (
               <button
                 type="button"

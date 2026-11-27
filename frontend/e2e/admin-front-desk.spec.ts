@@ -251,3 +251,61 @@ test("admin force-completes a stuck visit with a required reason; it is audited"
       .first(),
   ).toBeVisible();
 });
+
+test("admin cannot record a payment on a draft invoice", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  const login = async (email: string, password: string) =>
+    (await (await request.post(`${API_URL}/auth/login`, { data: { email, password } })).json())
+      .data as { access_token: string; user: { id: string } };
+  const reception = await login("reception@mediflow.test", "Reception12345!");
+  const doctor = await login("doctor@mediflow.test", "Doctor12345!");
+  const admin = await login("admin@mediflow.test", "Admin12345!");
+  const asReception = { Authorization: `Bearer ${reception.access_token}` };
+  const doctors = (await (await request.get(`${API_URL}/doctors`, { headers: asReception })).json())
+    .data.items as { id: string; user_id: string }[];
+  const services = (
+    await (await request.get(`${API_URL}/services`, { headers: asReception })).json()
+  ).data.items as { id: string; code: string }[];
+  const lastName = `Unpaid${suffix()}`;
+  const walkIn = await request.post(`${API_URL}/appointments/walk-in`, {
+    headers: asReception,
+    data: {
+      doctor_id: doctors.find((item) => item.user_id === doctor.user.id)?.id,
+      service_id: services.find((item) => item.code === "CONS-GEN")?.id,
+      patient: {
+        first_name: "Admin",
+        last_name: lastName,
+        date_of_birth: "1988-08-08",
+        phone: `07${suffix()}55`,
+      },
+    },
+  });
+  expect(walkIn.status()).toBe(201);
+
+  // The API refuses an admin payment on the draft, whatever the screen shows.
+  const asAdmin = { Authorization: `Bearer ${admin.access_token}` };
+  const drafts = (
+    await (
+      await request.get(`${API_URL}/invoices?status=DRAFT&q=${lastName}`, {
+        headers: asAdmin,
+      })
+    ).json()
+  ).data.items as { id: string }[];
+  expect(drafts).toHaveLength(1);
+  const refused = await request.post(`${API_URL}/invoices/${drafts[0]?.id}/transactions`, {
+    headers: asAdmin,
+    data: { method: "CASH", amount_minor: 100000, tendered_minor: 100000 },
+  });
+  expect(refused.status()).toBe(409);
+  expect((await refused.json()).error.code).toBe("INVOICE_NOT_PAYABLE");
+
+  // And the admin billing screen does not offer it.
+  await seedSession(page, request);
+  await page.goto("/admin/billing");
+  await page.getByPlaceholder("Search invoice number or patient").fill(lastName);
+  const row = page.getByRole("row").filter({ hasText: lastName });
+  await expect(row).toBeVisible({ timeout: 90_000 });
+  await row.getByRole("button", { name: "View" }).click();
+  await expect(page.getByRole("button", { name: "Record payment" })).toBeDisabled();
+  await expect(page.getByText(/Awaiting visit completion: payments open/)).toBeVisible();
+});

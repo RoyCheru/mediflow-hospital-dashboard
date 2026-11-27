@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { invoiceStatusHint, invoiceStatusLabel } from "@/lib/format";
-import { AWAITING_PAYMENT, encounterRef } from "@/lib/invoices";
+import { AWAITING_PAYMENT, encounterRef, isPayableStatus } from "@/lib/invoices";
 
 describe("invoice lifecycle labels", () => {
   it("names the lifecycle stages staff use", () => {
@@ -31,5 +31,15 @@ describe("invoiceStatusHint", () => {
     expect(invoiceStatusHint("ISSUED")).toBe("Ready for payment");
     expect(invoiceStatusHint("PARTIALLY_PAID")).toMatch(/^Ready for payment/);
     expect(invoiceStatusHint("VOIDED")).toBe("Cancelled");
+  });
+});
+
+describe("isPayableStatus", () => {
+  it("allows money only on finalized or partially paid invoices", () => {
+    expect(isPayableStatus("ISSUED")).toBe(true);
+    expect(isPayableStatus("PARTIALLY_PAID")).toBe(true);
+    for (const status of ["DRAFT", "PAID", "VOIDED", "REFUNDED", null]) {
+      expect(isPayableStatus(status)).toBe(false);
+    }
   });
 });

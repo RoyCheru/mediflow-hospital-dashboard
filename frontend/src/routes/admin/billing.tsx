@@ -52,11 +52,13 @@ import {
 } from "@/lib/api/billing";
 import { getInvoiceTotals } from "@/lib/api/dashboard";
 import { newIdempotencyKey } from "@/lib/billingShares";
+import { isPayableStatus } from "@/lib/invoices";
 import { listDepartments } from "@/lib/api/management";
 import {
   formatDate,
   formatDateTime,
   formatKshMinor,
+  invoiceStatusHint,
   invoiceStatusLabel,
   paymentMethodLabel,
   titleize,
@@ -803,10 +805,21 @@ function Page() {
                 });
                 setPaymentOpen(true);
               }}
-              disabled={!invoiceQuery.data || (invoiceQuery.data.balance_minor ?? 0) <= 0}
+              disabled={
+                !invoiceQuery.data ||
+                !isPayableStatus(invoiceQuery.data.status) ||
+                (invoiceQuery.data.balance_minor ?? 0) <= 0
+              }
             >
               <CreditCard /> Record payment
             </Button>
+            {invoiceQuery.data && !isPayableStatus(invoiceQuery.data.status) && (
+              <p className="basis-full text-right text-xs text-muted-foreground">
+                {invoiceQuery.data.status === "DRAFT"
+                  ? "Awaiting visit completion: payments open when the doctor completes the visit."
+                  : `No payment can be recorded: ${invoiceStatusHint(invoiceQuery.data.status).toLowerCase()}.`}
+              </p>
+            )}
           </>
         }
       >

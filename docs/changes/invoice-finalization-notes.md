@@ -324,3 +324,21 @@ database passes it (no non-draft invoice without a number).
 Note on "tests before each commit": the suite was run green on the final tree and
 on the step-1 commit. The intermediate commits were made afterwards from that
 verified tree, so they were not each re-run in isolation.
+
+## Follow-up fix: admin Billing page offered "Record payment" on drafts
+
+Reported after delivery: an admin could still start recording a payment on a
+non-finalized invoice. The server never accepted one (dev data: no payments that
+day, no `invoice.payment_rejected` entries; the guard returns 409
+`INVOICE_NOT_PAYABLE` for admins, covered by the matrix). The gap was in the
+screens: the admin **Billing** page has its own invoice view and payment form
+(not the shared checkout), and enabled **Record payment** whenever the balance
+was above zero, which includes drafts. The patient invoices page hid Pay only
+for drafts, so a voided invoice with a balance still offered an M-Pesa push.
+
+Fix: a shared `isPayableStatus()` (finalized or partially paid, mirroring the
+server guard) gates both pages; the admin page shows why payment is unavailable
+("Awaiting visit completion: payments open when the doctor completes the
+visit"). New E2E `admin cannot record a payment on a draft invoice` checks the
+API refusal (409 `INVOICE_NOT_PAYABLE`) and the disabled button; it fails
+without the fix and passes with it (Postgres-backed API).
