@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { invoiceStatusLabel } from "@/lib/format";
+import { invoiceStatusHint, invoiceStatusLabel } from "@/lib/format";
 import { AWAITING_PAYMENT, encounterRef } from "@/lib/invoices";
 
 describe("invoice lifecycle labels", () => {
@@ -22,5 +22,14 @@ describe("encounterRef", () => {
     expect(encounterRef({ visit_id: "a1b2c3d4-0000", appointment_id: "ffff" })).toBe("a1b2c3d4");
     expect(encounterRef({ visit_id: null, appointment_id: "12345678-aaaa" })).toBe("12345678");
     expect(encounterRef({ visit_id: null, appointment_id: null })).toBeNull();
+  });
+});
+
+describe("invoiceStatusHint", () => {
+  it("tells the desk whether an invoice can take payment", () => {
+    expect(invoiceStatusHint("DRAFT")).toBe("Awaiting visit completion");
+    expect(invoiceStatusHint("ISSUED")).toBe("Ready for payment");
+    expect(invoiceStatusHint("PARTIALLY_PAID")).toMatch(/^Ready for payment/);
+    expect(invoiceStatusHint("VOIDED")).toBe("Cancelled");
   });
 });

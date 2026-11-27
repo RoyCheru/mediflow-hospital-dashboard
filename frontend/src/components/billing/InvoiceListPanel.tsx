@@ -16,7 +16,7 @@ import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
 import { billingKeys, listInvoices } from "@/lib/api/billing";
 import { payerShares } from "@/lib/billingShares";
-import { formatDate, formatKshMinor, invoiceStatusLabel } from "@/lib/format";
+import { formatDate, formatKshMinor, invoiceStatusHint, invoiceStatusLabel } from "@/lib/format";
 import { AWAITING_PAYMENT, encounterRef } from "@/lib/invoices";
 import { cn } from "@/lib/utils";
 import { ListPagination } from "./ListPagination";
@@ -149,6 +149,9 @@ export function InvoiceListPanel({
                     <td className={td}>{formatKshMinor(shares.payerPending)}</td>
                     <td className={td}>
                       <Badge>{invoiceStatusLabel(invoice.status)}</Badge>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {invoiceStatusHint(invoice.status)}
+                      </p>
                     </td>
                     <td className={td}>
                       <Button size="sm" variant="outline" onClick={() => onOpen(invoice.id)}>

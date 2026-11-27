@@ -1,38 +1,19 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FilePlus2 } from "lucide-react";
-import {
-  Badge,
-  DetailRow,
-  EmptyState,
-  Field,
-  Modal,
-  Panel,
-  inputCls,
-  td,
-  th,
-  tableWrap,
-  tbodyRow,
-  theadRow,
-} from "@/components/kit";
+import { useQuery } from "@tanstack/react-query";
+import { Badge, EmptyState, Panel, td, th, tableWrap, tbodyRow, theadRow } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
-import { Button } from "@/components/ui/button";
-import { billingKeys, finalizeVisitInvoice, listReadyToBill } from "@/lib/api/billing";
-import { kesToMinor } from "@/lib/billingShares";
+import { billingKeys, listReadyToBill } from "@/lib/api/billing";
 import { formatDateTime, formatKshMinor } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
-import type { ReadyToBillVisit } from "@/types/api";
-import { DraftLinesEditor } from "./DraftLinesEditor";
 import { ListPagination } from "./ListPagination";
 
-/** Completed visits with an open encounter draft; finalizing opens checkout. */
-export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: string) => void }) {
-  const queryClient = useQueryClient();
+/**
+ * Completed visits without a finalized invoice. Completing a visit finalizes its
+ * bill (BIL-17), so this lists only legacy drafts and voided bills awaiting a
+ * reissue; neither is finalized here: an admin force-completes the visit.
+ */
+export function ReadyToBillPanel() {
   const [page, setPage] = useState(1);
-  const [target, setTarget] = useState<ReadyToBillVisit | null>(null);
-  const [discount, setDiscount] = useState({ amount: "", reason: "" });
-
   const params = { page, page_size: 10 };
   const readyQuery = useQuery({
     queryKey: billingKeys.readyToBill(params),
@@ -40,35 +21,10 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
     staleTime: 15_000,
   });
 
-  const createMutation = useMutation({
-    mutationFn: () => {
-      if (!target) throw new Error("No visit selected");
-      const amount = discount.amount ? kesToMinor(discount.amount) : null;
-      if (discount.amount && amount === null) throw new Error("Enter a valid discount");
-      if (amount && !discount.reason.trim()) throw new Error("A discount needs a reason");
-      return finalizeVisitInvoice(
-        target.visit_id,
-        amount ? { discount_minor: amount, discount_reason: discount.reason.trim() } : {},
-      );
-    },
-    onSuccess: (invoice) => {
-      toast.success(
-        invoice.discount_status === "PENDING_APPROVAL"
-          ? `Invoice ${invoice.invoice_number} finalized; discount awaiting admin approval`
-          : `Invoice ${invoice.invoice_number} finalized`,
-      );
-      setTarget(null);
-      setDiscount({ amount: "", reason: "" });
-      void queryClient.invalidateQueries({ queryKey: billingKeys.all });
-      onInvoiced(invoice.id);
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
   const rows = readyQuery.data?.items ?? [];
 
   return (
-    <Panel title="Ready to bill">
+    <Panel title="Visits without a finalized bill">
       <div className={cn(tableWrap)}>
         <table className="w-full">
           <thead>
@@ -120,13 +76,11 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
                     )}
                   </td>
                   <td className={td}>
-                    <Button
-                      size="sm"
-                      onClick={() => setTarget(visit)}
-                      disabled={!visit.draft_invoice_id && !visit.expected_line}
-                    >
-                      <FilePlus2 /> Finalize draft
-                    </Button>
+                    <span className="text-xs text-muted-foreground">
+                      {visit.draft_invoice_id
+                        ? "Bill still a draft: an admin force-completes the visit to issue it"
+                        : "Bill cancelled: an admin force-completes the visit to reissue it"}
+                    </span>
                   </td>
                 </tr>
               ))
@@ -141,65 +95,6 @@ export function ReadyToBillPanel({ onInvoiced }: { onInvoiced: (invoiceId: strin
         noun="visits"
         onPage={setPage}
       />
-
-      <Modal
-        open={Boolean(target)}
-        onClose={() => setTarget(null)}
-        title="Finalize draft"
-        subtitle={target?.patient.name ?? undefined}
-        wide
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setTarget(null)}>
-              Cancel
-            </Button>
-            <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
-              {createMutation.isPending ? "Finalizing…" : "Finalize draft"}
-            </Button>
-          </>
-        }
-      >
-        {target && (target.draft_invoice_id || target.expected_line) && (
-          <div className="space-y-3">
-            {target.draft_invoice_id ? (
-              <DraftLinesEditor invoiceId={target.draft_invoice_id} />
-            ) : (
-              target.expected_line && (
-                <DetailRow
-                  label={target.expected_line.description}
-                  value={formatKshMinor(target.expected_line.unit_price_minor)}
-                />
-              )
-            )}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field
-                label="Discount (KES, optional)"
-                hint="Above 10% or KES 1,000 needs admin approval"
-              >
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  className={inputCls}
-                  value={discount.amount}
-                  onChange={(event) =>
-                    setDiscount((current) => ({ ...current, amount: event.target.value }))
-                  }
-                />
-              </Field>
-              <Field label="Discount reason">
-                <input
-                  className={inputCls}
-                  value={discount.reason}
-                  onChange={(event) =>
-                    setDiscount((current) => ({ ...current, reason: event.target.value }))
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-        )}
-      </Modal>
     </Panel>
   );
 }

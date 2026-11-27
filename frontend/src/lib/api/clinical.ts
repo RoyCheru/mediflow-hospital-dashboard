@@ -43,8 +43,9 @@ export function updateVisit(id: string, body: VisitUpdateInput) {
   return api.patch<Visit>(`/visits/${id}`, body);
 }
 
+/** Completing the visit finalizes its bill in the same transaction; both come back. */
 export function completeVisit(id: string) {
-  return api.post<Visit>(`/visits/${id}/complete`);
+  return api.post<Visit & { invoice: Invoice | null }>(`/visits/${id}/complete`);
 }
 
 export function listPrescriptions(visitId: string) {

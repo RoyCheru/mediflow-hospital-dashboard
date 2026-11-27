@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BadgePercent, CreditCard, Download, ShieldCheck } from "lucide-react";
+import {
+  AlertTriangle,
+  BadgePercent,
+  Clock,
+  CreditCard,
+  Download,
+  ShieldCheck,
+} from "lucide-react";
 import {
   Badge,
   DetailRow,
@@ -21,7 +28,6 @@ import {
   createPaymentIntent,
   downloadInvoicePdf,
   downloadReceipt,
-  finalizeInvoice,
   getInvoice,
   listTransactions,
   recordPayment,
@@ -32,6 +38,7 @@ import { kesToMinor, newIdempotencyKey, payerShares } from "@/lib/billingShares"
 import {
   formatDateTime,
   formatKshMinor,
+  invoiceStatusHint,
   invoiceStatusLabel,
   paymentMethodLabel,
   titleize,
@@ -100,15 +107,6 @@ export function InvoiceCheckout({
     void queryClient.invalidateQueries({ queryKey: billingKeys.all });
     void queryClient.invalidateQueries({ queryKey: claimKeys.all });
   };
-
-  const finalizeMutation = useMutation({
-    mutationFn: () => finalizeInvoice(invoiceId),
-    onSuccess: (finalized) => {
-      toast.success(`Invoice ${finalized.invoice_number} finalized`);
-      refresh();
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
 
   const openPayment = (current: Invoice, method: DeskMethod = "CASH") => {
     const due = payerShares(current).patientDue;
@@ -288,28 +286,19 @@ export function InvoiceCheckout({
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
-          {invoice && !closed && (
+          {/* Drafts are read-only: invoices finalize only when the visit is
+              completed (BIL-17), and only finalized invoices take payment (BIL-16). */}
+          {invoice && !closed && !isDraft && (
             <>
               <Button variant="outline" onClick={() => setPanel("discount")}>
                 <BadgePercent /> Discount
               </Button>
-              {isDraft ? (
-                <Button
-                  onClick={() => finalizeMutation.mutate()}
-                  disabled={finalizeMutation.isPending || !invoice.lines.length}
-                >
-                  {finalizeMutation.isPending ? "Finalizing…" : "Finalize invoice"}
-                </Button>
-              ) : (
-                <>
-                  <Button variant="outline" onClick={() => setPanel("sha")}>
-                    <ShieldCheck /> Pay via SHA
-                  </Button>
-                  <Button onClick={() => openPayment(invoice)} disabled={!shares?.patientDue}>
-                    <CreditCard /> Collect payment
-                  </Button>
-                </>
-              )}
+              <Button variant="outline" onClick={() => setPanel("sha")}>
+                <ShieldCheck /> Pay via SHA
+              </Button>
+              <Button onClick={() => openPayment(invoice)} disabled={!shares?.patientDue}>
+                <CreditCard /> Collect payment
+              </Button>
             </>
           )}
         </>
@@ -321,6 +310,24 @@ export function InvoiceCheckout({
         <ErrorBlock error={invoiceQuery.error} onRetry={() => void invoiceQuery.refetch()} />
       ) : invoice && shares ? (
         <div className="space-y-4">
+          {isDraft && (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-xl border border-border bg-secondary/60 p-3 text-sm"
+            >
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <p>
+                <span className="font-semibold">Awaiting visit completion.</span> This bill is still
+                a draft. It is finalized, numbered and opened for payment when the doctor completes
+                the visit.
+              </p>
+            </div>
+          )}
+          {!isDraft && (invoice.status === "ISSUED" || invoice.status === "PARTIALLY_PAID") && (
+            <p className="text-sm font-semibold text-success">
+              {invoiceStatusHint(invoice.status)}
+            </p>
+          )}
           <div className="grid gap-3 sm:grid-cols-5">
             <DetailRow label="Total" value={formatKshMinor(invoice.total_minor)} />
             <DetailRow label="Paid" value={formatKshMinor(invoice.amount_paid_minor)} />

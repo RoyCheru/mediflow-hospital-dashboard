@@ -21,6 +21,7 @@ import {
 } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
+import { ForceCompleteVisit } from "@/components/admin/ForceCompleteVisit";
 import { getVisit, listVisits, visitKeys } from "@/lib/api/visits";
 import { formatDateTime, titleize } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -268,6 +269,7 @@ function Page() {
           <ErrorBlock error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
         ) : detailQuery.data ? (
           <div className="space-y-4">
+            <ForceCompleteVisit visit={detailQuery.data} />
             <div className="grid gap-3 sm:grid-cols-2">
               <DetailRow label="Patient" value={detailQuery.data.patient_name ?? "—"} />
               <DetailRow label="Doctor" value={detailQuery.data.doctor_name ?? "—"} />

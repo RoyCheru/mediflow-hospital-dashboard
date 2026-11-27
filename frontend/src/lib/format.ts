@@ -174,3 +174,18 @@ export function invoiceStatusLabel(status: string | null | undefined): string {
   if (!status) return "—";
   return INVOICE_STATUS_LABELS[status] ?? titleize(status);
 }
+
+const INVOICE_STATUS_HINTS: Record<string, string> = {
+  DRAFT: "Awaiting visit completion",
+  ISSUED: "Ready for payment",
+  PARTIALLY_PAID: "Ready for payment · balance due",
+  PAID: "Settled",
+  VOIDED: "Cancelled",
+  REFUNDED: "Refunded",
+};
+
+/** What a status means for the desk: drafts wait for the doctor; finalized invoices take payment. */
+export function invoiceStatusHint(status: string | null | undefined): string {
+  if (!status) return "";
+  return INVOICE_STATUS_HINTS[status] ?? "";
+}

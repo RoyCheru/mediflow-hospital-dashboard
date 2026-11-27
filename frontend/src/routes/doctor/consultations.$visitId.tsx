@@ -18,7 +18,6 @@ import { PayerBadge } from "@/components/PayerBadge";
 import { copayLabel } from "@/lib/payer";
 import { Button } from "@/components/ui/button";
 import { EncounterBillPanel } from "@/components/doctor/EncounterBillPanel";
-import { finalizeVisitInvoice } from "@/lib/api/billing";
 import {
   clinicalKeys,
   completeVisit,
@@ -37,7 +36,6 @@ import { formatDate, formatDateTime, formatTime, titleize } from "@/lib/format";
 import { errorMessage } from "@/lib/api/client";
 import type {
   Attachment,
-  Invoice,
   PrescriptionItemInput,
   Visit,
   VisitUpdateInput,
@@ -159,30 +157,20 @@ function ConsultationPage() {
   const complete = useMutation({
     mutationFn: async () => {
       if (dirty && form && data) await save.mutateAsync(toPayload(form, data));
-      const updated = await completeVisit(visitId);
-      // Submit the encounter bill with the services ordered. If that fails the
-      // visit stays completed and the bill can be submitted from its panel.
-      let submitted: Invoice | null = null;
-      let submitError: string | null = null;
-      try {
-        submitted = await finalizeVisitInvoice(visitId);
-      } catch (error) {
-        submitError = errorMessage(error);
-      }
-      return { updated, submitted, submitError };
+      // Completing the visit finalizes its bill in the same transaction (BIL-17).
+      return completeVisit(visitId);
     },
-    onSuccess: ({ updated, submitted, submitError }) => {
-      queryClient.setQueryData(clinicalKeys.visit(visitId), updated);
-      if (submitted) queryClient.setQueryData(clinicalKeys.visitInvoice(visitId), submitted);
+    onSuccess: (updated) => {
+      const { invoice, ...visitData } = updated;
+      queryClient.setQueryData(clinicalKeys.visit(visitId), visitData);
+      if (invoice) queryClient.setQueryData(clinicalKeys.visitInvoice(visitId), invoice);
       void queryClient.invalidateQueries({ queryKey: ["clinical"] });
       setConfirmOpen(false);
-      if (submitted) {
-        toast.success(
-          `Visit completed. Bill ${submitted.invoice_number ?? ""} submitted for payment.`,
-        );
-      } else {
-        toast.warning(`Visit completed, but the bill was not submitted: ${submitError}`);
-      }
+      toast.success(
+        invoice
+          ? `Visit completed. Bill ${invoice.invoice_number ?? ""} submitted for payment.`
+          : "Visit completed.",
+      );
     },
     onError: (error: Error) => toast.error(error.message),
   });

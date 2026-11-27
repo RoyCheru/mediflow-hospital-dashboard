@@ -5,9 +5,9 @@ import { toast } from "sonner";
 import { Badge, Field, Panel, inputCls } from "@/components/kit";
 import { ErrorBlock, LoadingRows } from "@/components/DataState";
 import { Button } from "@/components/ui/button";
-import { addInvoiceLine, finalizeVisitInvoice, removeInvoiceLine } from "@/lib/api/billing";
+import { addInvoiceLine, removeInvoiceLine } from "@/lib/api/billing";
 import { ApiError } from "@/lib/api/client";
-import { clinicalKeys, getVisitInvoice } from "@/lib/api/clinical";
+import { clinicalKeys, completeVisit, getVisitInvoice } from "@/lib/api/clinical";
 import { listServices, managementKeys } from "@/lib/api/management";
 import { formatKshMinor, invoiceStatusLabel } from "@/lib/format";
 import type { Invoice } from "@/types/api";
@@ -72,11 +72,15 @@ export function EncounterBillPanel({
     },
     onError: (error: Error) => toast.error(error.message),
   });
+  // The bill finalizes only by completing the visit (BIL-17). Completing again is
+  // safe: it finalizes a bill left in draft (legacy data) and never renumbers one.
   const submit = useMutation({
-    mutationFn: () => finalizeVisitInvoice(visitId),
-    onSuccess: (invoice) => {
-      onChanged(invoice);
-      toast.success(`Bill ${invoice.invoice_number ?? ""} submitted for payment`);
+    mutationFn: () => completeVisit(visitId),
+    onSuccess: (visit) => {
+      if (visit.invoice) {
+        onChanged(visit.invoice);
+        toast.success(`Bill ${visit.invoice.invoice_number ?? ""} finalized for payment`);
+      }
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -201,7 +205,8 @@ export function EncounterBillPanel({
             </Button>
           </form>
           <p className="mt-2 text-xs text-muted-foreground">
-            Prices come from the price list; the total is recalculated on the server.
+            Prices come from the price list; the total is recalculated on the server. The bill is
+            finalized for payment when you complete the visit.
           </p>
           {completed && (
             <Button
@@ -209,14 +214,14 @@ export function EncounterBillPanel({
               onClick={() => submit.mutate()}
               disabled={submit.isPending}
             >
-              <Send /> {submit.isPending ? "Submitting…" : "Submit bill for payment"}
+              <Send /> {submit.isPending ? "Finalizing…" : "Finalize bill"}
             </Button>
           )}
         </>
       ) : (
         <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
           <Receipt className="h-4 w-4" />
-          Submitted for payment. Changes now go through the billing desk.
+          Finalized for payment. Corrections go through a void or refund.
         </p>
       )}
     </Panel>

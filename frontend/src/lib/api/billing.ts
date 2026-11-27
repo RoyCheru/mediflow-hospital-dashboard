@@ -40,31 +40,6 @@ export type InvoiceItemInput = {
 };
 
 /** Deprecated compatibility path; the desk finalizes the encounter draft. */
-export function createInvoice(
-  visitId: string,
-  body: {
-    items?: InvoiceItemInput[];
-    discount_minor?: number;
-    discount_reason?: string;
-  } = {},
-) {
-  return api.post<Invoice>(`/visits/${visitId}/invoices`, body);
-}
-
-export function finalizeVisitInvoice(
-  visitId: string,
-  body: {
-    items?: InvoiceItemInput[];
-    discount_minor?: number;
-    discount_reason?: string;
-  } = {},
-) {
-  return api.post<Invoice>(`/visits/${visitId}/invoices/finalize`, body);
-}
-
-export function finalizeInvoice(invoiceId: string) {
-  return api.post<Invoice>(`/invoices/${invoiceId}/finalize`);
-}
 
 export function addInvoiceLine(invoiceId: string, body: InvoiceItemInput) {
   return api.post<Invoice>(`/invoices/${invoiceId}/lines`, body);

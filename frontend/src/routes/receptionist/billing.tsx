@@ -5,20 +5,22 @@ import { PageHeader } from "@/components/kit";
 import { InvoiceCheckout } from "@/components/billing/InvoiceCheckout";
 import { InvoiceListPanel } from "@/components/billing/InvoiceListPanel";
 import { ReadyToBillPanel } from "@/components/billing/ReadyToBillPanel";
+import { AWAITING_PAYMENT } from "@/lib/invoices";
 import { cn } from "@/lib/utils";
 
 type BillingTab = "ready" | "invoices";
 
 export const Route = createFileRoute("/receptionist/billing")({
   validateSearch: (search: Record<string, unknown>): { tab: BillingTab } => ({
-    tab: search["tab"] === "invoices" ? "invoices" : "ready",
+    // Invoices awaiting payment first; "ready" lists visits still without a final bill.
+    tab: search["tab"] === "ready" ? "ready" : "invoices",
   }),
   head: () => ({
     meta: [
       { title: "Billing & Payments — MediFlow" },
       {
         name: "description",
-        content: "Invoice completed visits, verify SHA, split co-pays and take payment.",
+        content: "Collect payment for finalized invoices, verify SHA and split co-pays.",
       },
     ],
   }),
@@ -26,8 +28,8 @@ export const Route = createFileRoute("/receptionist/billing")({
 });
 
 const tabs: { id: BillingTab; label: string; icon: typeof FileClock }[] = [
-  { id: "ready", label: "Ready to bill", icon: FilePlus2 },
   { id: "invoices", label: "Invoices", icon: FileClock },
+  { id: "ready", label: "Unbilled visits", icon: FilePlus2 },
 ];
 
 function Page() {
@@ -39,7 +41,7 @@ function Page() {
     <div>
       <PageHeader
         title="Billing & Payments"
-        subtitle="Invoice completed visits, verify SHA, split co-pays and take payment."
+        subtitle="Invoices are finalized when the doctor completes the visit. Collect payment, verify SHA and split co-pays."
       />
       <div className="mb-6 flex flex-wrap gap-2">
         {tabs.map(({ id, label, icon: Icon }) => (
@@ -59,9 +61,9 @@ function Page() {
       </div>
 
       {tab === "ready" ? (
-        <ReadyToBillPanel onInvoiced={setOpenInvoiceId} />
+        <ReadyToBillPanel />
       ) : (
-        <InvoiceListPanel onOpen={setOpenInvoiceId} defaultStatus="ISSUED" />
+        <InvoiceListPanel onOpen={setOpenInvoiceId} defaultStatus={AWAITING_PAYMENT} />
       )}
 
       {openInvoiceId && (
