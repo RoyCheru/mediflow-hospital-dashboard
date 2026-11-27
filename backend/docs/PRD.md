@@ -306,6 +306,12 @@ P1
 BIL-15
 Capture of Paybill or Till payments matched by account reference
 P1
+BIL-16
+Payments, M-Pesa STK pushes and SHA claims only against finalized (or partially paid) invoices of completed visits; draft invoices and invoices of open visits are never payable by any role. Invoice states: draft, finalized, partially paid, paid, voided
+P0
+BIL-17
+The invoice finalizes automatically, in the same transaction, when the doctor completes the visit: prices are snapshotted, the official sequential invoice number is assigned and totals are fixed. No role can finalize an invoice directly. Finalized invoices are immutable; corrections go through void or refund with admin approval and a reason. An admin may force-complete a stuck visit with a mandatory, audit-logged reason, which finalizes the invoice the same way
+P0
 7.7 Notifications (NTF)
 ID
 Requirement
