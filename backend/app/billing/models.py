@@ -30,6 +30,16 @@ class Invoice(BaseModel, TimestampMixin):
             sqlite_where=db.text("status = 'DRAFT'"),
             postgresql_where=db.text("status = 'DRAFT'"),
         ),
+        # BIL-17: the official number exists exactly when the invoice was finalized.
+        # Drafts have none; voided drafts (patient never seen) may have none.
+        db.CheckConstraint(
+            "status IN ('DRAFT', 'VOIDED') OR invoice_number IS NOT NULL",
+            name="ck_invoices_number_when_final",
+        ),
+        db.CheckConstraint(
+            "status <> 'DRAFT' OR invoice_number IS NULL",
+            name="ck_invoices_draft_has_no_number",
+        ),
     )
 
     # Drafts carry no number; the number is reserved only when the invoice is
