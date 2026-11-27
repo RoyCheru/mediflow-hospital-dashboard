@@ -182,3 +182,72 @@ test("admin creates a report export and downloads it", async ({ page, request })
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/^revenue\.csv$/);
 });
+
+test("admin force-completes a stuck visit with a required reason; it is audited", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(240_000);
+  const login = async (email: string, password: string) =>
+    (await (await request.post(`${API_URL}/auth/login`, { data: { email, password } })).json())
+      .data as { access_token: string; user: { id: string } };
+  const reception = await login("reception@mediflow.test", "Reception12345!");
+  const doctor = await login("doctor@mediflow.test", "Doctor12345!");
+  const asReception = { Authorization: `Bearer ${reception.access_token}` };
+  const doctors = (await (await request.get(`${API_URL}/doctors`, { headers: asReception })).json())
+    .data.items as { id: string; user_id: string }[];
+  const services = (
+    await (await request.get(`${API_URL}/services`, { headers: asReception })).json()
+  ).data.items as { id: string; code: string }[];
+  const lastName = `Stuck${suffix()}`;
+  const walkIn = await request.post(`${API_URL}/appointments/walk-in`, {
+    headers: asReception,
+    data: {
+      doctor_id: doctors.find((item) => item.user_id === doctor.user.id)?.id,
+      service_id: services.find((item) => item.code === "CONS-GEN")?.id,
+      patient: {
+        first_name: "Admin",
+        last_name: lastName,
+        date_of_birth: "1979-09-09",
+        phone: `07${suffix()}44`,
+      },
+    },
+  });
+  const appointmentId = (await walkIn.json()).data.id as string;
+  const started = await request.post(`${API_URL}/appointments/${appointmentId}/visits`, {
+    headers: { Authorization: `Bearer ${doctor.access_token}` },
+    data: {},
+  });
+  expect(started.status()).toBe(201);
+
+  await seedSession(page, request);
+  await page.goto("/admin/visits");
+  await page
+    .getByPlaceholder(/Search/)
+    .first()
+    .fill(lastName);
+  const row = page.getByRole("row").filter({ hasText: lastName });
+  await expect(row.getByText("Active")).toBeVisible({ timeout: 90_000 });
+  await row.getByRole("button", { name: "View" }).click();
+
+  const bill = page.getByRole("region", { name: "Visit bill" });
+  await expect(bill.getByText("Draft")).toBeVisible();
+  await bill.getByRole("button", { name: "Force-complete visit" }).click();
+  const form = page.getByRole("form", { name: "Force-complete visit" });
+  await form.getByRole("button", { name: "Force-complete" }).click();
+  await expect(page.getByText(/Give a reason of at least 10 characters/)).toBeVisible();
+  await form.getByLabel("Reason (required)").fill("Doctor called away; patient was seen and left");
+  await form.getByRole("button", { name: "Force-complete" }).click();
+  await expect(page.getByText(/Visit completed\. Invoice INV-\d{4}-\d+ finalized/)).toBeVisible();
+
+  await page.goto("/admin/audit-log");
+  await page
+    .getByPlaceholder("Search actor, action, entity or request ID")
+    .fill("visit.force_complete");
+  await expect(
+    page
+      .locator("tbody")
+      .getByText(/Visit\.Force Complete/i)
+      .first(),
+  ).toBeVisible();
+});

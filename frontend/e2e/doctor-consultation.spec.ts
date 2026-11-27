@@ -126,7 +126,7 @@ test("doctor starts, documents and completes a visit from the queue", async ({ p
   await expect(
     page.getByText(/Visit completed\. Bill INV-\d{4}-\d+ submitted for payment/),
   ).toBeVisible();
-  await expect(page.getByText(/Changes now go through the billing desk/)).toBeVisible();
+  await expect(page.getByText(/Corrections go through a void or refund/)).toBeVisible();
   await expect(page.getByText("Completed", { exact: true })).toBeVisible();
 
   // The consultations list shows it as completed and links back to the visit.

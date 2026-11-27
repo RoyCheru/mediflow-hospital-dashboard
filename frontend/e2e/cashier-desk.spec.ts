@@ -61,14 +61,13 @@ async function issuedInvoice(request: APIRequestContext, firstName: string) {
     data: {},
   });
   const visitId = (await visit.json()).data.id as string;
-  await request.post(`${API_URL}/visits/${visitId}/complete`, { headers: asDoctor });
-  const invoice = await request.post(`${API_URL}/visits/${visitId}/invoices/finalize`, {
-    headers: asReception,
-    data: {},
+  // Completing the visit finalizes its invoice (BIL-17); it comes back with the visit.
+  const completed = await request.post(`${API_URL}/visits/${visitId}/complete`, {
+    headers: asDoctor,
   });
-  expect(invoice.status(), await invoice.text()).toBe(201);
+  expect(completed.status(), await completed.text()).toBe(200);
   return {
-    invoice: (await invoice.json()).data as {
+    invoice: (await completed.json()).data.invoice as {
       id: string;
       invoice_number: string;
       total_minor: number;
@@ -159,7 +158,7 @@ test("a payment that arrived after a void cannot be accepted, only marked failed
   });
   await expect(parked).toBeVisible({ timeout: 90_000 });
   await parked.getByRole("button", { name: "Accept" }).click();
-  await expect(page.getByText(/Cannot accept a payment on a voided invoice/)).toBeVisible();
+  await expect(page.getByText(/The invoice is voided\. Return the money/)).toBeVisible();
   await parked.getByRole("button", { name: "Mark failed" }).click();
   await expect(page.getByText("Payment marked failed")).toBeVisible();
   await expect(parked).toBeHidden();

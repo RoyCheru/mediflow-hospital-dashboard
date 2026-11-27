@@ -26,8 +26,8 @@ async function seedSession(
   }, session);
 }
 
-/** A walk-in seen and completed by the seeded doctor, ready to bill. */
-async function completedWalkIn(request: APIRequestContext, firstName: string) {
+/** A walk-in seen by the seeded doctor; completed (bill finalized) unless ``complete`` is false. */
+async function completedWalkIn(request: APIRequestContext, firstName: string, complete = true) {
   const reception = await login(request, "reception@mediflow.test", "Reception12345!");
   const doctor = await login(request, "doctor@mediflow.test", "Doctor12345!");
   const asReception = { Authorization: `Bearer ${reception.access_token}` };
@@ -65,26 +65,44 @@ async function completedWalkIn(request: APIRequestContext, firstName: string) {
   });
   expect(visit.status(), await visit.text()).toBe(201);
   const visitId = (await visit.json()).data.id as string;
-  const completed = await request.post(`${API_URL}/visits/${visitId}/complete`, {
-    headers: asDoctor,
-  });
-  expect(completed.ok()).toBeTruthy();
+  if (complete) {
+    const completed = await request.post(`${API_URL}/visits/${visitId}/complete`, {
+      headers: asDoctor,
+    });
+    expect(completed.ok()).toBeTruthy();
+  }
   return `${firstName} Desk`;
 }
 
+async function completeVisitOf(request: APIRequestContext, patientName: string) {
+  const doctor = await login(request, "doctor@mediflow.test", "Doctor12345!");
+  const asDoctor = { Authorization: `Bearer ${doctor.access_token}` };
+  const visits = (
+    await (
+      await request.get(`${API_URL}/visits/mine?completed=false&page_size=50`, {
+        headers: asDoctor,
+      })
+    ).json()
+  ).data.items as { id: string; patient_name: string }[];
+  const visit = visits.find((item) => item.patient_name === patientName);
+  expect(visit).toBeTruthy();
+  const completed = await request.post(`${API_URL}/visits/${visit?.id}/complete`, {
+    headers: asDoctor,
+  });
+  expect(completed.ok()).toBeTruthy();
+}
+
+/** Open the patient's finalized invoice from the Invoices tab (awaiting payment). */
 async function openNewInvoice(page: Page, patientName: string) {
   await page.goto("/receptionist/billing");
   // First visit to a new area on a cold dev server can take ~30 s to render.
   await expect(page.getByRole("heading", { name: "Billing & Payments" })).toBeVisible({
     timeout: 90_000,
   });
+  await page.getByLabel("Search invoices").fill(patientName.split(" ")[0] ?? patientName);
   const row = page.getByRole("row").filter({ hasText: patientName });
-  await row.getByRole("button", { name: "Finalize draft" }).click();
-  await page
-    .getByRole("dialog", { name: "Finalize draft" })
-    .getByRole("button", { name: "Finalize draft" })
-    .click();
-  await expect(page.getByText(/Invoice INV-\d{4}-\d+ finalized/)).toBeVisible();
+  await expect(row.getByText("Ready for payment")).toBeVisible();
+  await row.getByRole("button", { name: "Open" }).click();
   return page.getByRole("dialog", { name: /^INV-/ });
 }
 
@@ -183,48 +201,53 @@ test("cashier sees desk payments on the payments page", async ({ page, request }
   await expect(page.locator("tbody tr").first()).toContainText("Cash");
 });
 
-test("desk adds and removes draft lines before finalizing", async ({ page, request }) => {
+test("a draft cannot be paid until the doctor completes the visit", async ({ page, request }) => {
   test.setTimeout(240_000);
-  const patient = await completedWalkIn(request, `Neema${Date.now().toString().slice(-5)}`);
+  const patient = await completedWalkIn(request, `Neema${Date.now().toString().slice(-5)}`, false);
   await seedSession(page, request, "reception@mediflow.test", "Reception12345!");
   await page.goto("/receptionist/billing");
   await expect(page.getByRole("heading", { name: "Billing & Payments" })).toBeVisible({
     timeout: 90_000,
   });
-  await page
-    .getByRole("row")
-    .filter({ hasText: patient })
-    .getByRole("button", { name: "Finalize draft" })
-    .click();
-  const dialog = page.getByRole("dialog", { name: "Finalize draft" });
-  const lines = dialog.getByRole("list", { name: "Draft lines" });
-  await expect(lines.getByRole("listitem")).toHaveCount(2); // consultation + subtotal row
-  const subtotal = lines.getByText("Draft subtotal").locator("..");
-  const before = await subtotal.textContent();
+  await page.getByLabel("Status").selectOption("DRAFT");
+  await page.getByLabel("Search invoices").fill(patient.split(" ")[0] ?? patient);
+  const draftRow = page.getByRole("row").filter({ hasText: patient });
+  await expect(draftRow.getByText("Awaiting visit completion")).toBeVisible();
+  await draftRow.getByRole("button", { name: "Open" }).click();
 
-  const addLine = dialog.getByRole("form", { name: "Add line" });
-  const cbcLabel = (
-    await addLine
-      .getByLabel("Add service")
-      .locator("option", { hasText: "Complete blood count" })
-      .textContent()
-  )?.trim();
-  expect(cbcLabel).toBeTruthy();
-  await addLine.getByLabel("Add service").selectOption({ label: cbcLabel ?? "" });
-  await addLine.getByRole("button", { name: "Add line" }).click();
-  await expect(lines.getByRole("listitem", { name: /Complete blood count/ })).toBeVisible();
-  await expect(subtotal).not.toHaveText(before ?? "");
+  const draft = page.getByRole("dialog", { name: "Draft invoice" });
+  await expect(draft.getByText(/Awaiting visit completion\./)).toBeVisible();
+  await expect(draft.getByRole("button", { name: "Collect payment" })).toHaveCount(0);
+  await expect(draft.getByRole("button", { name: "Pay via SHA" })).toHaveCount(0);
+  await expect(draft.getByRole("button", { name: /Finalize/ })).toHaveCount(0);
+  await draft.getByRole("button", { name: "Close" }).first().click();
 
-  await dialog.getByRole("button", { name: /Remove Complete blood count/ }).click();
-  await expect(lines.getByRole("listitem", { name: /Complete blood count/ })).toHaveCount(0);
-  await expect(subtotal).toHaveText(before ?? "");
+  // The API refuses too, with a clear code.
+  const cashier = await login(request, "cashier@mediflow.test", "Cashier12345!");
+  const asCashier = { Authorization: `Bearer ${cashier.access_token}` };
+  const drafts = (
+    await (
+      await request.get(`${API_URL}/invoices?status=DRAFT&q=${patient.split(" ")[0]}`, {
+        headers: asCashier,
+      })
+    ).json()
+  ).data.items as { id: string }[];
+  const refused = await request.post(`${API_URL}/invoices/${drafts[0]?.id}/transactions`, {
+    headers: asCashier,
+    data: { method: "CASH", amount_minor: 100000, tendered_minor: 100000 },
+  });
+  expect(refused.status()).toBe(409);
+  expect((await refused.json()).error.code).toBe("INVOICE_NOT_PAYABLE");
 
-  await addLine.getByLabel("Add service").selectOption({ label: cbcLabel ?? "" });
-  await addLine.getByRole("button", { name: "Add line" }).click();
-  await expect(lines.getByRole("listitem", { name: /Complete blood count/ })).toBeVisible();
-  await dialog.getByRole("button", { name: "Finalize draft" }).click();
-  await expect(page.getByText(/Invoice INV-\d{4}-\d+ finalized/)).toBeVisible();
-  await expect(
-    page.getByRole("dialog", { name: /^INV-/ }).getByText(/Complete blood count/),
-  ).toBeVisible();
+  // The doctor completes the visit: the invoice is finalized and ready for payment.
+  await completeVisitOf(request, patient);
+  await page.getByLabel("Status").selectOption("ISSUED,PARTIALLY_PAID");
+  const checkout = await openNewInvoice(page, patient);
+  await expect(checkout.getByText("Ready for payment")).toBeVisible();
+  await checkout.getByRole("button", { name: "Collect payment" }).click();
+  const amount = await checkout.getByLabel("Amount (KES)").inputValue();
+  await checkout.getByLabel("Tendered (KES)").fill(amount);
+  await checkout.getByRole("button", { name: "Record payment" }).click();
+  await expect(page.getByText(/Payment recorded/)).toBeVisible();
+  await expect(checkout.getByText("Paid", { exact: true }).first()).toBeVisible();
 });
