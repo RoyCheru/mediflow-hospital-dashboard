@@ -87,3 +87,240 @@ Invoices by status: `ISSUED` 8, `PAID` 10 (no drafts).
 
 `INV-2026-000018` is reported, not changed. It will be refused by the new guard
 and listed by the violations report.
+
+## What was fixed (step 2 and 3)
+
+### One payment guard (BIL-16)
+
+`backend/app/billing/lifecycle.py`:
+
+- `payable_problem(invoice)` / `ensure_payable(invoice, action)` is the single
+  rule. An invoice is payable only when it is `ISSUED` (finalized) or
+  `PARTIALLY_PAID` **and** the encounter's visit is completed. An invoice tied
+  to an appointment whose patient was never seen (no visit) is not payable. An
+  invoice with no encounter at all (historical/manual rows) is payable once
+  finalized.
+- Violations raise `InvoiceNotPayable`: **409 `INVOICE_NOT_PAYABLE`** with
+  `invoice_id`, `invoice_status` and the attempted `action` in `details`. The
+  error handler rolls the request back, then writes an
+  `invoice.payment_rejected` audit entry (actor, invoice, action, reason). The
+  rollback comes first so nothing half-done is committed with the audit entry
+  (for example an idempotency record).
+- Role violations stay **403** from the route/service role checks.
+
+Every payment path now calls it:
+
+| Path | Where |
+|---|---|
+| Cash / card / bank | `record_payment` |
+| M-Pesa initiate | `create_payment_intent` |
+| M-Pesa callback | `_callback_problem` → not payable means the money is **recorded as `UNCONFIRMED`**, the intent goes to the reconciliation queue, admins are alerted and the callback is audit-logged (never dropped, never applied) |
+| SHA claim create | `create_claim` (before the eligibility call and again under the row lock) |
+| SHA claim resubmit | `resubmit_claim` |
+| SHA settlement | `_settle_claim` |
+| Payer allocation | `add_allocation` |
+| Reconciliation accept (transaction / intent) | `resolve_transaction`, `resolve_payment_intent` (message adds "return the money to the payer and resolve it as failed") |
+| Paybill/Till capture | not implemented (BIL-15); when added it must call `ensure_payable` |
+| Void / refund | own rules, unchanged (void refused while money or open claims remain) |
+
+### State machine
+
+`set_invoice_status` is now the only way invoice status changes
+(`finalize_invoice`, `recompute_invoice`, void approval, draft voiding). Allowed:
+
+| From | To |
+|---|---|
+| `DRAFT` | `ISSUED`, `VOIDED` |
+| `ISSUED` | `PARTIALLY_PAID`, `PAID`, `REFUNDED`, `VOIDED` |
+| `PARTIALLY_PAID` | `ISSUED`, `PAID`, `REFUNDED` |
+| `PAID` | `PARTIALLY_PAID`, `REFUNDED` |
+| `REFUNDED` | `VOIDED` |
+| `VOIDED` | (none) |
+
+Anything else is a 409 `INVALID_INVOICE_TRANSITION`. Payment states move both
+ways because refunds lower the amount paid.
+
+Database constraints (migration `0006_invoice_number_checks`, reversible, also in
+the model so tests enforce them): `ck_invoices_number_when_final` (a non-draft,
+non-voided invoice has a number) and `ck_invoices_draft_has_no_number`. A
+constraint that payments reference only non-draft invoices would need a trigger
+across tables; it is enforced by the guard instead (not practical as a check
+constraint). The migration refuses to run, and changes nothing, if existing rows
+violate it, pointing to `flask invoice-violations`.
+
+### Finalization only on visit completion (BIL-17)
+
+- `complete_encounter(visit, actor, reason=None)`
+  (`clinical_records/service.py`) is the one transaction. It completes the visit,
+  moves the appointment to `COMPLETED`, snapshots prices, assigns the number and
+  finalizes the invoice, then commits once. On any failure everything rolls back.
+  `transition()` gained `commit=False` for this; it used to commit on its own,
+  which the atomicity test caught.
+- **Idempotent**: completing again does nothing to a finalized bill (same number,
+  one `invoice.finalize` audit). For a completed visit whose bill is still a draft
+  (legacy data) it finalizes it.
+- The doctor's `POST /visits/:id/complete` uses it and now returns the visit
+  **with its invoice**.
+- **Direct finalize removed for every role**: `POST /invoices/:id/finalize`,
+  `POST /visits/:id/invoices/finalize` and the deprecated `POST /visits/:id/invoices`
+  now answer **403** ("Invoices are finalized only by completing the visit…") for
+  all roles, the doctor included. The paths are kept so old clients get a clear
+  error, not a 404.
+- **Admin force-complete**: `POST /admin/visits/:id/force-complete` (admin only)
+  with a mandatory `reason` (at least 10 characters) runs the same
+  `complete_encounter` and writes `visit.force_complete` (actor, visit, reason,
+  invoice number). It also serves as the **reissue after a void**: a completed
+  visit whose bill was voided gets a new finalized invoice with a new number. It
+  refuses (409) when the visit is completed and already has a finalized bill.
+
+### Numbering and price snapshot
+
+- Numbers are reserved from the locked `number_sequences` row **inside** the
+  completion transaction, so a failed completion rolls the number back: no gaps,
+  no duplicates. Tested sequentially and with six concurrent completions on
+  Postgres.
+- Drafts have no number (the API shows them as "Draft"; the UI shows
+  "Awaiting visit completion").
+- At finalization each service line is re-priced at the price list **in force at
+  that moment** (`_snapshot_line_prices`); afterwards the invoice keeps its own
+  prices whatever the price list does. A consultation billed at the doctor's fee
+  (service without a price) keeps that amount.
+
+### Immutability and adjustments
+
+- Lines can be added or removed only by **the doctor of the encounter, while the
+  bill is a draft**. Billing roles get 403 (drafts are read-only for them); any
+  edit of a finalized invoice is 409. The booked consultation line cannot be
+  removed. The checks live in the service (`assert_can_edit_lines`).
+- **Discounts**: a discount on a finalized invoice changes its total, so it is
+  now always an approved adjustment. Every discount request waits for approval
+  by a different admin (the previous auto-apply below 10% / KES 1,000 is gone,
+  and `DISCOUNT_APPROVAL_PERCENT` / `DISCOUNT_APPROVAL_MINOR` were removed). A
+  discount on a draft is refused (409).
+- Corrections otherwise go through the existing void (admin approval, reason)
+  and refund workflows. A voided invoice is never paid. After a full refund the
+  invoice can be voided (`REFUNDED → VOIDED`).
+
+### Cancelled and no-show appointments
+
+Cancelling (from checked in or in consultation) or marking a no-show voids the
+appointment's open draft (`void_open_draft`, audit `invoice.draft_void`, reason
+"Appointment cancelled/no_show"). It is kept, never deleted, and never payable.
+
+### Existing data
+
+`invoice_rule_violations()` (read-only) behind `GET /admin/reports/invoice-violations`
+(admin) and `flask invoice-violations`. Rules reported: `payment_on_draft`,
+`payment_before_visit_completed`, `payable_before_visit_completed`,
+`finalized_without_number`, `open_draft_for_unseen_appointment`. Nothing is changed.
+
+### Seed
+
+The seed now has drafts for today's checked-in patients (and an open visit for
+those in consultation), finalized invoices awaiting payment, a partly paid
+invoice, paid invoices and a voided invoice (approved void). A test runs
+`flask seed` and checks every state is present and the report is empty.
+
+### Frontend
+
+- Drafts appear as **Draft · Awaiting visit completion**, read-only: no Pay via
+  SHA, Collect payment, Discount or Finalize. Finalized invoices appear as
+  **Finalized · Ready for payment**.
+- Removed every Finalize action (reception Ready-to-bill dialog with its line
+  editor, the invoice view's Finalize, the doctor's separate Submit call). The
+  reception tab is now "Unbilled visits" (legacy drafts and voided bills awaiting
+  an admin reissue) and the billing page opens on invoices awaiting payment.
+- Doctor: completing the visit finalizes the bill (the response carries it); a
+  completed visit with a legacy draft shows "Finalize bill", which repeats the
+  idempotent completion.
+- Admin: visit detail shows the bill and a **Force-complete visit** action with a
+  required reason.
+- API errors with `INVOICE_NOT_PAYABLE` show the server's reason.
+
+## Decisions
+
+| Decision | Choice |
+|---|---|
+| Status names | Kept the stored enum (no migration); mapping in the table above |
+| Zero-amount visit | Existing behaviour: a bill with no billable lines finalizes at zero and, with nothing to collect, becomes `PAID` at once |
+| Invoices with no encounter (historical/manual) | Payable once finalized |
+| Line edits | Doctor of the encounter only, draft only; billing roles read-only |
+| Discounts on finalized invoices | Always require approval by a different admin |
+| Reissue after void | Admin force-complete with a reason (new number) |
+| Direct finalize endpoints | Kept as 403 for every role rather than removed (clear error for old clients) |
+| Rejected attempts | 409 `INVOICE_NOT_PAYABLE` + audit after rollback |
+
+## Follow-ups (out of scope)
+
+- **Pre-visit deposits and advance payments**: not supported. Money before
+  completion would need its own model (a deposit or credit applied at
+  finalization) rather than a payment on a draft.
+- Paybill/Till capture (BIL-15) is not implemented; it must use `ensure_payable`.
+- `INV-2026-000018` in the dev data (finalized, patient never seen) is listed by
+  the violations report and refused by the guard; it needs a person to void it.
+
+## Files changed
+
+Backend:
+- **New:** `app/billing/lifecycle.py` (guard, state machine, violations report);
+  `migrations/versions/0006_invoice_number_checks.py`.
+- **Changed:**
+  - `app/billing/service.py` (guard calls, `finalize_encounter_invoice`, price snapshot, line-edit rules, discounts, `void_open_draft`; `create_invoice` / `finalize_visit_invoice` removed);
+  - `app/billing/routes.py` (finalize endpoints 403; line routes delegate to the service);
+  - `app/billing/models.py` (check constraints);
+  - `app/claims/service.py` (guard on claim create/resubmit/settle);
+  - `app/clinical_records/service.py` and `routes.py` (`complete_encounter`, `force_complete_visit`, completion returns the invoice);
+  - `app/scheduling/service.py` (`transition(commit=False)`, draft void on cancel/no-show);
+  - `app/admin/routes.py` (force-complete, violations report);
+  - `app/cli.py` (`invoice-violations`);
+  - `app/common/errors.py` (audit after rollback for refused actions);
+  - `app/common/sequences.py` (race-safe first use);
+  - `app/demo_seed.py`;
+  - `app/config.py` and `.env.example` (discount thresholds removed).
+- **Tests:**
+  - new: `test_invoice_payment_guard.py`, `test_invoice_lifecycle.py`, `test_invoice_number_migration.py`;
+  - updated: `helpers.py`, `test_billing_amounts.py`, `test_billing_discounts.py`, `test_billing_integrity.py`, `test_billing_phase_d.py`, `test_billing_worklist.py`, `test_encounter_billing.py`, `test_demo_seed.py`.
+
+Frontend:
+- **New:** `components/admin/ForceCompleteVisit.tsx`.
+- **Removed:** `components/billing/DraftLinesEditor.tsx`.
+- **Changed:**
+  - `components/billing/{InvoiceCheckout,InvoiceListPanel,ReadyToBillPanel}.tsx`;
+  - `components/doctor/EncounterBillPanel.tsx`;
+  - `lib/api/{billing,clinical,visits}.ts` (finalize calls removed; `forceCompleteVisit`);
+  - `lib/format.ts` (`invoiceStatusHint`);
+  - `routes/admin/visits.tsx`, `routes/doctor/consultations.$visitId.tsx`, `routes/receptionist/billing.tsx`;
+  - E2E specs `admin-front-desk`, `billing-desk`, `cashier-desk`, `doctor-consultation`.
+
+Database: migration `0006_invoice_number_checks` (run `flask db upgrade`). Your dev
+database passes it (no non-draft invoice without a number).
+
+## Verification
+
+| Check | Result |
+|---|---|
+| Backend `pytest`, SQLite | **360 passed, 2 skipped** (the two Postgres-only tests) |
+| Backend `pytest`, Postgres (`MEDIFLOW_TEST_DATABASE_URL`) | guard, lifecycle (incl. the 125-cell matrix and 6-way concurrent numbering), phase D and encounter tests all pass; the concurrent numbering test caught a real race (fixed in `6f9864e`) |
+| Confirmation tests (step 1) | all 15 now pass (strict xfail markers removed) |
+| Migration `0006` | upgrade → downgrade → upgrade on SQLite (test) and on seeded Postgres; refuses to run over violating rows |
+| Seed on Postgres with `0006` | seeds cleanly; `flask invoice-violations` reports none |
+| ruff check / format | clean |
+| Frontend tsc / eslint / vitest / build | clean / 0 errors (9 pre-existing warnings) / 37 passed / OK |
+| Playwright against a Postgres-backed API | **34/34**, no server tracebacks |
+
+## Commits
+
+| Hash | Message |
+|---|---|
+| `0156d8d` | docs: add BIL-16 and BIL-17 invoice finalization and payment rules |
+| `688876e` | test(api): confirm invoice finalization and payment-guard gaps |
+| `6f9864e` | fix(api): race-safe first use of a number sequence |
+| `6d2f36f` | fix(api): enforce finalized-invoice-only payments (BIL-16, BIL-17) |
+| `01d245d` | feat(db): invoice number check constraints (0006) |
+| `a2456f0` | feat(seed): cover every invoice state as the live workflow would |
+| `45e5075` | feat(web): drafts read-only; no finalize actions; admin force-complete |
+| `1310d28` | test(web): E2E for finalized-only payment and force-complete |
+
+Note on "tests before each commit": the suite was run green on the final tree and
+on the step-1 commit. The intermediate commits were made afterwards from that
+verified tree, so they were not each re-run in isolation.
