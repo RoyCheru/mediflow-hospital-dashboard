@@ -12,7 +12,7 @@ from app.clinical_records.models import (
 )
 from app.common.audit import record_audit
 from app.common.base import utcnow
-from app.common.enums import AppointmentStatus
+from app.common.enums import AppointmentStatus, InvoiceStatus
 from app.common.errors import bad_request, conflict, forbidden, not_found
 from app.common.outbox import enqueue_event
 from app.extensions import db
@@ -234,33 +234,107 @@ def update_visit(visit, data, doctor_user):
     return visit
 
 
-def complete_visit(visit, doctor_user):
-    from app.scheduling.models import Appointment, DoctorProfile
+FORCE_COMPLETE_MIN_REASON = 10
+
+
+def complete_encounter(visit, actor, reason=None):
+    """Complete the visit and finalize its bill in one transaction (BIL-17).
+
+    Marks the visit completed, moves the appointment to COMPLETED, snapshots the
+    service prices and finalizes the invoice (official number, fixed totals).
+    Any failure rolls all of it back. Idempotent: on a completed visit whose
+    bill is already finalized nothing changes; a completed visit whose bill was
+    left in draft (legacy data) gets it finalized.
+    Returns (visit, invoice).
+    """
+    from app.billing.service import finalize_encounter_invoice
+    from app.scheduling.models import Appointment
     from app.scheduling.service import transition
+
+    try:
+        newly_completed = visit.completed_at is None
+        if newly_completed:
+            visit.completed_at = utcnow()
+            if visit.appointment_id:
+                appointment = db.session.get(Appointment, visit.appointment_id)
+                if appointment is not None and appointment.status in {
+                    AppointmentStatus.CHECKED_IN,
+                    AppointmentStatus.IN_CONSULTATION,
+                }:
+                    # commit=False: everything commits together below (or not at all).
+                    if appointment.status == AppointmentStatus.CHECKED_IN:
+                        transition(
+                            appointment, AppointmentStatus.IN_CONSULTATION, actor, commit=False
+                        )
+                    transition(appointment, AppointmentStatus.COMPLETED, actor, commit=False)
+            enqueue_event(
+                "visit.completed",
+                "visit",
+                visit.id,
+                {
+                    "visit_id": str(visit.id),
+                    "patient_id": str(visit.patient_id),
+                    "doctor_id": str(visit.doctor_id),
+                },
+            )
+            record_audit(
+                "visit.complete",
+                "visit",
+                visit.id,
+                actor=actor,
+                after={"forced": bool(reason)},
+            )
+        invoice = finalize_encounter_invoice(visit, actor)
+        if reason:
+            record_audit(
+                "visit.force_complete",
+                "visit",
+                visit.id,
+                actor=actor,
+                after={
+                    "reason": reason,
+                    "visit_was_open": newly_completed,
+                    "invoice_id": str(invoice.id) if invoice else None,
+                    "invoice_number": invoice.invoice_number if invoice else None,
+                },
+            )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return visit, invoice
+
+
+def complete_visit(visit, doctor_user):
+    """The doctor completes their own visit; the bill finalizes with it."""
+    from app.scheduling.models import DoctorProfile
 
     doctor = DoctorProfile.query.filter_by(user_id=doctor_user.id).first()
     if doctor is None or visit.doctor_id != doctor.id:
         raise forbidden()
-    if visit.completed_at is not None:
-        return visit
-    visit.completed_at = utcnow()
-    if visit.appointment_id:
-        appointment = Appointment.query.get(visit.appointment_id)
-        if appointment and appointment.status == AppointmentStatus.IN_CONSULTATION:
-            transition(appointment, AppointmentStatus.COMPLETED, doctor_user)
-    enqueue_event(
-        "visit.completed",
-        "visit",
-        visit.id,
-        {
-            "visit_id": str(visit.id),
-            "patient_id": str(visit.patient_id),
-            "doctor_id": str(visit.doctor_id),
-        },
-    )
-    record_audit("visit.complete", "visit", visit.id, actor=doctor_user)
-    db.session.commit()
-    return visit
+    return complete_encounter(visit, doctor_user)
+
+
+def force_complete_visit(visit, admin_user, reason):
+    """Admin completes a stuck visit (or finalizes a completed visit's leftover
+    draft) with a mandatory reason; same transaction as a doctor's completion."""
+    from app.billing.service import find_invoice_for_visit
+
+    reason = (reason or "").strip()
+    if len(reason) < FORCE_COMPLETE_MIN_REASON:
+        raise bad_request(
+            "A reason is required to force-complete a visit",
+            {"reason": [f"At least {FORCE_COMPLETE_MIN_REASON} characters"]},
+        )
+    invoice = find_invoice_for_visit(visit)
+    if visit.completed_at is not None and (
+        invoice is not None and invoice.status != InvoiceStatus.DRAFT
+    ):
+        raise conflict(
+            "This visit is already completed and its invoice finalized",
+            {"visit_id": str(visit.id), "invoice_number": invoice.invoice_number},
+        )
+    return complete_encounter(visit, admin_user, reason=reason)
 
 
 def create_prescription(visit, data, doctor_user):

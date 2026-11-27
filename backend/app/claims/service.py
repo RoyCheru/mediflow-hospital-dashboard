@@ -1,3 +1,4 @@
+from app.billing.lifecycle import ensure_payable
 from app.billing.models import InvoiceAllocation, Transaction
 from app.billing.service import (
     OPEN_CLAIM_STATUSES,
@@ -430,15 +431,7 @@ def _validate_claim_amount(invoice, amount):
 
 
 def create_claim(invoice, data, actor):
-    if invoice.status == InvoiceStatus.DRAFT:
-        raise conflict(
-            "Finalize the invoice before creating a claim",
-            {"invoice_id": str(invoice.id), "status": invoice.status.value},
-        )
-    if invoice.status == InvoiceStatus.VOIDED:
-        raise conflict("Cannot create a claim for a voided invoice")
-    if invoice.status == InvoiceStatus.PAID:
-        raise conflict("Invoice is already settled")
+    ensure_payable(invoice, "sha_claim")
 
     check = None
     if data.get("eligibility_check_id"):
@@ -465,8 +458,10 @@ def create_claim(invoice, data, actor):
             },
         )
 
-    # Eligibility checks commit, so take the lock only after them.
+    # Eligibility checks commit, so take the lock only after them, and re-check
+    # under the lock (the invoice may have been voided or paid meanwhile).
     invoice = lock_invoice(invoice)
+    ensure_payable(invoice, "sha_claim")
     _ensure_no_open_claim(invoice)
     amount = data.get("amount_minor")
     if amount is None:
@@ -563,6 +558,7 @@ def create_claim(invoice, data, actor):
 
 def _settle_claim(claim, actor, external_reference=None):
     invoice = lock_invoice(claim.invoice_id)
+    ensure_payable(invoice, "sha_claim_settlement")
     existing = Transaction.query.filter_by(
         reference=claim.external_reference or f"CLAIM-{claim.id}"
     ).first()
@@ -696,8 +692,7 @@ def resubmit_claim(claim, data, actor):
     if claim.status != ClaimStatus.REJECTED:
         raise conflict("Only rejected claims can be resubmitted")
     invoice = lock_invoice(claim.invoice_id)
-    if invoice.status == InvoiceStatus.VOIDED:
-        raise conflict("Cannot resubmit a claim for a voided invoice")
+    ensure_payable(invoice, "sha_claim_resubmission")
     _ensure_no_open_claim(invoice)
     amount = data.get("amount_minor") or claim.claimed_amount_minor
     _validate_claim_amount(invoice, amount)

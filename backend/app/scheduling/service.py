@@ -803,7 +803,7 @@ def create_walk_in_appointment(data, actor):
         raise
 
 
-def transition(appointment, new_status, actor, reason=None):
+def transition(appointment, new_status, actor, reason=None, commit=True):
     if new_status == appointment.status:
         return appointment
     if new_status == AppointmentStatus.NO_SHOW and appointment.source == AppointmentSource.WALK_IN:
@@ -830,6 +830,11 @@ def transition(appointment, new_status, actor, reason=None):
         from app.billing.service import ensure_draft_invoice_for_appointment
 
         ensure_draft_invoice_for_appointment(appointment, actor, commit=False)
+    elif new_status in {AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW}:
+        # The patient was not seen: their open draft can never become payable.
+        from app.billing.service import void_open_draft
+
+        void_open_draft(appointment, actor, f"Appointment {new_status.value.lower()}")
     record_audit(
         "appointment.status_change",
         "appointment",
@@ -847,7 +852,8 @@ def transition(appointment, new_status, actor, reason=None):
         appointment.id,
         {"appointment_id": str(appointment.id), "status": new_status.value},
     )
-    db.session.commit()
+    if commit:
+        db.session.commit()
     return appointment
 
 

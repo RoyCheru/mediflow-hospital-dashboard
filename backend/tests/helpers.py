@@ -43,15 +43,12 @@ def complete_visit(client, tokens, visit_id):
 
 
 def create_invoice_flow(client, tokens, ids):
+    """A completed visit and its invoice, finalized by the completion (BIL-17)."""
     appointment, visit = create_visit_flow(client, tokens, ids)
-    complete_visit(client, tokens, visit["id"])
-    response = client.post(
-        f"/api/v1/visits/{visit['id']}/invoices",
-        json={},
-        headers=auth(tokens["reception"]),
-    )
-    assert response.status_code == 201, response.get_json()
-    return appointment, visit, response.get_json()["data"]
+    completed = complete_visit(client, tokens, visit["id"])
+    invoice = completed["invoice"]
+    assert invoice is not None and invoice["status"] != "DRAFT", completed
+    return appointment, visit, invoice
 
 
 def priced_service(ids, code, name, amount_minor, active=True):

@@ -18,7 +18,6 @@ from app.billing.schemas import (
     CashReconciliationSchema,
     DecisionSchema,
     DiscountRequestSchema,
-    InvoiceCreateSchema,
     InvoiceLineSchema,
     PaymentIntentSchema,
     ReconciliationResolveSchema,
@@ -76,15 +75,17 @@ def _assert_doctor_owns(user, visit=None, appointment=None):
         raise forbidden("This bill belongs to another doctor's encounter")
 
 
-@bp.post("/visits/<uuid:visit_id>/invoices")
-@auth_required(*BILLING)
-def create_invoice(visit_id):
-    from app.scheduling.models import DoctorProfile  # noqa: F401
+NOT_FINALIZABLE = (
+    "Invoices are finalized only by completing the visit (an admin can "
+    "force-complete a stuck visit with a reason)"
+)
 
-    visit = get_visit_or_404(visit_id)
-    data = InvoiceCreateSchema().load(request.get_json(silent=True) or {})
-    invoice = service.create_invoice(visit, data, current_user())
-    return created(service.serialize_invoice(invoice))
+
+@bp.post("/visits/<uuid:visit_id>/invoices")
+@auth_required()
+def create_invoice(visit_id):
+    """Deprecated: creating/finalizing an invoice directly is not allowed (BIL-17)."""
+    raise forbidden(NOT_FINALIZABLE)
 
 
 @bp.get("/visits/<uuid:visit_id>/invoice")
@@ -100,38 +101,23 @@ def get_visit_invoice(visit_id):
 
 
 @bp.post("/visits/<uuid:visit_id>/invoices/finalize")
-@auth_required(Role.DOCTOR, *BILLING)
+@auth_required()
 def finalize_visit_invoice(visit_id):
-    visit = get_visit_or_404(visit_id)
-    user = current_user()
-    _assert_doctor_owns(user, visit=visit)
-    payload = request.get_json(silent=True) or {}
-    if user.role == Role.DOCTOR and (payload.get("items") or payload.get("discount_minor")):
-        from app.common.errors import bad_request
-
-        raise bad_request(
-            "Doctors submit the services already on the bill; "
-            "discounts and line changes are made at the billing desk"
-        )
-    data = InvoiceCreateSchema().load(payload)
-    invoice = service.finalize_visit_invoice(visit, data, current_user())
-    return created(service.serialize_invoice(invoice))
+    """Removed: no role finalizes an invoice directly (BIL-17)."""
+    raise forbidden(NOT_FINALIZABLE)
 
 
 @bp.post("/invoices/<uuid:invoice_id>/finalize")
-@auth_required(*BILLING)
+@auth_required()
 def finalize_invoice(invoice_id):
-    invoice = service.get_invoice_or_404(invoice_id)
-    invoice = service.finalize_invoice(invoice, current_user())
-    return ok(service.serialize_invoice(invoice))
+    """Removed: no role finalizes an invoice directly (BIL-17)."""
+    raise forbidden(NOT_FINALIZABLE)
 
 
 @bp.post("/invoices/<uuid:invoice_id>/lines")
 @auth_required(Role.DOCTOR, *BILLING)
 def add_invoice_line(invoice_id):
     invoice = service.get_invoice_or_404(invoice_id)
-    visit, appointment = _encounter_for_invoice(invoice)
-    _assert_doctor_owns(current_user(), visit=visit, appointment=appointment)
     data = InvoiceLineSchema().load(request.get_json(silent=True) or {})
     invoice = service.add_invoice_line(invoice, data, current_user())
     return created(service.serialize_invoice(invoice))
@@ -141,16 +127,7 @@ def add_invoice_line(invoice_id):
 @auth_required(Role.DOCTOR, *BILLING)
 def remove_invoice_line(invoice_id, line_id):
     invoice = service.get_invoice_or_404(invoice_id)
-    user = current_user()
-    visit, appointment = _encounter_for_invoice(invoice)
-    _assert_doctor_owns(user, visit=visit, appointment=appointment)
-    if user.role == Role.DOCTOR and appointment is not None and appointment.service_id:
-        line = next((item for item in invoice.lines if item.id == line_id), None)
-        if line is not None and line.service_id == appointment.service_id:
-            raise forbidden(
-                "The booked consultation stays on the bill; the billing desk can adjust it"
-            )
-    invoice = service.remove_invoice_line(invoice, line_id, user)
+    invoice = service.remove_invoice_line(invoice, line_id, current_user())
     return ok(service.serialize_invoice(invoice))
 
 

@@ -151,7 +151,8 @@ def test_second_mpesa_callback_cannot_overpay(client, tokens, ids):
         for item in _reconciliation(client, tokens)["transactions"]
         if item["reference"] == "QKDOUBLE2"
     ]
-    assert parked and "exceeds outstanding balance" in parked[0]["notes"]
+    # The first callback paid the invoice in full; the second is parked, not applied.
+    assert parked and "invoice is paid" in parked[0]["notes"]
 
 
 def test_parked_callback_is_idempotent(client, tokens, ids):
@@ -458,7 +459,9 @@ def test_resolve_refuses_to_accept_an_overpayment(client, tokens, ids):
 
     refused = _resolve(client, tokens, parked["id"], "SUCCESS")
     assert refused.status_code == 409
-    assert "exceeds the outstanding balance" in refused.get_json()["error"]["message"]
+    error = refused.get_json()["error"]
+    assert error["code"] == "INVOICE_NOT_PAYABLE"
+    assert "The invoice is paid" in error["message"]
     updated = _invoice(client, tokens, invoice["id"])
     assert updated["amount_paid_minor"] == total
     assert updated["balance_minor"] == 0

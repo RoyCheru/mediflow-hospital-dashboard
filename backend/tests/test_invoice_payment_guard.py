@@ -69,7 +69,6 @@ def test_draft_invoice_refuses_cash_stk_and_claims_today(client, tokens, ids):
     assert (cash.status_code, stk.status_code, claim.status_code) == (409, 409, 409)
 
 
-@confirmed_bug
 def test_rejections_use_the_invoice_not_payable_code(client, tokens, ids):
     _, _, draft = _open_visit(client, tokens, ids)
     cash = client.post(
@@ -80,7 +79,6 @@ def test_rejections_use_the_invoice_not_payable_code(client, tokens, ids):
     assert cash.get_json()["error"]["code"] == "INVOICE_NOT_PAYABLE"
 
 
-@confirmed_bug
 def test_payer_allocation_is_refused_on_a_draft(client, tokens, ids):
     _, _, draft = _open_visit(client, tokens, ids)
     response = client.post(
@@ -94,7 +92,6 @@ def test_payer_allocation_is_refused_on_a_draft(client, tokens, ids):
 # --- Payments on invoices whose visit is not completed -----------------------------
 
 
-@confirmed_bug
 def test_no_cash_payment_while_the_visit_is_open(client, tokens, ids):
     _, _, invoice = _numbered_but_visit_open(client, tokens, ids)
     response = client.post(
@@ -105,7 +102,6 @@ def test_no_cash_payment_while_the_visit_is_open(client, tokens, ids):
     assert response.status_code == 409
 
 
-@confirmed_bug
 def test_no_stk_push_while_the_visit_is_open(client, tokens, ids):
     _, _, invoice = _numbered_but_visit_open(client, tokens, ids)
     response = client.post(
@@ -116,7 +112,6 @@ def test_no_stk_push_while_the_visit_is_open(client, tokens, ids):
     assert response.status_code == 409
 
 
-@confirmed_bug
 def test_no_sha_claim_while_the_visit_is_open(client, tokens, ids):
     _, _, invoice = _numbered_but_visit_open(client, tokens, ids)
     response = client.post(
@@ -130,7 +125,6 @@ def test_no_sha_claim_while_the_visit_is_open(client, tokens, ids):
 # --- Direct finalization ------------------------------------------------------------
 
 
-@confirmed_bug
 @pytest.mark.parametrize("role", BILLING_ROLES)
 def test_billing_roles_cannot_finalize_an_invoice_directly(client, tokens, ids, role):
     _, _, draft = _open_visit(client, tokens, ids)
@@ -139,7 +133,6 @@ def test_billing_roles_cannot_finalize_an_invoice_directly(client, tokens, ids, 
     assert db.session.get(Invoice, draft.id).status == InvoiceStatus.DRAFT
 
 
-@confirmed_bug
 @pytest.mark.parametrize("role", BILLING_ROLES)
 def test_billing_roles_cannot_finalize_through_the_visit_endpoints(client, tokens, ids, role):
     _, visit, _ = _open_visit(client, tokens, ids)
@@ -152,7 +145,6 @@ def test_billing_roles_cannot_finalize_through_the_visit_endpoints(client, token
 # --- Finalization on visit completion -----------------------------------------------
 
 
-@confirmed_bug
 def test_completing_the_visit_finalizes_the_invoice(client, tokens, ids):
     _, visit, draft = _open_visit(client, tokens, ids)
     assert draft.invoice_number is None
@@ -167,7 +159,6 @@ def test_completing_the_visit_finalizes_the_invoice(client, tokens, ids):
 # --- Immutability ---------------------------------------------------------------------
 
 
-@confirmed_bug
 def test_a_discount_cannot_change_a_finalized_invoice_without_approval(client, tokens, ids):
     _, visit, draft = _open_visit(client, tokens, ids)
     client.post(f"/api/v1/visits/{visit['id']}/complete", headers=auth(tokens["doctor"]))
@@ -188,7 +179,6 @@ def test_a_discount_cannot_change_a_finalized_invoice_without_approval(client, t
 # --- Cancelled appointments ------------------------------------------------------------
 
 
-@confirmed_bug
 def test_cancelling_a_checked_in_appointment_voids_its_draft(client, tokens, ids):
     appointment = book_appointment(client, tokens, ids)
     client.post(
@@ -206,7 +196,6 @@ def test_cancelling_a_checked_in_appointment_voids_its_draft(client, tokens, ids
 # --- Audit ---------------------------------------------------------------------------------
 
 
-@confirmed_bug
 def test_rejected_payment_attempts_are_audited(client, tokens, ids):
     from app.audit.models import AuditLog
 

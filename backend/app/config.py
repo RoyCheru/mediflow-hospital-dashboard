@@ -25,8 +25,6 @@ class Config:
     HOSPITAL_TIMEZONE = os.getenv("HOSPITAL_TIMEZONE", "Africa/Nairobi")
     QUEUE_WAITING_THRESHOLD_MINUTES = int(os.getenv("QUEUE_WAITING_THRESHOLD_MINUTES", "30"))
     # Discounts above either threshold need admin approval (strictly greater).
-    DISCOUNT_APPROVAL_PERCENT = int(os.getenv("DISCOUNT_APPROVAL_PERCENT", "10"))
-    DISCOUNT_APPROVAL_MINOR = int(os.getenv("DISCOUNT_APPROVAL_MINOR", "100000"))
 
     SQLALCHEMY_DATABASE_URI = _database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False

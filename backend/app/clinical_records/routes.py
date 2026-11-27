@@ -127,8 +127,15 @@ def update_visit(visit_id):
 def complete_visit(visit_id):
     visit = service.get_visit_or_404(visit_id)
     _assert_write(current_user(), visit)
-    visit = service.complete_visit(visit, current_user())
-    return ok(service.serialize_visit(visit))
+    visit, invoice = service.complete_visit(visit, current_user())
+    return ok(_with_invoice(service.serialize_visit(visit), invoice))
+
+
+def _with_invoice(payload, invoice):
+    from app.billing.service import serialize_invoice
+
+    payload["invoice"] = serialize_invoice(invoice) if invoice is not None else None
+    return payload
 
 
 @bp.post("/visits/<uuid:visit_id>/prescriptions")

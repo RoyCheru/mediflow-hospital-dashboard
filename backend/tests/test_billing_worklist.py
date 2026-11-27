@@ -12,26 +12,13 @@ def _visit_ids(response):
     return {item["visit_id"] for item in response.get_json()["data"]["items"]}
 
 
-def test_completed_visit_is_ready_until_invoiced_and_again_after_void(client, tokens, ids):
+def test_completion_bills_the_visit_and_a_void_puts_it_back_for_reissue(client, tokens, ids):
     _, visit = create_visit_flow(client, tokens, ids)
     assert visit["id"] not in _visit_ids(_ready(client, tokens))  # still open
 
-    complete_visit(client, tokens, visit["id"])
-    response = _ready(client, tokens)
-    assert response.status_code == 200
-    row = next(
-        item for item in response.get_json()["data"]["items"] if item["visit_id"] == visit["id"]
-    )
-    assert row["expected_line"] == {
-        "description": "General consultation",
-        "unit_price_minor": 500000,
-    }
-    assert row["patient"]["name"]
-    assert row["doctor_name"]
-
-    invoice = client.post(
-        f"/api/v1/visits/{visit['id']}/invoices", json={}, headers=auth(tokens["reception"])
-    ).get_json()["data"]
+    # Completing finalizes the bill (BIL-17): nothing is left to bill.
+    invoice = complete_visit(client, tokens, visit["id"])["invoice"]
+    assert invoice["status"] == "ISSUED"
     assert visit["id"] not in _visit_ids(_ready(client, tokens))
 
     request = client.post(
@@ -44,7 +31,27 @@ def test_completed_visit_is_ready_until_invoiced_and_again_after_void(client, to
         json={"approve": True},
         headers=auth(tokens["admin"]),
     )
-    assert visit["id"] in _visit_ids(_ready(client, tokens, role="cashier"))
+    response = _ready(client, tokens, role="cashier")
+    row = next(
+        item for item in response.get_json()["data"]["items"] if item["visit_id"] == visit["id"]
+    )
+    assert row["expected_line"] == {
+        "description": "General consultation",
+        "unit_price_minor": 500000,
+    }
+    assert row["patient"]["name"] and row["doctor_name"]
+
+    # The reissue is an admin force-complete with a reason; it gets a new number.
+    reissued = client.post(
+        f"/api/v1/admin/visits/{visit['id']}/force-complete",
+        json={"reason": "Reissue after void: wrong service"},
+        headers=auth(tokens["admin"]),
+    )
+    assert reissued.status_code == 200, reissued.get_json()
+    new_invoice = reissued.get_json()["data"]["invoice"]
+    assert new_invoice["id"] != invoice["id"] and new_invoice["status"] == "ISSUED"
+    assert new_invoice["invoice_number"] != invoice["invoice_number"]
+    assert visit["id"] not in _visit_ids(_ready(client, tokens))
 
 
 def test_ready_to_bill_is_for_billing_roles_only(client, tokens):

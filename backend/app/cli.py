@@ -240,6 +240,22 @@ def register_cli(app):
         db.session.commit()
         click.echo(f"Processed {len(events)} outbox events")
 
+    @app.cli.command("invoice-violations")
+    def invoice_violations_command():
+        """List invoices that break BIL-16/17 (read-only; changes nothing)."""
+        from app.billing.lifecycle import invoice_rule_violations
+
+        rows = invoice_rule_violations()
+        if not rows:
+            click.echo("No invoices violate the finalization and payment rules.")
+            return
+        for row in rows:
+            click.echo(
+                f"{row['rule']:34} {row['invoice_number'] or row['invoice_id']:20} "
+                f"{row['status']:15} paid={row['amount_paid_minor']:>9}  {row['detail']}"
+            )
+        click.echo(f"{len(rows)} violation(s).")
+
     @app.cli.command("build-export")
     @click.argument("export_id")
     def build_export_command(export_id):

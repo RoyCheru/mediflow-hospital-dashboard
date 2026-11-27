@@ -34,7 +34,8 @@ def _invoice(client, tokens, invoice_id):
     return response.get_json()["data"]
 
 
-def _visit_flow(client, tokens, ids):
+def _open_visit(client, tokens, ids):
+    """Checked in and in consultation: the bill is a draft."""
     appointment, _ = _check_in(client, tokens, ids)
     response = client.post(
         f"/api/v1/appointments/{appointment['id']}/visits",
@@ -42,9 +43,7 @@ def _visit_flow(client, tokens, ids):
         headers=auth(tokens["doctor"]),
     )
     assert response.status_code == 201, response.get_json()
-    visit = response.get_json()["data"]
-    complete_visit(client, tokens, visit["id"])
-    return appointment, visit
+    return appointment, response.get_json()["data"]
 
 
 def test_check_in_creates_one_numberless_draft(client, tokens, ids):
@@ -85,91 +84,93 @@ def test_walk_in_creates_a_draft(client, tokens, ids):
     assert drafts[0].appointment_id is not None
 
 
-def test_line_endpoints_only_work_while_draft(client, tokens, ids):
-    _, visit = _visit_flow(client, tokens, ids)
+def test_doctor_edits_lines_while_draft_and_completion_locks_them(client, tokens, ids):
+    _, visit = _open_visit(client, tokens, ids)
     draft = _drafts(visit["appointment_id"])[0]
     dressing_service = priced_service(ids, "PROC-DRESS", "Dressing", 30000)
+    lines_url = f"/api/v1/invoices/{draft.id}/lines"
+
+    # The billing desk sees drafts read-only.
+    assert (
+        client.post(
+            lines_url,
+            json={"service_id": str(dressing_service.id)},
+            headers=auth(tokens["cashier"]),
+        ).status_code
+        == 403
+    )
 
     added = client.post(
-        f"/api/v1/invoices/{draft.id}/lines",
+        lines_url,
         json={"service_id": str(dressing_service.id), "quantity": 2},
-        headers=auth(tokens["cashier"]),
+        headers=auth(tokens["doctor"]),
     )
     assert added.status_code == 201, added.get_json()
     invoice = added.get_json()["data"]
-    assert invoice["subtotal_minor"] == 560000
-    assert invoice["total_minor"] == 560000
+    assert invoice["subtotal_minor"] == invoice["total_minor"] == 560000
     dressing = next(line for line in invoice["lines"] if line["description"] == "Dressing")
-
-    removed = client.delete(
-        f"/api/v1/invoices/{draft.id}/lines/{dressing['id']}",
-        headers=auth(tokens["cashier"]),
-    )
+    removed = client.delete(f"{lines_url}/{dressing['id']}", headers=auth(tokens["doctor"]))
     assert removed.status_code == 200, removed.get_json()
     assert removed.get_json()["data"]["subtotal_minor"] == 500000
 
-    finalized = client.post(
-        f"/api/v1/invoices/{draft.id}/finalize",
-        headers=auth(tokens["cashier"]),
-    )
-    assert finalized.status_code == 200, finalized.get_json()
-    final = finalized.get_json()["data"]
+    final = complete_visit(client, tokens, visit["id"])["invoice"]
+    assert final["id"] == str(draft.id)
     assert final["invoice_number"].startswith("INV-")
-    assert final["status"] == "ISSUED"
-    assert final["finalized_at"]
+    assert final["status"] == "ISSUED" and final["finalized_at"]
 
-    blocked_add = client.post(
-        f"/api/v1/invoices/{draft.id}/lines",
-        json={"service_id": str(dressing_service.id)},
-        headers=auth(tokens["cashier"]),
-    )
-    assert blocked_add.status_code == 409
-    blocked_remove = client.delete(
-        f"/api/v1/invoices/{draft.id}/lines/{final['lines'][0]['id']}",
-        headers=auth(tokens["cashier"]),
-    )
-    assert blocked_remove.status_code == 409
+    # Finalized: immutable for the doctor (409); billing roles never edit lines (403).
+    for role, expected in (("doctor", 409), ("cashier", 403)):
+        blocked_add = client.post(
+            lines_url, json={"service_id": str(dressing_service.id)}, headers=auth(tokens[role])
+        )
+        assert blocked_add.status_code == expected, role
+        blocked_remove = client.delete(
+            f"{lines_url}/{final['lines'][0]['id']}", headers=auth(tokens[role])
+        )
+        assert blocked_remove.status_code == expected, role
 
 
-def test_finalize_is_idempotent_and_locks_the_invoice(client, tokens, ids):
-    _, visit = _visit_flow(client, tokens, ids)
-    draft = _drafts(visit["appointment_id"])[0]
-
-    first = client.post(f"/api/v1/invoices/{draft.id}/finalize", headers=auth(tokens["cashier"]))
-    assert first.status_code == 200, first.get_json()
-    number = first.get_json()["data"]["invoice_number"]
-
-    second = client.post(f"/api/v1/invoices/{draft.id}/finalize", headers=auth(tokens["cashier"]))
-    assert second.status_code == 409
-    assert second.get_json()["error"]["details"]["invoice_number"] == number
+def test_completing_again_never_renumbers_the_invoice(client, tokens, ids):
+    _, visit = _open_visit(client, tokens, ids)
+    first = complete_visit(client, tokens, visit["id"])["invoice"]
+    second = complete_visit(client, tokens, visit["id"])["invoice"]
+    assert second["id"] == first["id"]
+    assert second["invoice_number"] == first["invoice_number"]
+    assert Invoice.query.filter_by(visit_id=UUID(visit["id"])).count() == 1
 
 
-def test_finalize_recalculates_discounts_and_co_pay_shares(client, tokens, ids):
-    _, visit = _visit_flow(client, tokens, ids)
-    draft = _drafts(visit["appointment_id"])[0]
+def test_completion_recalculates_totals_and_co_pay_shares(client, tokens, ids):
+    from app.common.enums import AllocationPayer, AllocationStatus
+    from app.patients.models import PatientProfile
 
+    patient = PatientProfile.query.get(ids["patient_id"])
+    patient.sha_number = "SHA-DEMO-INACTIVE"  # check-in converts the draft to self-pay
+    db.session.commit()
+    appointment, visit = _open_visit(client, tokens, ids)
+    final = complete_visit(client, tokens, visit["id"])["invoice"]
+    assert final["subtotal_minor"] == final["total_minor"] == final["balance_minor"] == 500000
+
+    invoice = db.session.get(Invoice, UUID(final["id"]))
+    patient_share = [
+        item
+        for item in invoice.allocations
+        if item.payer == AllocationPayer.PATIENT and item.status != AllocationStatus.VOIDED
+    ]
+    assert [item.amount_minor for item in patient_share] == [500000]
+
+    # A discount on the finalized invoice is an adjustment that waits for approval.
     discount = client.post(
-        f"/api/v1/invoices/{draft.id}/discount",
+        f"/api/v1/invoices/{final['id']}/discount",
         json={"amount_minor": 25000, "reason": "Loyalty"},
         headers=auth(tokens["cashier"]),
     )
     assert discount.status_code == 200, discount.get_json()
-    assert discount.get_json()["data"]["status"] == "DRAFT"
-    assert discount.get_json()["data"]["total_minor"] == 475000
-
-    finalized = client.post(
-        f"/api/v1/invoices/{draft.id}/finalize", headers=auth(tokens["cashier"])
-    )
-    assert finalized.status_code == 200, finalized.get_json()
-    invoice = finalized.get_json()["data"]
-    assert invoice["discount_minor"] == 25000
-    assert invoice["subtotal_minor"] == 500000
-    assert invoice["total_minor"] == 475000
-    assert invoice["balance_minor"] == 475000
+    assert discount.get_json()["data"]["discount_status"] == "PENDING_APPROVAL"
+    assert discount.get_json()["data"]["total_minor"] == 500000
 
 
 def test_payments_and_claims_are_refused_on_a_draft(client, tokens, ids):
-    _, visit = _visit_flow(client, tokens, ids)
+    _, visit = _open_visit(client, tokens, ids)
     draft = _drafts(visit["appointment_id"])[0]
 
     payment = client.post(
@@ -178,7 +179,8 @@ def test_payments_and_claims_are_refused_on_a_draft(client, tokens, ids):
         headers=auth(tokens["cashier"]),
     )
     assert payment.status_code == 409
-    assert "Finalize" in payment.get_json()["error"]["message"]
+    assert payment.get_json()["error"]["code"] == "INVOICE_NOT_PAYABLE"
+    assert "Awaiting visit completion" in payment.get_json()["error"]["message"]
 
     intent = client.post(
         f"/api/v1/invoices/{draft.id}/payment-intents",
@@ -195,26 +197,19 @@ def test_payments_and_claims_are_refused_on_a_draft(client, tokens, ids):
     assert claim.status_code == 409
 
 
-def test_legacy_create_invoice_finalizes_the_existing_draft(client, tokens, ids):
-    appointment, visit = _visit_flow(client, tokens, ids)
-    draft = _drafts(appointment["id"])[0]
-
+def test_legacy_create_invoice_endpoint_is_refused(client, tokens, ids):
+    appointment, visit = _open_visit(client, tokens, ids)
     response = client.post(
         f"/api/v1/visits/{visit['id']}/invoices",
         json={},
         headers=auth(tokens["reception"]),
     )
-    assert response.status_code == 201, response.get_json()
-    invoice = response.get_json()["data"]
-    assert invoice["id"] == str(draft.id)
-    assert invoice["invoice_number"].startswith("INV-")
-    assert invoice["status"] == "ISSUED"
-    assert invoice["visit_id"] == visit["id"]
-    assert _drafts(appointment["id"]) == []
+    assert response.status_code == 403
+    assert len(_drafts(appointment["id"])) == 1
 
 
-def test_finalize_by_visit_creates_a_draft_when_missing(client, tokens, ids):
-    appointment, visit = _visit_flow(client, tokens, ids)
+def test_completion_creates_the_draft_when_missing(client, tokens, ids):
+    appointment, visit = _open_visit(client, tokens, ids)
     draft = _drafts(appointment["id"])[0]
     from app.claims.models import EligibilityCheck
 
@@ -224,32 +219,38 @@ def test_finalize_by_visit_creates_a_draft_when_missing(client, tokens, ids):
     db.session.commit()
     assert _drafts(appointment["id"]) == []
 
-    response = client.post(
-        f"/api/v1/visits/{visit['id']}/invoices/finalize",
-        json={},
-        headers=auth(tokens["cashier"]),
-    )
-    assert response.status_code == 201, response.get_json()
-    invoice = response.get_json()["data"]
+    invoice = complete_visit(client, tokens, visit["id"])["invoice"]
     assert invoice["invoice_number"].startswith("INV-")
     assert invoice["visit_id"] == visit["id"]
     assert invoice["appointment_id"] == appointment["id"]
     assert invoice["total_minor"] == 500000
 
 
-def test_ready_to_bill_keeps_drafts_until_finalized(client, tokens, ids):
-    appointment, visit = _visit_flow(client, tokens, ids)
-    ready = client.get(
-        "/api/v1/billing/ready-to-bill", headers=auth(tokens["reception"])
-    ).get_json()["data"]["items"]
-    row = next(item for item in ready if item["visit_id"] == visit["id"])
-    assert row["draft_invoice_id"] == str(_drafts(appointment["id"])[0].id)
+def test_ready_to_bill_lists_only_completed_visits_left_in_draft(client, tokens, ids):
+    from app.clinical_records.models import Visit
+    from app.common.base import utcnow
 
+    # A normal completion finalizes the bill, so the visit is not on the list.
+    _, done = _open_visit(client, tokens, ids)
+    complete_visit(client, tokens, done["id"])
+    # Legacy data: a visit completed before BIL-17 whose bill stayed a draft.
+    legacy_appointment = book_appointment(client, tokens, ids, start="2030-01-08T10:00:00+00:00")
     client.post(
-        f"/api/v1/invoices/{row['draft_invoice_id']}/finalize",
-        headers=auth(tokens["cashier"]),
+        f"/api/v1/appointments/{legacy_appointment['id']}/check-in",
+        headers=auth(tokens["reception"]),
     )
+    legacy_visit = client.post(
+        f"/api/v1/appointments/{legacy_appointment['id']}/visits",
+        json={},
+        headers=auth(tokens["doctor"]),
+    ).get_json()["data"]
+    db.session.get(Visit, UUID(legacy_visit["id"])).completed_at = utcnow()
+    db.session.commit()
+
     ready = client.get(
         "/api/v1/billing/ready-to-bill", headers=auth(tokens["reception"])
     ).get_json()["data"]["items"]
-    assert visit["id"] not in {item["visit_id"] for item in ready}
+    ids_on_list = {item["visit_id"] for item in ready}
+    assert done["id"] not in ids_on_list
+    row = next(item for item in ready if item["visit_id"] == legacy_visit["id"])
+    assert row["draft_invoice_id"] == str(_drafts(legacy_appointment["id"])[0].id)

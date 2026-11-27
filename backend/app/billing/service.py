@@ -1,10 +1,10 @@
 import uuid
 from datetime import timezone
 
-from flask import current_app
 from sqlalchemy import func, or_
 from sqlalchemy.orm import lazyload
 
+from app.billing.lifecycle import ensure_payable, payable_problem, set_invoice_status
 from app.billing.models import (
     CashReconciliation,
     Invoice,
@@ -484,6 +484,27 @@ def _find_active_invoice_for_appointment(appointment_id):
     )
 
 
+def void_open_draft(appointment, actor, reason):
+    """Void the open draft of an appointment that will not be seen (cancelled or
+    no-show). Kept, never deleted; it can no longer be finalized or paid."""
+    draft = Invoice.query.filter_by(
+        appointment_id=appointment.id, status=InvoiceStatus.DRAFT
+    ).first()
+    if draft is None:
+        return None
+    set_invoice_status(draft, InvoiceStatus.VOIDED)
+    draft.void_reason = reason
+    db.session.flush()
+    record_audit(
+        "invoice.draft_void",
+        "invoice",
+        draft.id,
+        actor=actor,
+        after={"reason": reason, "appointment_id": str(appointment.id)},
+    )
+    return draft
+
+
 def ensure_draft_invoice_for_appointment(appointment, actor=None, commit=True):
     """Return the encounter bill for an appointment, creating it once.
 
@@ -540,8 +561,31 @@ def ensure_draft_invoice_for_appointment(appointment, actor=None, commit=True):
     return invoice
 
 
-def finalize_invoice(invoice, actor):
-    """Assign the number, lock the lines and post the final totals."""
+def _snapshot_line_prices(invoice):
+    """Price every service line at the price list in force at finalization.
+
+    After this the lines carry their own prices, so later price-list changes
+    never alter a finalized invoice. A line whose service has no current price
+    (the doctor-fee fallback for the consultation) keeps its amount.
+    """
+    from app.scheduling.service import current_price
+
+    for line in invoice.lines:
+        if not line.service_id:
+            continue
+        price = current_price(line.service_id)
+        if price is not None and int(price.amount_minor) != int(line.unit_price_minor):
+            line.unit_price_minor = int(price.amount_minor)
+            line.line_total_minor = int(line.quantity) * int(price.amount_minor)
+
+
+def finalize_invoice(invoice, actor, commit=True):
+    """Assign the number, snapshot prices, lock the lines and post the totals.
+
+    Internal: only visit completion (complete_encounter) calls it (BIL-17). A bill
+    with no billable lines finalizes at zero and, with nothing to collect, is
+    settled at once by recompute_invoice.
+    """
     invoice = lock_invoice(invoice)
     if invoice.status != InvoiceStatus.DRAFT:
         raise conflict(
@@ -552,11 +596,7 @@ def finalize_invoice(invoice, actor):
                 "status": invoice.status.value,
             },
         )
-    if not invoice.lines:
-        raise bad_request(
-            "Invoice requires at least one line item",
-            {"items": ["Add a line before finalizing"]},
-        )
+    _snapshot_line_prices(invoice)
     subtotal = sum(int(line.line_total_minor) for line in invoice.lines)
     if invoice.discount_minor > subtotal:
         raise conflict(
@@ -570,7 +610,7 @@ def finalize_invoice(invoice, actor):
     invoice.finalized_at = utcnow()
     invoice.issued_at = invoice.issued_at or invoice.finalized_at
     invoice.invoice_number = next_sequence_value("invoice_number", prefix="INV-{year}-", width=6)
-    invoice.status = InvoiceStatus.ISSUED
+    set_invoice_status(invoice, InvoiceStatus.ISSUED)
     db.session.flush()
     recompute_invoice(invoice)
     if any(item.status != AllocationStatus.VOIDED for item in invoice.allocations):
@@ -597,7 +637,8 @@ def finalize_invoice(invoice, actor):
             "finalized_at": _iso(_aware(invoice.finalized_at)),
         },
     )
-    db.session.commit()
+    if commit:
+        db.session.commit()
     return invoice
 
 
@@ -612,25 +653,22 @@ def find_invoice_for_visit(visit):
     )
 
 
-def finalize_visit_invoice(visit, data, actor):
-    """Finalize a visit's encounter bill, creating the draft when missing."""
-    if visit.completed_at is None:
-        raise conflict(
-            "Complete the visit before invoicing it",
-            {"visit_id": str(visit.id)},
-        )
+def finalize_encounter_invoice(visit, actor):
+    """Finalize the visit's encounter bill as part of completing the visit.
+
+    Runs inside the completion transaction (no commit). Idempotent: a bill that
+    is already finalized is returned unchanged, so completing twice never
+    re-numbers or duplicates it. A visit without a draft (legacy) gets one first.
+    """
     invoice = find_invoice_for_visit(visit)
     if invoice is not None and invoice.status != InvoiceStatus.DRAFT:
-        raise conflict(
-            "An invoice already exists for this visit",
-            {"invoice_id": str(invoice.id), "invoice_number": invoice.invoice_number},
-        )
+        return invoice
 
     if invoice is None:
         if visit.appointment_id:
             from app.scheduling.models import Appointment
 
-            appointment = Appointment.query.get(visit.appointment_id)
+            appointment = db.session.get(Appointment, visit.appointment_id)
             invoice = ensure_draft_invoice_for_appointment(appointment, actor, commit=False)
         else:
             invoice = Invoice(
@@ -655,35 +693,44 @@ def finalize_visit_invoice(visit, data, actor):
 
     if invoice.visit_id is None:
         invoice.visit_id = visit.id
-    if data.get("due_at") and invoice.due_at is None:
-        invoice.due_at = data["due_at"]
-
-    line_specs = data.get("items") or []
-    if line_specs:
-        _replace_invoice_lines(invoice, line_specs)
-    elif not invoice.lines:
+    if not invoice.lines:
         line = _default_consultation_line(visit)
         if line is not None:
             invoice.lines.append(_invoice_line_from_spec(line))
     _recalculate_draft_totals(invoice)
+    return finalize_invoice(invoice, actor, commit=False)
 
-    discount = int(data.get("discount_minor") or 0)
-    discount_reason = (data.get("discount_reason") or "").strip()
-    if discount > invoice.subtotal_minor:
-        raise bad_request("Discount cannot exceed subtotal")
-    if discount and not discount_reason:
-        raise bad_request(
-            "A discount requires a reason",
-            {"discount_reason": ["Required when discount_minor is set"]},
+
+def assert_can_edit_lines(invoice, actor):
+    """Only the doctor of the encounter edits its bill, and only while it is a draft.
+
+    Billing roles see drafts read-only; a finalized invoice is immutable and is
+    corrected only through void or refund with admin approval (BIL-17).
+    """
+    from app.billing.lifecycle import encounter_of
+    from app.common.enums import Role
+    from app.common.errors import forbidden
+    from app.scheduling.models import DoctorProfile
+
+    # Role and ownership first (403), then state (409).
+    if actor is None or actor.role != Role.DOCTOR:
+        raise forbidden("Only the doctor of the encounter adds or removes services")
+    visit, appointment = encounter_of(invoice)
+    doctor = DoctorProfile.query.filter_by(user_id=actor.id).first()
+    owner = visit.doctor_id if visit is not None else getattr(appointment, "doctor_id", None)
+    if doctor is None or owner is None or owner != doctor.id:
+        raise forbidden("This bill belongs to another doctor's encounter")
+    if invoice.status != InvoiceStatus.DRAFT:
+        raise conflict(
+            "A finalized invoice cannot be edited; use a void or refund",
+            {"invoice_id": str(invoice.id), "status": invoice.status.value},
         )
-    if discount:
-        _record_discount_request(invoice, discount, discount_reason, actor)
-
-    return finalize_invoice(invoice, actor)
+    return appointment
 
 
 def add_invoice_line(invoice, data, actor):
     invoice = lock_invoice(invoice)
+    assert_can_edit_lines(invoice, actor)
     if invoice.status != InvoiceStatus.DRAFT:
         raise conflict(
             "Only draft invoices can be edited",
@@ -705,7 +752,18 @@ def add_invoice_line(invoice, data, actor):
 
 
 def remove_invoice_line(invoice, line_id, actor):
+    from app.common.errors import forbidden
+
     invoice = lock_invoice(invoice)
+    appointment = assert_can_edit_lines(invoice, actor)
+    target = next((item for item in invoice.lines if item.id == line_id), None)
+    if (
+        target is not None
+        and appointment is not None
+        and appointment.service_id
+        and target.service_id == appointment.service_id
+    ):
+        raise forbidden("The booked consultation stays on the bill")
     if invoice.status != InvoiceStatus.DRAFT:
         raise conflict(
             "Only draft invoices can be edited",
@@ -730,37 +788,14 @@ def remove_invoice_line(invoice, line_id, actor):
     return invoice
 
 
-def create_invoice(visit, data, actor):
-    """Compatibility wrapper for the pre-D create-invoice endpoint.
-
-    Deprecated: the desk should finalize the encounter draft. This keeps old
-    callers working by ensuring a draft exists and then finalizing it.
-    """
-    invoice = finalize_visit_invoice(visit, data, actor)
-    record_audit(
-        "invoice.create",
-        "invoice",
-        invoice.id,
-        actor=actor,
-        after={
-            "invoice_number": invoice.invoice_number,
-            "total_minor": invoice.total_minor,
-        },
-    )
-    db.session.commit()
-    return invoice
-
-
-def discount_needs_approval(subtotal_minor, amount_minor):
-    """Above 10% of the subtotal or above KES 1,000 (configurable) needs an admin."""
-    percent = current_app.config.get("DISCOUNT_APPROVAL_PERCENT", 10)
-    limit = current_app.config.get("DISCOUNT_APPROVAL_MINOR", 100000)
-    return amount_minor > limit or amount_minor * 100 > subtotal_minor * percent
-
-
 def _ensure_discount_allowed(invoice, amount):
     from app.claims.models import Claim  # local: claims imports billing
 
+    if invoice.status == InvoiceStatus.DRAFT:
+        raise conflict(
+            "A discount can be requested once the visit is completed and the invoice finalized",
+            {"invoice_id": str(invoice.id), "status": invoice.status.value},
+        )
     if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
         raise conflict("Cannot discount a voided or refunded invoice")
     if amount < 0 or amount > invoice.subtotal_minor:
@@ -790,7 +825,7 @@ def _apply_discount(invoice, amount):
 
 
 def _record_discount_request(invoice, amount, reason, actor):
-    """Apply a discount within the threshold, or park it for admin approval."""
+    """Park a discount on a finalized invoice for approval by a different admin."""
     _ensure_discount_allowed(invoice, amount)
     before = {"discount_minor": invoice.discount_minor, "total_minor": invoice.total_minor}
     invoice.discount_reason = reason
@@ -798,21 +833,18 @@ def _record_discount_request(invoice, amount, reason, actor):
     invoice.discount_requested_by_id = actor.id if actor else None
     invoice.discount_decided_by_id = None
     invoice.discount_decided_at = None
-    if discount_needs_approval(invoice.subtotal_minor, amount):
-        invoice.discount_status = DiscountStatus.PENDING_APPROVAL
-        alert_admins(
-            "discount_approval_alert",
-            {
-                "invoice_number": invoice.invoice_number,
-                "amount": f"{amount / 100:.2f}",
-                "reason": reason,
-            },
-        )
-        action = "invoice.discount_request"
-    else:
-        invoice.discount_status = DiscountStatus.APPLIED
-        _apply_discount(invoice, amount)
-        action = "invoice.discount_apply"
+    # A finalized invoice is immutable (BIL-17): any discount on it is an
+    # adjustment that waits for a second admin's approval, whatever its size.
+    invoice.discount_status = DiscountStatus.PENDING_APPROVAL
+    alert_admins(
+        "discount_approval_alert",
+        {
+            "invoice_number": invoice.invoice_number,
+            "amount": f"{amount / 100:.2f}",
+            "reason": reason,
+        },
+    )
+    action = "invoice.discount_request"
     record_audit(
         action,
         "invoice",
@@ -964,8 +996,7 @@ def apply_patient_money(invoice, transaction=None):
 
 def add_allocation(invoice, data, actor):
     invoice = lock_invoice(invoice)
-    if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
-        raise conflict("Cannot allocate a voided or refunded invoice")
+    ensure_payable(invoice, "payer_allocation")
     allocated = sum(
         item.amount_minor for item in invoice.allocations if item.status != AllocationStatus.VOIDED
     )
@@ -997,13 +1028,7 @@ def record_payment(invoice, data, actor):
     if method == PaymentMethod.MPESA:
         raise bad_request("Use the M-Pesa payment-intent workflow")
     invoice = lock_invoice(invoice)
-    if invoice.status == InvoiceStatus.DRAFT:
-        raise conflict(
-            "Finalize the invoice before taking payment",
-            {"invoice_id": str(invoice.id), "status": invoice.status.value},
-        )
-    if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
-        raise conflict("Invoice cannot receive payment in its current state")
+    ensure_payable(invoice, f"{method.value.lower()}_payment")
     if invoice.balance_minor <= 0:
         raise conflict("Invoice is already settled")
     amount = int(data["amount_minor"])
@@ -1087,24 +1112,23 @@ def recompute_invoice(invoice):
         return invoice
     if invoice.status == InvoiceStatus.VOIDED:
         return invoice
+    if invoice.status == InvoiceStatus.REFUNDED:
+        return invoice
     if invoice.total_minor == 0 and net == 0:
-        invoice.status = InvoiceStatus.PAID  # fully discounted: nothing to collect
+        target = InvoiceStatus.PAID  # nothing to collect (zero amount or fully discounted)
     elif net <= 0:
-        invoice.status = InvoiceStatus.REFUNDED if refunded > 0 else InvoiceStatus.ISSUED
+        target = InvoiceStatus.REFUNDED if refunded > 0 else InvoiceStatus.ISSUED
     elif net >= invoice.total_minor:
-        invoice.status = InvoiceStatus.PAID
+        target = InvoiceStatus.PAID
     else:
-        invoice.status = InvoiceStatus.PARTIALLY_PAID
+        target = InvoiceStatus.PARTIALLY_PAID
+    set_invoice_status(invoice, target)
     return invoice
 
 
 def create_payment_intent(invoice, data, actor, idempotency_key=None):
     invoice = lock_invoice(invoice)
-    if invoice.status == InvoiceStatus.DRAFT:
-        raise conflict(
-            "Finalize the invoice before taking payment",
-            {"invoice_id": str(invoice.id), "status": invoice.status.value},
-        )
+    ensure_payable(invoice, "mpesa_stk_push")
     if invoice.balance_minor <= 0:
         raise conflict("Invoice is already settled")
     amount = int(data["amount_minor"])
@@ -1168,8 +1192,10 @@ def _callback_problem(intent, invoice, amount):
     """Why a successful M-Pesa callback cannot be applied automatically, if at all."""
     if invoice is None:
         return "invoice not found"
-    if invoice.status in {InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED}:
-        return f"invoice is {invoice.status.value.lower()}"
+    # The shared guard: draft, voided, refunded, or the visit is not completed.
+    not_payable = payable_problem(invoice)
+    if not_payable:
+        return not_payable[0].lower() + not_payable[1:]
     if amount != int(intent.amount_minor):
         return f"amount {amount} does not match requested {intent.amount_minor}"
     if amount > invoice.balance_minor:
@@ -1359,7 +1385,7 @@ def decide_void(request_id, data, actor):
     item.decided_at = utcnow()
     if data["approve"]:
         if invoice is not None:
-            invoice.status = InvoiceStatus.VOIDED
+            set_invoice_status(invoice, InvoiceStatus.VOIDED)
             invoice.void_reason = item.reason
             for allocation in invoice.allocations:
                 allocation.status = AllocationStatus.VOIDED
@@ -1466,15 +1492,11 @@ def resolve_payment_intent(intent, data, actor):
         )
     transaction = Transaction.query.filter_by(payment_intent_id=intent.id).first()
     if data["resolution"] == "SUCCESS":
-        if invoice.status in {
-            InvoiceStatus.DRAFT,
-            InvoiceStatus.VOIDED,
-            InvoiceStatus.REFUNDED,
-        }:
-            raise conflict(
-                f"Cannot accept a payment on a {invoice.status.value.lower()} invoice",
-                {"invoice_id": str(invoice.id), "invoice_status": invoice.status.value},
-            )
+        ensure_payable(
+            invoice,
+            "reconcile_payment_intent",
+            "Return the money to the payer and resolve it as failed",
+        )
         if int(intent.amount_minor) > int(invoice.balance_minor):
             raise conflict(
                 "Payment exceeds the outstanding balance",
@@ -1556,16 +1578,11 @@ def resolve_transaction(transaction, data, actor):
             {"transaction_id": str(transaction.id), "status": transaction.status.value},
         )
     if data["resolution"] == "SUCCESS":
-        if invoice.status in {
-            InvoiceStatus.DRAFT,
-            InvoiceStatus.VOIDED,
-            InvoiceStatus.REFUNDED,
-        }:
-            raise conflict(
-                f"Cannot accept a payment on a {invoice.status.value.lower()} invoice; "
-                "return the money to the payer and resolve it as failed",
-                {"invoice_id": str(invoice.id), "invoice_status": invoice.status.value},
-            )
+        ensure_payable(
+            invoice,
+            "reconcile_transaction",
+            "Return the money to the payer and resolve it as failed",
+        )
         if int(transaction.amount_minor) > int(invoice.balance_minor):
             raise conflict(
                 "Payment exceeds the outstanding balance; return the money to the payer "

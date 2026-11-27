@@ -99,3 +99,32 @@ def pending_approvals():
 @auth_required(Role.ADMIN)
 def invoice_totals():
     return ok(service.invoice_totals())
+
+
+@bp.post("/admin/visits/<uuid:visit_id>/force-complete")
+@auth_required(Role.ADMIN)
+def force_complete_visit(visit_id):
+    """Complete a stuck visit with a mandatory reason; finalizes its invoice (BIL-17)."""
+    from app.billing.service import serialize_invoice
+    from app.clinical_records.service import (
+        force_complete_visit as force_complete,
+    )
+    from app.clinical_records.service import get_visit_or_404, serialize_visit
+    from app.common.decorators import current_user
+
+    visit = get_visit_or_404(visit_id)
+    payload = request.get_json(silent=True) or {}
+    visit, invoice = force_complete(visit, current_user(), payload.get("reason"))
+    data = serialize_visit(visit, include_clinical=False)
+    data["invoice"] = serialize_invoice(invoice) if invoice is not None else None
+    return ok(data)
+
+
+@bp.get("/admin/reports/invoice-violations")
+@auth_required(Role.ADMIN)
+def invoice_violations():
+    """Read-only: existing invoices that break the payment/finalization rules."""
+    from app.billing.lifecycle import invoice_rule_violations
+
+    items = invoice_rule_violations()
+    return ok({"items": items, "total": len(items)})

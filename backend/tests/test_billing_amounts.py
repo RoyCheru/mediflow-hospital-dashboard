@@ -15,14 +15,6 @@ from tests.helpers import (
 )
 
 
-def _invoice_for(client, tokens, visit_id, body=None):
-    return client.post(
-        f"/api/v1/visits/{visit_id}/invoices",
-        json=body or {},
-        headers=auth(tokens["reception"]),
-    )
-
-
 def test_default_invoice_bills_the_consultation_once_from_the_price_list(client, tokens, ids):
     _, _, invoice = create_invoice_flow(client, tokens, ids)
     assert len(invoice["lines"]) == 1
@@ -39,47 +31,68 @@ def test_doctor_fee_is_the_default_price_when_the_service_has_no_price(client, t
     db.session.commit()
 
     _, visit = create_visit_flow(client, tokens, ids)
-    complete_visit(client, tokens, visit["id"])
-    response = _invoice_for(client, tokens, visit["id"])
-    assert response.status_code == 201, response.get_json()
-    invoice = response.get_json()["data"]
+    invoice = complete_visit(client, tokens, visit["id"])["invoice"]
     assert len(invoice["lines"]) == 1
     assert invoice["lines"][0]["service_id"] == str(ids["service_id"])
     assert invoice["lines"][0]["unit_price_minor"] == 250000  # doctor's consultation fee
     assert invoice["total_minor"] == 250000
 
 
-def test_explicit_items_are_priced_from_the_price_list(client, tokens, ids):
+def _set_price(service, amount_minor):
+    for current in ServicePrice.query.filter_by(service_id=service.id, effective_to=None):
+        current.effective_to = utcnow() - timedelta(seconds=1)
+    db.session.add(
+        ServicePrice(
+            service_id=service.id,
+            amount_minor=amount_minor,
+            effective_from=utcnow() - timedelta(milliseconds=500),
+        )
+    )
+    db.session.commit()
+
+
+def test_prices_are_snapshotted_at_finalization(client, tokens, ids):
     _, visit = create_visit_flow(client, tokens, ids)
-    complete_visit(client, tokens, visit["id"])
     dressing = priced_service(ids, "PROC-DRESS", "Dressing", 30000)
+    bill = client.get(f"/api/v1/visits/{visit['id']}/invoice", headers=auth(tokens["doctor"]))
+    lines_url = f"/api/v1/invoices/{bill.get_json()['data']['id']}/lines"
 
     # A caller-supplied price is refused: the price list is the source of truth.
-    overridden = _invoice_for(
-        client,
-        tokens,
-        visit["id"],
-        {"items": [{"service_id": str(dressing.id), "unit_price_minor": 1}]},
+    overridden = client.post(
+        lines_url,
+        json={"service_id": str(dressing.id), "unit_price_minor": 1},
+        headers=auth(tokens["doctor"]),
     )
     assert overridden.status_code == 400
     assert overridden.get_json()["error"]["message"] == "Prices come from the service price list"
-
-    response = _invoice_for(
-        client, tokens, visit["id"], {"items": [{"service_id": str(dressing.id), "quantity": 2}]}
+    ordered = client.post(
+        lines_url,
+        json={"service_id": str(dressing.id), "quantity": 2},
+        headers=auth(tokens["doctor"]),
     )
-    assert response.status_code == 201, response.get_json()
-    invoice = response.get_json()["data"]
-    assert [line["description"] for line in invoice["lines"]] == ["Dressing"]
-    assert invoice["lines"][0]["unit_price_minor"] == 30000
-    assert invoice["total_minor"] == 60000
+    assert ordered.status_code == 201
+
+    _set_price(dressing, 35000)  # changes while the bill is still a draft
+    invoice = complete_visit(client, tokens, visit["id"])["invoice"]
+    line = next(item for item in invoice["lines"] if item["description"] == "Dressing")
+    assert line["unit_price_minor"] == 35000 and line["line_total_minor"] == 70000
+    assert invoice["total_minor"] == 500000 + 70000
+
+    _set_price(dressing, 99000)  # after finalization: the invoice keeps its prices
+    again = client.get(f"/api/v1/invoices/{invoice['id']}", headers=auth(tokens["cashier"]))
+    assert again.get_json()["data"]["total_minor"] == 570000
     assert UUID(invoice["id"])
 
 
-def test_open_visit_cannot_be_invoiced(client, tokens, ids):
+def test_open_visit_invoice_stays_a_draft_and_cannot_be_invoiced_directly(client, tokens, ids):
     _, visit = create_visit_flow(client, tokens, ids)
-    response = _invoice_for(client, tokens, visit["id"])
-    assert response.status_code == 409
-    assert response.get_json()["error"]["details"]["visit_id"] == visit["id"]
+    legacy = client.post(
+        f"/api/v1/visits/{visit['id']}/invoices", json={}, headers=auth(tokens["reception"])
+    )
+    assert legacy.status_code == 403
+    bill = client.get(f"/api/v1/visits/{visit['id']}/invoice", headers=auth(tokens["reception"]))
+    assert bill.get_json()["data"]["status"] == "DRAFT"
+    assert bill.get_json()["data"]["invoice_number"] is None
 
 
 def test_amending_a_completed_visit_is_allowed_and_audited(client, tokens, ids):

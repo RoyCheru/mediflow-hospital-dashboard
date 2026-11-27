@@ -172,7 +172,7 @@ def test_another_doctor_cannot_see_or_change_the_bill(client, tokens, ids):
     assert _bill(client, tokens["patient"], visit["id"]).status_code == 403
 
 
-def test_doctor_submits_the_bill_after_completing_and_it_is_then_locked(client, tokens, ids):
+def test_completing_the_visit_submits_the_bill_and_then_it_is_locked(client, tokens, ids):
     appointment = _walk_in(client, tokens, ids)
     visit = _start(client, tokens, appointment["id"])
     invoice = _bill(client, tokens["doctor"], visit["id"]).get_json()["data"]
@@ -182,34 +182,30 @@ def test_doctor_submits_the_bill_after_completing_and_it_is_then_locked(client, 
         json={"service_id": str(lab.id)},
         headers=auth(tokens["doctor"]),
     )
-    finalize_url = f"/api/v1/visits/{visit['id']}/invoices/finalize"
-
-    early = client.post(finalize_url, json={}, headers=auth(tokens["doctor"]))
-    assert early.status_code == 409  # the consultation is still open
-
-    client.post(f"/api/v1/visits/{visit['id']}/complete", headers=auth(tokens["doctor"]))
-    discount = client.post(
-        finalize_url,
-        json={"discount_minor": 1000, "discount_reason": "x"},
-        headers=auth(tokens["doctor"]),
+    # No direct finalize, not even for the doctor: completion finalizes (BIL-17).
+    direct = client.post(
+        f"/api/v1/visits/{visit['id']}/invoices/finalize", json={}, headers=auth(tokens["doctor"])
     )
-    assert discount.status_code == 400
+    assert direct.status_code == 403
 
-    submitted = client.post(finalize_url, json={}, headers=auth(tokens["doctor"]))
-    assert submitted.status_code == 201, submitted.get_json()
-    final = submitted.get_json()["data"]
+    completed = client.post(
+        f"/api/v1/visits/{visit['id']}/complete", headers=auth(tokens["doctor"])
+    )
+    assert completed.status_code == 200, completed.get_json()
+    final = completed.get_json()["data"]["invoice"]
     assert final["id"] == invoice["id"]
     assert final["status"] == "ISSUED" and final["invoice_number"].startswith("INV-")
     assert final["total_minor"] == final["balance_minor"] == 620000
 
-    locked = client.post(
-        f"/api/v1/invoices/{invoice['id']}/lines",
-        json={"service_id": str(lab.id)},
-        headers=auth(tokens["cashier"]),
-    )
-    assert locked.status_code == 409
-    again = client.post(finalize_url, json={}, headers=auth(tokens["doctor"]))
-    assert again.status_code == 409
+    for role, expected in (("doctor", 409), ("cashier", 403)):
+        locked = client.post(
+            f"/api/v1/invoices/{invoice['id']}/lines",
+            json={"service_id": str(lab.id)},
+            headers=auth(tokens[role]),
+        )
+        assert locked.status_code == expected, role
+    again = client.post(f"/api/v1/visits/{visit['id']}/complete", headers=auth(tokens["doctor"]))
+    assert again.get_json()["data"]["invoice"]["invoice_number"] == final["invoice_number"]
     from app.auth.models import User
 
     doctor_user = User.query.filter_by(email="doctor@test.local").one()
@@ -220,12 +216,9 @@ def test_doctor_submits_the_bill_after_completing_and_it_is_then_locked(client, 
 def _submitted_invoice(client, tokens, ids):
     appointment = _walk_in(client, tokens, ids)
     visit = _start(client, tokens, appointment["id"])
-    client.post(f"/api/v1/visits/{visit['id']}/complete", headers=auth(tokens["doctor"]))
-    response = client.post(
-        f"/api/v1/visits/{visit['id']}/invoices/finalize", json={}, headers=auth(tokens["doctor"])
-    )
-    assert response.status_code == 201, response.get_json()
-    return visit, response.get_json()["data"]
+    response = client.post(f"/api/v1/visits/{visit['id']}/complete", headers=auth(tokens["doctor"]))
+    assert response.status_code == 200, response.get_json()
+    return visit, response.get_json()["data"]["invoice"]
 
 
 def test_cashier_finds_invoices_awaiting_payment(client, tokens, ids):
