@@ -575,6 +575,34 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
             )
         )
 
+    # Today's encounters carry their bill as the live workflow would (BIL-17):
+    # checked-in patients have a draft; patients in consultation also have an
+    # open visit linked to it. The draft finalizes when the doctor completes.
+    from app.billing.service import ensure_draft_invoice_for_appointment
+    from app.clinical_records.models import Visit
+
+    db.session.flush()
+    for open_appointment in Appointment.query.filter(
+        Appointment.status.in_([AppointmentStatus.CHECKED_IN, AppointmentStatus.IN_CONSULTATION])
+    ).all():
+        draft = ensure_draft_invoice_for_appointment(
+            open_appointment, reception or admin, commit=False
+        )
+        if open_appointment.status == AppointmentStatus.IN_CONSULTATION:
+            visit = Visit(
+                appointment_id=open_appointment.id,
+                patient_id=open_appointment.patient_id,
+                doctor_id=open_appointment.doctor_id,
+                department_id=open_appointment.department_id,
+                presenting_complaint="Seeded consultation in progress",
+                vitals={},
+                started_at=open_appointment.started_at or utcnow(),
+            )
+            db.session.add(visit)
+            db.session.flush()
+            draft.visit_id = visit.id
+    db.session.flush()
+
     # Stored invoice totals must always agree with the recorded transactions;
     # derive them the same way the billing service does.
     from app.billing.service import recompute_invoice
@@ -605,6 +633,51 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
                 reason="Duplicate invoice created during a ward transfer",
                 requested_by_id=reception.id if reception else admin.id,
                 status=VoidRequestStatus.PENDING,
+            )
+        )
+    # A partly paid invoice: half settled in cash, the balance still due.
+    partly_paid = _invoice(
+        patients[2],
+        departments["GEN"],
+        "General consultation and dressing",
+        300000,
+        PaymentMethod.CASH,
+        utcnow() - timedelta(days=1),
+        status=InvoiceStatus.ISSUED,
+    )
+    if partly_paid is not None:
+        _transaction(
+            partly_paid,
+            PaymentMethod.CASH,
+            150000,
+            utcnow() - timedelta(hours=20),
+            cashier or admin,
+        )
+        db.session.flush()
+        recompute_invoice(partly_paid)
+
+    # A voided invoice: entered in error, void approved by an admin.
+    voided_invoice = _invoice(
+        patients[-1],
+        departments["GEN"],
+        "General consultation (entered for the wrong patient)",
+        250000,
+        PaymentMethod.CASH,
+        utcnow() - timedelta(days=2),
+        status=InvoiceStatus.ISSUED,
+    )
+    if voided_invoice is not None:
+        voided_invoice.status = InvoiceStatus.VOIDED
+        voided_invoice.void_reason = "Entered for the wrong patient"
+        db.session.add(
+            VoidRequest(
+                invoice_id=voided_invoice.id,
+                reason="Entered for the wrong patient",
+                requested_by_id=reception.id if reception else admin.id,
+                status=VoidRequestStatus.APPROVED,
+                reviewed_by_id=admin.id,
+                decision_reason="Confirmed with the patient",
+                decided_at=utcnow() - timedelta(days=1),
             )
         )
     original = (

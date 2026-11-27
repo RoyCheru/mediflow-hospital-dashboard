@@ -70,3 +70,33 @@ def test_seeded_pending_void_targets_an_unpaid_invoice(seeded_app):
     assert pending
     for request in pending:
         assert request.invoice.amount_paid_minor == 0
+
+
+def test_seed_covers_every_invoice_state_consistently(seeded_app):
+    from app.billing.lifecycle import encounter_of, invoice_rule_violations
+    from app.billing.models import Invoice
+    from app.common.enums import InvoiceStatus
+
+    statuses = {invoice.status for invoice in Invoice.query.all()}
+    assert statuses >= {
+        InvoiceStatus.DRAFT,
+        InvoiceStatus.ISSUED,
+        InvoiceStatus.PARTIALLY_PAID,
+        InvoiceStatus.PAID,
+        InvoiceStatus.VOIDED,
+    }
+    for draft in Invoice.query.filter_by(status=InvoiceStatus.DRAFT):
+        _, appointment = encounter_of(draft)
+        assert draft.invoice_number is None
+        assert appointment is not None and appointment.status.value in {
+            "CHECKED_IN",
+            "IN_CONSULTATION",
+        }
+    in_progress = [
+        draft
+        for draft in Invoice.query.filter_by(status=InvoiceStatus.DRAFT)
+        if encounter_of(draft)[0] is not None
+    ]
+    assert in_progress and all(encounter_of(d)[0].completed_at is None for d in in_progress)
+    # The seed itself breaks none of the BIL-16/17 rules.
+    assert invoice_rule_violations() == []
