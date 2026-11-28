@@ -120,6 +120,44 @@ def _invoice(patient, department, description, amount, method, when, status=Invo
     return invoice
 
 
+def _completed_encounter(patient, doctor, department, service, when, actor):
+    """A completed appointment and its completed visit, as a seen patient leaves
+    them. Returns (appointment, visit); the caller attaches the invoice."""
+    from app.clinical_records.models import Visit
+
+    appointment = Appointment(
+        patient_id=patient.id,
+        doctor_id=doctor.id,
+        service_id=service.id,
+        department_id=department.id,
+        scheduled_start=when,
+        scheduled_end=when + timedelta(minutes=30),
+        arrived_at=when,
+        checked_in_at=when,
+        started_at=when + timedelta(minutes=10),
+        completed_at=when + timedelta(minutes=40),
+        status=AppointmentStatus.COMPLETED,
+        source=AppointmentSource.RECEPTION,
+        urgency=Urgency.ROUTINE,
+        booked_by_id=actor.id,
+    )
+    db.session.add(appointment)
+    db.session.flush()
+    visit = Visit(
+        appointment_id=appointment.id,
+        patient_id=patient.id,
+        doctor_id=doctor.id,
+        department_id=department.id,
+        presenting_complaint="Seeded completed consultation",
+        vitals={},
+        started_at=appointment.started_at,
+        completed_at=appointment.completed_at,
+    )
+    db.session.add(visit)
+    db.session.flush()
+    return appointment, visit
+
+
 def _transaction(invoice, method, amount, when, actor, status=TransactionStatus.SUCCESS):
     transaction = Transaction(
         invoice_id=invoice.id,
@@ -601,6 +639,30 @@ def seed_demo_activity(admin, doctor_user, doctor, departments, services, main_p
             db.session.add(visit)
             db.session.flush()
             draft.visit_id = visit.id
+    db.session.flush()
+
+    # Legacy encounter (the "Amina" case): the desk finalized the bill before the
+    # doctor saw the patient (allowed before BIL-17), so the finalized invoice is
+    # linked to the appointment only and never received the visit's id.
+    legacy_when = utcnow() - timedelta(hours=6)
+    legacy_appointment, _legacy_visit = _completed_encounter(
+        patients[3],
+        doctor,
+        departments["GEN"],
+        services["CONS-GEN"],
+        legacy_when,
+        reception or admin,
+    )
+    legacy_invoice = _invoice(
+        patients[3],
+        departments["GEN"],
+        "General consultation",
+        250000,
+        PaymentMethod.CASH,
+        legacy_when,
+        status=InvoiceStatus.ISSUED,
+    )
+    legacy_invoice.appointment_id = legacy_appointment.id
     db.session.flush()
 
     # Stored invoice totals must always agree with the recorded transactions;
